@@ -269,43 +269,9 @@ def build_project_awb_url(family: str, lang: str) -> str:
 NS_CACHE: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
 DEFAULT_LANGS: set[str] = {'ru', 'uk', 'be', 'en', 'fr', 'es', 'de'}
 
-# Предзаданные локальные префиксы для популярных языков/проектов (известные, стабильные)
+# Предзаданные локальные префиксы для популярных языков/проектов (fallback при недоступном API)
 # Структура: {(family, lang): { ns_id: { 'primary': str, 'all': {lower_prefixes...} }}}
-DEFAULT_NS_PREFIXES: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {
-    ('wikipedia', 'ru'): {
-        14: {'primary': 'Категория:', 'all': {'категория:'}},
-        10: {'primary': 'Шаблон:', 'all': {'шаблон:'}},
-    },
-    ('wikipedia', 'uk'): {
-        14: {'primary': 'Категорія:', 'all': {'категорія:'}},
-        10: {'primary': 'Шаблон:', 'all': {'шаблон:'}},
-    },
-    ('wikipedia', 'be'): {
-        14: {'primary': 'Катэгорыя:', 'all': {'катэгорыя:'}},
-        10: {'primary': 'Шаблон:', 'all': {'шаблон:'}},
-    },
-    ('wikipedia', 'en'): {
-        14: {'primary': 'Category:', 'all': {'category:'}},
-        10: {'primary': 'Template:', 'all': {'template:'}},
-    },
-    ('wikipedia', 'fr'): {
-        14: {'primary': 'Catégorie:', 'all': {'catégorie:'}},
-        10: {'primary': 'Modèle:', 'all': {'modèle:'}},
-    },
-    ('wikipedia', 'es'): {
-        14: {'primary': 'Categoría:', 'all': {'categoría:'}},
-        10: {'primary': 'Plantilla:', 'all': {'plantilla:'}},
-    },
-    ('wikipedia', 'de'): {
-        14: {'primary': 'Kategorie:', 'all': {'kategorie:'}},
-        10: {'primary': 'Vorlage:', 'all': {'vorlage:'}},
-    },
-    # Commons (единые английские префиксы)
-    ('commons', 'commons'): {
-        14: {'primary': 'Category:', 'all': {'category:'}},
-        10: {'primary': 'Template:', 'all': {'template:'}},
-    },
-}
+DEFAULT_NS_PREFIXES: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
 
 def _ns_cache_dir() -> str:
     base = _dist_configs_dir()
@@ -349,29 +315,21 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
                         restored[ns_id] = {'primary': prim, 'all': {str(x).lower() for x in all_list}}
                 if restored:
                     NS_CACHE[key] = restored
+                    try:
+                        debug(f"NS cache hit: {family}/{lang} → {len(restored)} namespaces from {cache_path}")
+                    except Exception:
+                        pass
                     return restored
     except Exception:
         pass
-    # 2) Предзаданные префиксы для популярных языков
-    preset = DEFAULT_NS_PREFIXES.get((family or '', lang or ''))
-    if isinstance(preset, dict) and preset:
-        NS_CACHE[key] = preset
-        # Сохраним на диск для единообразия структуры
-        try:
-            to_dump = {str(k): {'primary': str(v.get('primary') or ''), 'all': sorted([s for s in (v.get('all') or set())])}
-                       for k, v in preset.items()}
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(to_dump, f, ensure_ascii=False)
-        except Exception:
-            pass
-        return preset
-    # 3) Запрос к API и сохранение в кэш
+    # 2) Запрос к API и сохранение в кэш
     url = build_api_url(family, lang)
     params = {
         'action': 'query', 'meta': 'siteinfo', 'siprop': 'namespaces|namespacealiases', 'format': 'json'
     }
     prefixes_by_id: dict[int, dict[str, set[str] | str]] = {}
     try:
+        debug(f"NS API fetch: {family}/{lang}")
         _rate_wait()
         r = REQUEST_SESSION.get(url, params=params, timeout=10, headers=REQUEST_HEADERS)
         data = r.json() if r.status_code == 200 else {}
@@ -381,6 +339,9 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
             try:
                 ns_id = int(sid)
             except Exception:
+                continue
+            # пропускаем парные пространства обсуждений (нечётные ns) и отрицательные ns
+            if ns_id % 2 == 1 or ns_id < 0:
                 continue
             names: set[str] = set()
             local_name = (meta.get('*') or '').strip()
@@ -396,6 +357,8 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
         for a in aliases:
             try:
                 ns_id = int(a.get('id'))
+                if ns_id % 2 == 1 or ns_id < 0:
+                    continue
                 name = (a.get('*') or '').strip()
                 if not name:
                     continue
@@ -406,16 +369,38 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
                 continue
     except Exception:
         prefixes_by_id = {}
-    NS_CACHE[key] = prefixes_by_id
-    # сохранить дисковый кэш
-    try:
-        to_dump = {str(k): {'primary': str(v.get('primary') or ''), 'all': sorted([s for s in (v.get('all') or set())])}
-                   for k, v in prefixes_by_id.items()}
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(to_dump, f, ensure_ascii=False)
-    except Exception:
-        pass
-    return prefixes_by_id
+    if prefixes_by_id:
+        NS_CACHE[key] = prefixes_by_id
+        # сохранить дисковый кэш
+        try:
+            to_dump = {str(k): {'primary': str(v.get('primary') or ''), 'all': sorted([s for s in (v.get('all') or set())])}
+                       for k, v in prefixes_by_id.items()}
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(to_dump, f, ensure_ascii=False)
+            try:
+                debug(f"NS cached: {family}/{lang} → {len(prefixes_by_id)} namespaces → {cache_path}")
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return prefixes_by_id
+    # 3) Предзаданные префиксы (fallback, если API недоступно)
+    preset = DEFAULT_NS_PREFIXES.get((family or '', lang or ''))
+    if isinstance(preset, dict) and preset:
+        NS_CACHE[key] = preset
+        try:
+            to_dump = {str(k): {'primary': str(v.get('primary') or ''), 'all': sorted([s for s in (v.get('all') or set())])}
+                       for k, v in preset.items()}
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(to_dump, f, ensure_ascii=False)
+            try:
+                debug(f"NS fallback preset used: {family}/{lang} → {len(preset)} namespaces")
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return preset
+    return {}
 
 def get_primary_ns_prefix(family: str, lang: str, ns_id: int, default_en: str) -> str:
     info = _load_ns_info(family, lang)
@@ -436,10 +421,14 @@ def title_has_ns_prefix(family: str, lang: str, title: str, ns_ids: set[int]) ->
     return any(lower.startswith(p) for p in prefixes)
 
 def _has_en_prefix(title: str, ns_id: int) -> bool:
-    mapping = {14: 'category:', 10: 'template:'}
     lower = (title or '').lstrip('\ufeff').casefold()
-    pref = mapping.get(ns_id)
-    return bool(pref and lower.startswith(pref))
+    # base English prefix from DEFAULT_EN_NS
+    base = (DEFAULT_EN_NS.get(ns_id) or '').strip()
+    candidates: set[str] = set()
+    if base:
+        candidates.add(base.casefold() if base.endswith(':') else (base + ':').casefold())
+    candidates |= set(EN_PREFIX_ALIASES.get(ns_id, set()))
+    return any(lower.startswith(p) for p in candidates) if candidates else False
 
 def has_prefix_by_policy(family: str, lang: str, title: str, ns_ids: set[int]) -> bool:
     # сначала проверяем локальные префиксы
@@ -465,40 +454,95 @@ def _ensure_title_with_ns(title: str, family: str, lang: str, ns_id: int, defaul
     prefix = get_policy_prefix(family, lang, ns_id, default_en)
     return f"{prefix}{t}"
 
-def normalize_title_by_selection(title: str, family: str, lang: str, selection: str) -> str:
-    sel = (selection or 'auto').strip().lower()
-    if sel in {'cat', 'category', '14'}:
-        return _ensure_title_with_ns(title, family, lang, 14, 'Category:')
-    if sel in {'tpl', 'template', '10'}:
-        return _ensure_title_with_ns(title, family, lang, 10, 'Template:')
-    if sel in {'art', 'article', '0'}:
-        return (title or '').lstrip('\ufeff')
-    # auto: не добавляем префикс; оставляем как есть
-    return (title or '').lstrip('\ufeff')
+def normalize_title_by_selection(title: str, family: str, lang: str, selection: str | int) -> str:
+    """Нормализует заголовок по выбранному пространству имён.
+
+    Теперь при указанном NS добавляется локальный основной префикс,
+    полученный из API/JSON. Английские префиксы в исходных названиях
+    распознаются и считаются валидными.
+    """
+    base_title = (title or '').lstrip('\ufeff')
+    try:
+        if isinstance(selection, str):
+            sel = selection.strip().lower()
+            if sel in {'', 'auto'}:
+                return base_title
+            alias_to_ns = {'cat': 14, 'category': 14, 'tpl': 10, 'template': 10, 'art': 0, 'article': 0}
+            ns_id = alias_to_ns.get(sel, int(sel))
+        else:
+            ns_id = int(selection)
+    except Exception:
+        return base_title
+
+    if ns_id == 0:
+        return base_title
+    # Подставляем локальный основной (fallback: английский из DEFAULT_EN_NS)
+    default_en = DEFAULT_EN_NS.get(ns_id, '')
+    return _ensure_title_with_ns(base_title, family, lang, ns_id, default_en)
 
 # ---------- UI helpers ---------- #
-def _populate_ns_combo(combo) -> None:
+def _common_ns_ids() -> list[int]:
+    # Подсчитываем в скольких языках встречается каждый NS-ID
+    counts: dict[int, int] = {}
+    for (fam, lng), mapping in DEFAULT_NS_PREFIXES.items():
+        if fam != 'wikipedia':
+            continue
+        for ns_id in mapping.keys():
+            counts[ns_id] = counts.get(ns_id, 0) + 1
+    common = sorted([ns for ns, cnt in counts.items() if cnt >= 3])
+    return common
+
+def _primary_label_for_ns(family: str, lang: str, ns_id: int) -> str:
+    # Пытаемся взять локальный основной префикс, иначе английский
+    try:
+        prim = get_primary_ns_prefix(family, lang, ns_id, DEFAULT_EN_NS.get(ns_id, ''))
+        return prim[:-1] if prim.endswith(':') else prim
+    except Exception:
+        base = DEFAULT_EN_NS.get(ns_id, '')
+        return base[:-1] if base.endswith(':') else base
+
+def _adjust_combo_popup_width(combo) -> None:
+    try:
+        view = combo.view()
+        fm = view.fontMetrics() if hasattr(view, 'fontMetrics') else combo.fontMetrics()
+        max_w = 0
+        for i in range(combo.count()):
+            text = combo.itemText(i) or ''
+            w = fm.horizontalAdvance(text)
+            if w > max_w:
+                max_w = w
+        # запас на отступы/скроллбар
+        max_w += 48
+        try:
+            view.setMinimumWidth(max_w)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+def _populate_ns_combo(combo, family: str, lang: str) -> None:
     try:
         combo.clear()
     except Exception:
         pass
-    items = [
-        ('Авто', 'auto'),
-        ('(нет) (0)', 0),
-        ('Участник (2)', 2),
-        ('Википедия (4)', 4),
-        ('Файл (6)', 6),
-        ('MediaWiki (8)', 8),
-        ('Шаблон (10)', 10),
-        ('Справка (12)', 12),
-        ('Категория (14)', 14),
-        ('Портал (100)', 100),
-        ('Инкубатор (102) — только ruwiki', 102),
-        ('Проект (104) — только ruwiki', 104),
-        ('Draft (118)', 118),
-    ]
-    for label, data in items:
-        combo.addItem(label, data)
+    # Базовые элементы
+    combo.addItem('Авто', 'auto')
+    combo.addItem('(нет) [0]', 0)
+
+    # Берём реальные данные: сначала из кэша/диска/АПИ, затем fallback
+    info = _load_ns_info(family or 'wikipedia', lang or 'ru')
+    if info:
+        ns_ids = sorted(info.keys())
+    else:
+        # неизвестный язык без API → показываем только часто встречающиеся NS
+        ns_ids = _common_ns_ids()
+
+    for ns_id in ns_ids:
+        if ns_id == 0:
+            continue
+        label = f"{_primary_label_for_ns(family, lang, ns_id)} [{ns_id}]"
+        combo.addItem(label, ns_id)
+    _adjust_combo_popup_width(combo)
 
 # путь к файлу с авторизацией рядом с exe/скриптом
 def cred_path():
@@ -709,17 +753,45 @@ def reset_pywikibot_session(lang: str | None = None) -> None:
 # -------------------- backend helpers -------------------- #
 
 DEFAULT_EN_NS: dict[int, str] = {
-    2: 'User:',
-    4: 'Wikipedia:',
-    6: 'File:',
-    8: 'MediaWiki:',
-    10: 'Template:',
-    12: 'Help:',
-    14: 'Category:',
-    100: 'Portal:',
-    102: 'Incubator:',
-    104: 'Project:',
-    118: 'Draft:'
+    # Common (>= 3 wikis): always recognized and used for normalization when NS selected
+    0:    'Main:',        # recognition only; never added
+    2:    'User:',
+    4:    'Wikipedia:',
+    6:    'File:',
+    8:    'MediaWiki:',
+    10:   'Template:',
+    12:   'Help:',
+    14:   'Category:',
+    100:  'Portal:',
+    102:  'Incubator:',   # not on enwiki, used on multiple wikis
+    104:  'Project:',     # not on enwiki, used on multiple wikis
+    710:  'TimedText:',
+    828:  'Module:',
+    1728: 'Event:',
+    # ------------------------------------------------------------
+    # Rare (<= 2 wikis): recognized but considered less common
+    118:  'Draft:',       # [enwiki, ukwiki]
+    126:  'MOS:',         # [enwiki]
+}
+
+# English prefix aliases (lowercased) recognized across all languages
+EN_PREFIX_ALIASES: dict[int, set[str]] = {
+    0: {'main:', 'article:'},
+    2: {'user:'},
+    4: {'wikipedia:'},
+    6: {'file:'},
+    8: {'mediawiki:'},
+    10: {'template:'},
+    12: {'help:'},
+    14: {'category:'},
+    100: {'portal:'},
+    102: {'incubator:'},
+    104: {'project:'},
+    118: {'draft:'},
+    126: {'mos:'},
+    710: {'timedtext:'},
+    828: {'module:'},
+    1728: {'event:'},
 }
 
 def fetch_content(title: str, ns_selection: str | int, lang: str = 'ru', family: str = 'wikipedia', retries: int = 5, timeout: int = 6):
@@ -947,13 +1019,14 @@ class CreateWorker(QThread):
 class RenameWorker(QThread):
     progress = Signal(str)
 
-    def __init__(self, tsv_path, username, password, lang, family, leave_cat_redirect: bool, leave_other_redirect: bool):
+    def __init__(self, tsv_path, username, password, lang, family, ns_selection: str | int, leave_cat_redirect: bool, leave_other_redirect: bool):
         super().__init__()
         self.tsv_path = tsv_path
         self.username = username
         self.password = password
         self.lang = lang
         self.family = family
+        self.ns_sel = ns_selection
         self.leave_cat_redirect = leave_cat_redirect
         self.leave_other_redirect = leave_other_redirect
         self._stop = False
@@ -987,9 +1060,30 @@ class RenameWorker(QThread):
                     if len(row) < 3:
                         self.progress.emit(f"Некорректная строка (требуется 3 столбца): {row}")
                         continue
-                    old_name, new_name, reason = [((c or '').strip().lstrip('\ufeff')) for c in row[:3]]
-                    # Определяем как категорию по реальному пространству имён (ns 14)
-                    is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
+                    old_name_raw, new_name_raw, reason = [((c or '').strip().lstrip('\ufeff')) for c in row[:3]]
+
+                    # Нормализация имён по выбору пользователя:
+                    # - 'Авто' → оставляем как есть
+                    # - конкретный NS → добавляем английский префикс из DEFAULT_EN_NS, если отсутствует
+                    sel = self.ns_sel
+                    is_category = False
+                    try:
+                        if isinstance(sel, str) and sel.strip().lower() == 'auto':
+                            old_name = old_name_raw
+                            new_name = new_name_raw
+                            # Определяем категорию по фактическому префиксу
+                            is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
+                        else:
+                            ns_id = int(sel)
+                            old_name = normalize_title_by_selection(old_name_raw, self.family, self.lang, ns_id)
+                            new_name = normalize_title_by_selection(new_name_raw, self.family, self.lang, ns_id)
+                            is_category = (ns_id == 14)
+                    except Exception:
+                        # На случай некорректного выбора — ведём себя как 'Авто'
+                        old_name = old_name_raw
+                        new_name = new_name_raw
+                        is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
+
                     leave_redirect = self.leave_cat_redirect if is_category else self.leave_other_redirect
                     self._move_page(site, old_name, new_name, reason, leave_redirect)
         except Exception as e:
@@ -1188,6 +1282,20 @@ class MainWindow(QMainWindow):
         row_fam.addWidget(fam_btn)
         layout_form.addLayout(row_fam)
         layout_form.setAlignment(row_fam, Qt.AlignHCenter)
+        # При смене проекта тоже пересобираем списки префиксов
+        try:
+            self.family_combo.currentTextChanged.connect(lambda fam: [
+                _populate_ns_combo(self.ns_combo_parse, fam, (self.lang_combo.currentText() or 'ru')),
+                _populate_ns_combo(self.ns_combo_replace, fam, (self.lang_combo.currentText() or 'ru')),
+                _populate_ns_combo(self.ns_combo_create, fam, (self.lang_combo.currentText() or 'ru')),
+                _populate_ns_combo(self.ns_combo_rename, fam, (self.lang_combo.currentText() or 'ru')),
+                _adjust_combo_popup_width(self.ns_combo_parse),
+                _adjust_combo_popup_width(self.ns_combo_replace),
+                _adjust_combo_popup_width(self.ns_combo_create),
+                _adjust_combo_popup_width(self.ns_combo_rename)
+            ])
+        except Exception:
+            pass
 
         # поля логина/пароля под языком
         self.user_edit.setMinimumWidth(250)
@@ -1468,9 +1576,8 @@ class MainWindow(QMainWindow):
             '1. Укажите корневую категорию (без префикса) и нажмите «Получить». Будут загружены все подкатегории.\n\n'
             '2. Список можно редактировать или загрузить из .txt (по одной строке).\n\n'
             'Подсказка: Ctrl+клик по «Получить» — откроет категорию в PetScan с расширенными настройками.\n\n'
-            'Выбор префиксов: «Авто» — предполагается, что в списке все заголовки уже содержат нужные префиксы; '
-            'префиксы не добавляются. Остальные пункты используются, если в списке указаны только названия без префиксов — '
-            'в этом случае будет подставлён английский префикс (Category:/Template:) по выбранному типу.'
+            'Префиксы: для любого языка локальные префиксы автоматически подгружаются из API и кэшируются. '
+            '«Авто» — не изменяет заголовки; при выборе конкретного пространства префикс подставляется (англ.).'
         )
         # --- layouts: left (список) and right (настройки) ---
         h_main = QHBoxLayout()
@@ -1510,7 +1617,7 @@ class MainWindow(QMainWindow):
         types = QHBoxLayout()
         types.addWidget(QLabel('Префиксы:'))
         self.ns_combo_parse = QComboBox(); self.ns_combo_parse.setEditable(False)
-        _populate_ns_combo(self.ns_combo_parse)
+        _populate_ns_combo(self.ns_combo_parse, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         types.addWidget(self.ns_combo_parse)
 
         # Info button appended to same row
@@ -1645,9 +1752,9 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(tab)
         replace_help = (
             'TSV: Title<TAB>line1<TAB>line2…\n\n'
-            'Выбор префиксов: «Авто» — предполагается, что в списке все заголовки уже содержат нужные префиксы; '
-            'префиксы не добавляются. Остальные пункты используются, если в списке указаны только названия без префиксов — '
-            'в этом случае будет подставлён английский префикс (Category:/Template:) по выбранному типу.'
+            'Префиксы: для любого языка локальные префиксы автоматически подгружаются из API и кэшируются. '
+            '«Авто» — оставляет заголовки как есть; выбранный NS — добавляет локальный префикс. '
+            'Если в исходных данных уже указан английский префикс (Category:/Template: и т.п.), он распознаётся.'
         )
         h = QHBoxLayout()
         self.tsv_path = QLineEdit('categories.tsv')
@@ -1659,7 +1766,7 @@ class MainWindow(QMainWindow):
         # компактный выбор префикса (выпадающий список)
         h.addWidget(QLabel('Префиксы:'))
         self.ns_combo_replace = QComboBox(); self.ns_combo_replace.setEditable(False)
-        _populate_ns_combo(self.ns_combo_replace)
+        _populate_ns_combo(self.ns_combo_replace, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_replace)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, replace_help)
@@ -1692,9 +1799,9 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(tab)
         create_help = (
             'TSV: Title<TAB>line1<TAB>line2…  Одна строка — одна новая страница.\n\n'
-            'Выбор префиксов: «Авто» — предполагается, что в списке все заголовки уже содержат нужные префиксы; '
-            'префиксы не добавляются. Остальные пункты используются, если в списке указаны только названия без префиксов — '
-            'в этом случае будет подставлён английский префикс (Category:/Template:) по выбранному типу.'
+            'Префиксы: для любого языка локальные префиксы автоматически подгружаются из API и кэшируются. '
+            '«Авто» — не меняет заголовки; выбранный NS — добавляет локальный префикс. '
+            'Английские префиксы в исходных названиях также поддерживаются.'
         )
         h = QHBoxLayout()
         self.tsv_path_create = QLineEdit('categories.tsv')
@@ -1706,7 +1813,7 @@ class MainWindow(QMainWindow):
         # компактный выбор префикса (выпадающий список)
         h.addWidget(QLabel('Префиксы:'))
         self.ns_combo_create = QComboBox(); self.ns_combo_create.setEditable(False)
-        _populate_ns_combo(self.ns_combo_create)
+        _populate_ns_combo(self.ns_combo_create, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_create)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, create_help)
@@ -1733,9 +1840,9 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(tab)
         rename_help = (
             'TSV: OldTitle<TAB>NewTitle<TAB>Reason  — одна строка = одно переименование.\n\n'
-            'Выбор префиксов: «Авто» — предполагается, что в списке все заголовки уже содержат нужные префиксы; '
-            'префиксы не добавляются. Остальные пункты используются, если в списке указаны только названия без префиксов — '
-            'в этом случае будет подставлён английский префикс (Category:/Template:) по выбранному типу. Тип страницы также сверяется через API.'
+            'Префиксы: подгружаются из API для любого языка. "Авто" — имена без изменений; '
+            'при выборе пространства имён к обоим названиям добавляется локальный префикс. '
+            'Если переданы английские префиксы, они корректно распознаются.'
         )
         # --- File picker for TSV ---
         h = QHBoxLayout()
@@ -1748,7 +1855,7 @@ class MainWindow(QMainWindow):
         # компактный выбор префикса (выпадающий список)
         h.addWidget(QLabel('Префиксы:'))
         self.ns_combo_rename = QComboBox(); self.ns_combo_rename.setEditable(False)
-        _populate_ns_combo(self.ns_combo_rename)
+        _populate_ns_combo(self.ns_combo_rename, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_rename)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, rename_help)
@@ -2009,12 +2116,12 @@ class MainWindow(QMainWindow):
             if not ok_awb:
                 QMessageBox.warning(self, 'Нет допуска AWB', 'Получите доступ к AWB или используйте режим считывания.')
                 return
-        # нормализация типа по выбору (кат/шабл/статья) влияет только на определение редиректов и валидацию заголовков
+        # Передаём выбор префикса воркеру: 'Авто' (auto) или конкретный NS-ID
         ns_sel = self.ns_combo_rename.currentData()
         leave_cat = self.chk_redirect_cat.isChecked()
         leave_other = self.chk_redirect_other.isChecked()
         self.rename_btn.setEnabled(False); self.rename_stop_btn.setEnabled(True); self.rename_log.clear()
-        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, leave_cat, leave_other)
+        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, ns_sel, leave_cat, leave_other)
         self.mrworker.progress.connect(lambda m: self.log(self.rename_log, m))
         self.mrworker.finished.connect(self._on_rename_finished)
         self.mrworker.start()
@@ -2043,6 +2150,20 @@ class MainWindow(QMainWindow):
             if cur == '' or cur == func(self.prev_lang):
                 widget.setText(func(new_lang))
         self.prev_lang = new_lang
+        # Перезаполнить комбобоксы префиксов под выбранный язык
+        try:
+            fam = (self.family_combo.currentText() or 'wikipedia')
+            _populate_ns_combo(self.ns_combo_parse, fam, new_lang)
+            _populate_ns_combo(self.ns_combo_replace, fam, new_lang)
+            _populate_ns_combo(self.ns_combo_create, fam, new_lang)
+            _populate_ns_combo(self.ns_combo_rename, fam, new_lang)
+            # скорректировать ширину попапов после обновления
+            _adjust_combo_popup_width(self.ns_combo_parse)
+            _adjust_combo_popup_width(self.ns_combo_replace)
+            _adjust_combo_popup_width(self.ns_combo_create)
+            _adjust_combo_popup_width(self.ns_combo_rename)
+        except Exception:
+            pass
 
     # ---- window close event ---- #
     def closeEvent(self, event):
