@@ -8,31 +8,35 @@ import time
 import urllib.parse
 import webbrowser
 import re
+import html
 import ast
 import ctypes
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from threading import Lock
+from threading import Lock, Event
+from queue import Queue
 
-# Инициализация окружения для Pywikibot до его импорта (важно для сборки exe)
-# 1) Отключаем требование наличия user-config.py при импорте
-os.environ.setdefault('PYWIKIBOT_NO_USER_CONFIG', '1')
-# 2) Указываем базовую директорию для конфигов рядом с exe/скриптом в подпапке configs
+# Инициализация окружения для Pywikibot
 _startup_base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
 _startup_cfg = os.path.join(_startup_base, 'configs')
-os.environ['PYWIKIBOT_DIR'] = _startup_cfg
 try:
     os.makedirs(_startup_cfg, exist_ok=True)
 except Exception:
     pass
+# Настройка конфигурации pywikibot
+_user_cfg_path = os.path.join(_startup_cfg, 'user-config.py')
+if os.path.isfile(_user_cfg_path):
+    os.environ.pop('PYWIKIBOT_NO_USER_CONFIG', None)
+else:
+    os.environ['PYWIKIBOT_NO_USER_CONFIG'] = '1'
 
-# В GUI-сборке у PyInstaller sys.stdout/sys.stderr могут быть None → print() падает.
-# Подменяем на безопасный вывод в debug-лог.
+os.environ['PYWIKIBOT_DIR'] = _startup_cfg
+
+# Перенаправление вывода для GUI-приложения
 class _GuiStdWriter(io.TextIOBase):
     def write(self, s: str) -> int:
         try:
             if s and s.strip():
-                # импорт debug позже; используем ленивый вызов через globals
                 dbg = globals().get('debug')
                 if callable(dbg):
                     dbg(str(s).rstrip())
@@ -53,25 +57,26 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout, QRadioButton,
     QButtonGroup, QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
-    QSizePolicy, QDialog, QPlainTextEdit
+    QSizePolicy, QDialog, QPlainTextEdit, QGroupBox
 )
 from PySide6.QtGui import QDesktopServices
 
-# Гарантируем, что Pywikibot использует конфиги из этой подпапки
+# Настройка базовой директории
 def tool_base_dir() -> str:
     try:
         return os.path.dirname(__file__)
     except NameError:
         return os.getcwd()
 
-os.environ['PYWIKIBOT_DIR'] = tool_base_dir()
+if 'PYWIKIBOT_DIR' not in os.environ:
+    os.environ['PYWIKIBOT_DIR'] = tool_base_dir()
 
 import pywikibot
 from pywikibot import config as pwb_config
 from pywikibot.login import LoginManager
 from pywikibot.comms import http as pywb_http
 
-# hook pywikibot output to debug
+# Перехват вывода pywikibot
 def _pywb_log(msg, *a, **kw):
     debug('PYWIKIBOT: ' + str(msg))
 pywikibot.output = _pywb_log
@@ -80,12 +85,12 @@ pywikibot.error = _pywb_log
 
 write_lock = Lock()
 
-# ---------- assets helper ---------- #
+# ===== Assets Helper =====
 def asset_path(name: str) -> str:
     base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
     return os.path.join(base, name)
 
-# ---------- HTTP session + rate limit (to reduce 429) ---------- #
+# ===== HTTP Session + Rate Limiting =====
 REQUEST_SESSION = requests.Session()
 REQUEST_HEADERS = {
     'User-Agent': 'WikiCatTool/1.0 (+github:local; email:none) requests',
@@ -93,7 +98,7 @@ REQUEST_HEADERS = {
 }
 _RATE_LOCK = Lock()
 _LAST_REQ_TS = 0.0
-_MIN_INTERVAL = 0.12  # seconds between requests across all threads
+_MIN_INTERVAL = 0.12
 
 def _rate_wait():
     global _LAST_REQ_TS
@@ -108,15 +113,15 @@ def _rate_backoff(seconds: float | None = None):
     global _MIN_INTERVAL
     with _RATE_LOCK:
         add = float(seconds) if seconds is not None else 0.0
-        # экспоненциальный рост с верхним пределом
+
         _MIN_INTERVAL = min(2.5, max(_MIN_INTERVAL * 1.5, add if add > 0 else _MIN_INTERVAL))
         debug(f"Rate backoff: MIN_INTERVAL={_MIN_INTERVAL:.2f}s")
 
-# ---------- debug buffer ---------- #
+# ===== Debug Buffer =====
 DEBUG_BUFFER = []
-DEBUG_VIEW = None  # will hold QTextEdit of the debug window
+DEBUG_VIEW = None
 
-# Глобальный флаг для обхода проверки AWB (секретный режим)
+# ===== AWB Bypass System =====
 BYPASS_AWB = False
 BYPASS_TOKEN: str | None = None
 
@@ -128,50 +133,19 @@ def set_bypass_awb(flag: bool) -> None:
 def is_bypass_awb() -> bool:
     return bool(BYPASS_AWB)
 
-# Файл-ключ для обхода AWB в папке configs
-def _bypass_key_path() -> str:
-    return os.path.join(_dist_configs_dir(), 'awb_bypass.key')
-
-def try_load_bypass_awb_from_file() -> bool:
-    """Считывает токен обхода AWB из файла configs/awb_bypass.key (строка, без кавычек).
-
-    Токен используется для разблокировки при вводе в окне Debug. Сам по себе файл
-    обход не включает. Возвращает True, если токен успешно загружен и не пуст.
-    """
-    global BYPASS_TOKEN
-    try:
-        p = _bypass_key_path()
-        if os.path.isfile(p):
-            with open(p, 'r', encoding='utf-8') as f:
-                token = (f.read() or '').strip().lower()
-            BYPASS_TOKEN = token if token else None
-            debug('Bypass token loaded from file' if BYPASS_TOKEN else 'Bypass token file is empty')
-            return bool(BYPASS_TOKEN)
-    except Exception:
-        BYPASS_TOKEN = None
-    return False
-
 def try_load_bypass_awb_from_embedded() -> bool:
-    """Пытается загрузить токен обхода AWB из встроенных источников:
-    1) переменная окружения BYPASS_AWB_TOKEN
-    2) необязательный модуль wikicat_tool._embedded_secrets с атрибутом BYPASS_AWB_TOKEN
+    """Пытается загрузить токен обхода AWB только из модуля `_embedded_secrets`.
     Возвращает True, если токен найден.
     """
     global BYPASS_TOKEN
     try:
-        token = (os.environ.get('BYPASS_AWB_TOKEN', '') or '').strip().lower()
-        if not token:
-            # сначала пробуем модуль рядом со скриптом: _embedded_secrets.py
-            try:
-                import _embedded_secrets as _sec  # type: ignore
-                token = (getattr(_sec, 'BYPASS_AWB_TOKEN', '') or '').strip().lower()
-            except Exception:
-                # затем пробуем как подпакет (если есть __init__.py)
-                try:
-                    from wikicat_tool import _embedded_secrets as _sec  # type: ignore
-                    token = (getattr(_sec, 'BYPASS_AWB_TOKEN', '') or '').strip().lower()
-                except Exception:
-                    token = ''
+        token = ''
+        # Сначала пробуем модуль рядом со скриптом: _embedded_secrets.py
+        try:
+            import _embedded_secrets as _sec
+            token = (getattr(_sec, 'BYPASS_AWB_TOKEN', '') or '').strip().lower()
+        except Exception:
+            token = ''
         if token:
             BYPASS_TOKEN = token
             debug('Bypass token loaded from embedded source')
@@ -181,21 +155,14 @@ def try_load_bypass_awb_from_embedded() -> bool:
     return False
 
 def maybe_auto_activate_bypass(ui: 'MainWindow') -> None:
-    """Если задана переменная окружения BYPASS_AWB_AUTO='1' или в модуле
-    wikicat_tool._embedded_secrets установлен флаг AUTO_ACTIVATE=True, включает обход сразу."""
+    """Если в модуле `_embedded_secrets` установлен флаг `AUTO_ACTIVATE=True`, включает обход сразу."""
     try:
-        auto_env = (os.environ.get('BYPASS_AWB_AUTO', '') or '').strip()
-        auto = auto_env in {'1', 'true', 'yes'}
-        if not auto:
-            try:
-                import _embedded_secrets as _sec  # type: ignore
-                auto = bool(getattr(_sec, 'AUTO_ACTIVATE', False))
-            except Exception:
-                try:
-                    from wikicat_tool import _embedded_secrets as _sec  # type: ignore
-                    auto = bool(getattr(_sec, 'AUTO_ACTIVATE', False))
-                except Exception:
-                    auto = False
+        auto = False
+        try:
+            import _embedded_secrets as _sec
+            auto = bool(getattr(_sec, 'AUTO_ACTIVATE', False))
+        except Exception:
+            auto = False
         if auto and not is_bypass_awb():
             set_bypass_awb(True)
             try:
@@ -212,7 +179,7 @@ def debug(msg: str):
     if DEBUG_VIEW is not None:
         DEBUG_VIEW.appendPlainText(DEBUG_BUFFER[-1])
 
-# ---------- default edit summary ---------- #
+# ===== Default Edit Summary =====
 
 def default_summary(lang: str) -> str:
     mapping = {
@@ -226,7 +193,7 @@ def default_summary(lang: str) -> str:
     }
     return mapping.get(lang, 'Consistency content replacement')
 
-# ---------- default creation summary ---------- #
+# ===== Default Creation Summary =====
 def default_create_summary(lang: str) -> str:
     mapping = {
         'ru': 'Создание новой категории с заготовленным содержимым',
@@ -239,7 +206,7 @@ def default_create_summary(lang: str) -> str:
     }
     return mapping.get(lang, 'Category creation with prepared content')
 
-# ---------- project helpers (family/host/url) ---------- #
+# ===== Project Helpers =====
 def build_host(family: str, lang: str) -> str:
     fam = (family or 'wikipedia').strip()
     lng = (lang or 'ru').strip()
@@ -265,13 +232,23 @@ def build_api_url(family: str, lang: str) -> str:
 def build_project_awb_url(family: str, lang: str) -> str:
     return f"https://{build_host(family, lang)}/wiki/Project:AutoWikiBrowser/CheckPageJSON"
 
-# ---------- namespace helpers (local prefixes via API; cached) ---------- #
+# ===== Namespace Helpers =====
 NS_CACHE: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
 DEFAULT_LANGS: set[str] = {'ru', 'uk', 'be', 'en', 'fr', 'es', 'de'}
 
-# Предзаданные локальные префиксы для популярных языков/проектов (fallback при недоступном API)
-# Структура: {(family, lang): { ns_id: { 'primary': str, 'all': {lower_prefixes...} }}}
+# Предзаданные локальные префиксы для популярных языков/проектов
 DEFAULT_NS_PREFIXES: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
+
+# Общая справка о префиксах для tooltip
+PREFIX_TOOLTIP = (
+    "Для любого языка локальные префиксы автоматически\n"
+    "подгружаются из API и кэшируются.\n\n"
+    "«Авто» — не изменяет заголовки и распознаёт все префиксы\n"
+    "При выборе конкретного пространства имён\n"
+    "префикс подставляется на локальном языке\n\n"
+    "Английские префиксы в исходных данных\n"
+    "также корректно распознаются"
+)
 
 def _ns_cache_dir() -> str:
     base = _dist_configs_dir()
@@ -294,7 +271,7 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
     key = (family, lang)
     if key in NS_CACHE:
         return NS_CACHE[key]
-    # 1) Попробуем загрузить из дискового кэша
+    # Загрузка из дискового кэша
     cache_path = _ns_cache_file(family, lang)
     try:
         if os.path.isfile(cache_path):
@@ -322,7 +299,7 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
                     return restored
     except Exception:
         pass
-    # 2) Запрос к API и сохранение в кэш
+    # Запрос к API и сохранение в кэш
     url = build_api_url(family, lang)
     params = {
         'action': 'query', 'meta': 'siteinfo', 'siprop': 'namespaces|namespacealiases', 'format': 'json'
@@ -340,7 +317,7 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
                 ns_id = int(sid)
             except Exception:
                 continue
-            # пропускаем парные пространства обсуждений (нечётные ns) и отрицательные ns
+            # Пропускаем пространства обсуждений (нечётные ns) и отрицательные ns
             if ns_id % 2 == 1 or ns_id < 0:
                 continue
             names: set[str] = set()
@@ -371,7 +348,7 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
         prefixes_by_id = {}
     if prefixes_by_id:
         NS_CACHE[key] = prefixes_by_id
-        # сохранить дисковый кэш
+        # Сохранение дискового кэша
         try:
             to_dump = {str(k): {'primary': str(v.get('primary') or ''), 'all': sorted([s for s in (v.get('all') or set())])}
                        for k, v in prefixes_by_id.items()}
@@ -384,7 +361,7 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
         except Exception:
             pass
         return prefixes_by_id
-    # 3) Предзаданные префиксы (fallback, если API недоступно)
+    # Предзаданные префиксы (резервный вариант)
     preset = DEFAULT_NS_PREFIXES.get((family or '', lang or ''))
     if isinstance(preset, dict) and preset:
         NS_CACHE[key] = preset
@@ -422,7 +399,7 @@ def title_has_ns_prefix(family: str, lang: str, title: str, ns_ids: set[int]) ->
 
 def _has_en_prefix(title: str, ns_id: int) -> bool:
     lower = (title or '').lstrip('\ufeff').casefold()
-    # base English prefix from DEFAULT_EN_NS
+
     base = (DEFAULT_EN_NS.get(ns_id) or '').strip()
     candidates: set[str] = set()
     if base:
@@ -431,18 +408,18 @@ def _has_en_prefix(title: str, ns_id: int) -> bool:
     return any(lower.startswith(p) for p in candidates) if candidates else False
 
 def has_prefix_by_policy(family: str, lang: str, title: str, ns_ids: set[int]) -> bool:
-    # сначала проверяем локальные префиксы
+    # Сначала проверяем локальные префиксы
     if title_has_ns_prefix(family, lang, title, ns_ids):
         return True
-    # затем английские
+    # Затем английские
     return any(_has_en_prefix(title, ns) for ns in ns_ids)
 
 def get_policy_prefix(family: str, lang: str, ns_id: int, default_en: str) -> str:
-    # если локальный основной известен — используем его
+    # Если локальный основной известен — используем его
     local = get_primary_ns_prefix(family, lang, ns_id, '')
     if local:
         return local if local.endswith(':') else local + ':'
-    # fallback — английский
+    # Резервный вариант — английский
     return default_en if default_en.endswith(':') else default_en + ':'
 
 def _ensure_title_with_ns(title: str, family: str, lang: str, ns_id: int, default_en: str) -> str:
@@ -476,11 +453,11 @@ def normalize_title_by_selection(title: str, family: str, lang: str, selection: 
 
     if ns_id == 0:
         return base_title
-    # Подставляем локальный основной (fallback: английский из DEFAULT_EN_NS)
+    # Подставляем локальный основной префикс (резерв: английский из DEFAULT_EN_NS)
     default_en = DEFAULT_EN_NS.get(ns_id, '')
     return _ensure_title_with_ns(base_title, family, lang, ns_id, default_en)
 
-# ---------- UI helpers ---------- #
+# ===== UI Helpers =====
 def _common_ns_ids() -> list[int]:
     # Подсчитываем в скольких языках встречается каждый NS-ID
     counts: dict[int, int] = {}
@@ -511,7 +488,7 @@ def _adjust_combo_popup_width(combo) -> None:
             w = fm.horizontalAdvance(text)
             if w > max_w:
                 max_w = w
-        # запас на отступы/скроллбар
+
         max_w += 48
         try:
             view.setMinimumWidth(max_w)
@@ -525,16 +502,16 @@ def _populate_ns_combo(combo, family: str, lang: str) -> None:
         combo.clear()
     except Exception:
         pass
-    # Базовые элементы
+
     combo.addItem('Авто', 'auto')
     combo.addItem('(нет) [0]', 0)
 
-    # Берём реальные данные: сначала из кэша/диска/АПИ, затем fallback
+
     info = _load_ns_info(family or 'wikipedia', lang or 'ru')
     if info:
         ns_ids = sorted(info.keys())
     else:
-        # неизвестный язык без API → показываем только часто встречающиеся NS
+
         ns_ids = _common_ns_ids()
 
     for ns_id in ns_ids:
@@ -544,20 +521,19 @@ def _populate_ns_combo(combo, family: str, lang: str) -> None:
         combo.addItem(label, ns_id)
     _adjust_combo_popup_width(combo)
 
-# путь к файлу с авторизацией рядом с exe/скриптом
+
 def cred_path():
-    # Больше не используем credentials.txt; функция оставлена для совместимости, но не вызывается
+
     base = tool_base_dir()
     return os.path.join(base, 'credentials.txt')
 
-# ---- pywikibot config helpers (single shared config) ---- #
+# ===== Pywikibot Config Helpers =====
 def _dist_configs_dir() -> str:
     """Фактическая папка configs рядом с exe/скриптом (для записи файлов)."""
     base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else tool_base_dir()
     return os.path.join(base, 'configs')
 
 def config_base_dir() -> str:
-    # Используем env, если задана корректная папка; иначе — реальную папку рядом с exe
     cfg = os.environ.get('PYWIKIBOT_DIR')
     if cfg and os.path.isabs(cfg):
         return cfg
@@ -567,7 +543,7 @@ def write_pwb_credentials(lang: str, username: str, password: str, family: str =
     cfg_dir = _dist_configs_dir()
     os.makedirs(cfg_dir, exist_ok=True)
     uc_path = os.path.join(cfg_dir, 'user-config.py')
-    # Parse existing usernames mapping for selected family
+
     usernames_map: dict[str, str] = {}
     if os.path.isfile(uc_path):
         try:
@@ -578,9 +554,9 @@ def write_pwb_credentials(lang: str, username: str, password: str, family: str =
                 usernames_map[m.group(1)] = m.group(2)
         except Exception:
             usernames_map = {}
-    # Update or insert current language
+
     usernames_map[lang] = username
-    # Build content in fixed order
+
     lines = [
         f"family = '{family}'",
         f"mylang = '{lang}'",
@@ -591,7 +567,7 @@ def write_pwb_credentials(lang: str, username: str, password: str, family: str =
     debug(f"Write user-config.py → {uc_path}")
     with open(uc_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines) + "\n")
-    # Write password file for the active account
+
     up_path = os.path.join(cfg_dir, 'user-password.py')
     debug(f"Write user-password.py → {up_path}")
     with open(up_path, 'w', encoding='utf-8') as f:
@@ -600,7 +576,7 @@ def write_pwb_credentials(lang: str, username: str, password: str, family: str =
 def apply_pwb_config(lang: str, family: str = 'wikipedia') -> str:
     cfg_dir = _dist_configs_dir()
     os.makedirs(cfg_dir, exist_ok=True)
-    # ensure throttle control file exists to satisfy pywikibot throttling subsystem
+
     try:
         throttle_path = os.path.join(cfg_dir, 'throttle.ctrl')
         if not os.path.isfile(throttle_path):
@@ -608,6 +584,7 @@ def apply_pwb_config(lang: str, family: str = 'wikipedia') -> str:
                 _f.write('')
     except Exception:
         pass
+
     os.environ['PYWIKIBOT_DIR'] = cfg_dir
     pwb_config.base_dir = cfg_dir
     pwb_config.family = family
@@ -737,7 +714,7 @@ def reset_pywikibot_session(lang: str | None = None) -> None:
             if lang is None:
                 sites.clear()
             else:
-                # удалить все сайты выбранного языка в текущем семействе
+
                 fam = getattr(pwb_config, 'family', 'wikipedia')
                 for k in list(sites.keys()):
                     try:
@@ -750,11 +727,11 @@ def reset_pywikibot_session(lang: str | None = None) -> None:
     except Exception:
         pass
 
-# -------------------- backend helpers -------------------- #
+# ===== Backend Helpers =====
 
 DEFAULT_EN_NS: dict[int, str] = {
-    # Common (>= 3 wikis): always recognized and used for normalization when NS selected
-    0:    'Main:',        # recognition only; never added
+    # Основные пространства имён
+    0:    'Main:',
     2:    'User:',
     4:    'Wikipedia:',
     6:    'File:',
@@ -763,18 +740,17 @@ DEFAULT_EN_NS: dict[int, str] = {
     12:   'Help:',
     14:   'Category:',
     100:  'Portal:',
-    102:  'Incubator:',   # not on enwiki, used on multiple wikis
-    104:  'Project:',     # not on enwiki, used on multiple wikis
+    102:  'Incubator:',
+    104:  'Project:',
     710:  'TimedText:',
     828:  'Module:',
     1728: 'Event:',
-    # ------------------------------------------------------------
-    # Rare (<= 2 wikis): recognized but considered less common
-    118:  'Draft:',       # [enwiki, ukwiki]
-    126:  'MOS:',         # [enwiki]
+    # Редкие пространства имён
+    118:  'Draft:',
+    126:  'MOS:',
 }
 
-# English prefix aliases (lowercased) recognized across all languages
+# Английские алиасы префиксов
 EN_PREFIX_ALIASES: dict[int, set[str]] = {
     0: {'main:', 'article:'},
     2: {'user:'},
@@ -841,7 +817,7 @@ def write_row(title, lines, writer):
     with write_lock:
         writer.writerow([title, *lines])
 
-# -------------------- worker threads -------------------- #
+# ===== Worker Threads =====
 
 class ParseWorker(QThread):
     progress = Signal(str)
@@ -867,7 +843,8 @@ class ParseWorker(QThread):
                 for title in self.titles:
                     if self._stop:
                         break
-                    # ограничиваем количество одновременных задач
+
+                    # Ограничиваем количество одновременных задач
                     while len(in_flight) >= max_workers:
                         done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
                         for fut in done:
@@ -881,13 +858,13 @@ class ParseWorker(QThread):
                         break
                     in_flight.add(pool.submit(self.process, title, writer))
 
-                # дождаться завершения оставшихся задач (их не больше max_workers)
+                # Дождаться завершения оставшихся задач
                 for fut in in_flight:
                     try:
                         fut.result()
                     except Exception:
                         pass
-        # завершение потока вызовет встроенный сигнал QThread.finished автоматически
+
 
     def process(self, title, writer):
         if self._stop:
@@ -931,7 +908,7 @@ class ReplaceWorker(QThread):
                     if not ok_awb:
                         self.progress.emit(f"AWB доступ отсутствует: {msg_awb}")
                         return
-                # Конфиг и пароль уже сохраняются во вкладке авторизации
+
                 site.login(user=self.username)
             except Exception as e:
                 self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
@@ -944,11 +921,12 @@ class ReplaceWorker(QThread):
                     break
                 if len(row) < 2:
                     continue
-                # Нормализуем заголовок и строки: убираем пробелы и возможный BOM
+
                 raw_title = row[0] if row[0] is not None else ''
+                # Нормализуем заголовок и строки: убираем пробелы и возможный BOM
                 title = raw_title.strip().lstrip('\ufeff')
                 lines = [(s or '').lstrip('\ufeff') for s in row[1:]]
-                # нормализуем по выбору пользователя (Авто/Категория/Шаблон/Статья)
+                # Нормализуем по выбору пользователя (Авто/Категория/Шаблон/Статья)
                 norm_title = normalize_title_by_selection(title, self.family, self.lang, self.ns_sel)
                 page = pywikibot.Page(site, norm_title)
                 if page.exists():
@@ -957,7 +935,7 @@ class ReplaceWorker(QThread):
                     self.progress.emit(f"{title}: записано {len(lines)} строк")
                 else:
                     self.progress.emit(f"{title}: страница отсутствует")
-        # завершение потока вызовет встроенный сигнал QThread.finished автоматически
+
 
 class CreateWorker(QThread):
     progress = Signal(str)
@@ -992,7 +970,7 @@ class CreateWorker(QThread):
                 self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
                 return
         try:
-            # Читаем как utf-8-sig и снимаем BOM, чтобы первая строка не получала двойной префикс
+
             with open(self.tsv_path, newline='', encoding='utf-8-sig') as f:
                 reader = csv.reader(f, delimiter='\t')
                 for row in reader:
@@ -1003,7 +981,7 @@ class CreateWorker(QThread):
                     raw_title = row[0] if row[0] is not None else ''
                     title = raw_title.strip().lstrip('\ufeff')
                     lines = [((s or '').lstrip('\ufeff')) for s in row[1:]]
-                    # нормализуем по выбору пользователя (Авто/Категория/Шаблон/Статья)
+    
                     norm_title = normalize_title_by_selection(title, self.family, self.lang, self.ns_sel)
                     page = pywikibot.Page(site, norm_title)
                     if not page.exists():
@@ -1014,12 +992,14 @@ class CreateWorker(QThread):
                         self.progress.emit(f"{title}: уже существует")
         except Exception as e:
             self.progress.emit(f"Ошибка: {e}")
-        # завершение потока вызовет встроенный сигнал QThread.finished автоматически
+
 
 class RenameWorker(QThread):
     progress = Signal(str)
+    template_review_request = Signal(object)
+    review_response = Signal(object)
 
-    def __init__(self, tsv_path, username, password, lang, family, ns_selection: str | int, leave_cat_redirect: bool, leave_other_redirect: bool):
+    def __init__(self, tsv_path, username, password, lang, family, ns_selection: str | int, leave_cat_redirect: bool, leave_other_redirect: bool, move_members: bool, find_in_templates: bool):
         super().__init__()
         self.tsv_path = tsv_path
         self.username = username
@@ -1029,7 +1009,17 @@ class RenameWorker(QThread):
         self.ns_sel = ns_selection
         self.leave_cat_redirect = leave_cat_redirect
         self.leave_other_redirect = leave_other_redirect
+        self.move_members = move_members
+        self.find_in_templates = find_in_templates
         self._stop = False
+
+        self._prompt_events: dict[int, Event] = {}
+        self._prompt_results: dict[int, str] = {}
+        self._req_seq = 0
+        try:
+            self.review_response.connect(self._on_review_response)
+        except Exception:
+            pass
 
     def request_stop(self):
         self._stop = True
@@ -1037,7 +1027,7 @@ class RenameWorker(QThread):
     def run(self):
         site = pywikibot.Site(self.lang, self.family)
         debug(f'Login attempt rename lang={self.lang}')
-        # Авторизация, если указаны логин/пароль
+
         if self.username and self.password:
             try:
                 if not is_bypass_awb():
@@ -1062,9 +1052,7 @@ class RenameWorker(QThread):
                         continue
                     old_name_raw, new_name_raw, reason = [((c or '').strip().lstrip('\ufeff')) for c in row[:3]]
 
-                    # Нормализация имён по выбору пользователя:
-                    # - 'Авто' → оставляем как есть
-                    # - конкретный NS → добавляем английский префикс из DEFAULT_EN_NS, если отсутствует
+                    # Нормализация имён по выбору пользователя
                     sel = self.ns_sel
                     is_category = False
                     try:
@@ -1086,10 +1074,16 @@ class RenameWorker(QThread):
 
                     leave_redirect = self.leave_cat_redirect if is_category else self.leave_other_redirect
                     self._move_page(site, old_name, new_name, reason, leave_redirect)
+                    # Если это категория и опция переноса включена — переносим участников
+                    if is_category and self.move_members and not self._stop:
+                        try:
+                            self._move_category_members(site, old_name, new_name)
+                        except Exception as e:
+                            self.progress.emit(f"Ошибка переноса содержимого категории '{old_name}': {e}")
         except Exception as e:
             self.progress.emit(f"Ошибка работы с файлом TSV: {e}")
         finally:
-            # завершение потока вызовет встроенный сигнал QThread.finished автоматически
+    
             pass
 
     def _move_page(self, site: pywikibot.Site, old_name: str, new_name: str, reason: str, leave_redirect: bool):
@@ -1102,6 +1096,7 @@ class RenameWorker(QThread):
             if new_page.exists():
                 self.progress.emit(f"Страница назначения '{new_name}' уже существует.")
                 return
+
             # noredirect=True означает НЕ оставлять редирект
             page.move(new_name, reason=reason, movetalk=True, noredirect=not leave_redirect)
             redir_status = "с редиректом" if leave_redirect else "без редиректа"
@@ -1109,9 +1104,278 @@ class RenameWorker(QThread):
         except Exception as e:
             self.progress.emit(f"Ошибка при переименовании '{old_name}' → '{new_name}': {e}")
 
-# -------------------- login worker (avoid UI freeze) -------------------- #
+    def _cat_prefixes(self, family: str, lang: str) -> set[str]:
+        info = _load_ns_info(family, lang)
+        prefs = set(info.get(14, {}).get('all') or set())
+        prefs |= set(EN_PREFIX_ALIASES.get(14, set()))
+        return {(p if str(p).endswith(':') else str(p) + ':').lower() for p in prefs}
+
+    def _strip_cat_prefix(self, title: str, family: str, lang: str) -> str:
+        t = (title or '').lstrip('\ufeff').strip()
+        lower = t.casefold()
+        for p in sorted(self._cat_prefixes(family, lang), key=len, reverse=True):
+            if lower.startswith(p):
+                return t[len(p):].lstrip()
+        return t
+
+    def _replace_category_links_in_text(self, text: str, family: str, lang: str, old_cat_full: str, new_cat_full: str) -> tuple[str, int]:
+        old_base = self._strip_cat_prefix(old_cat_full, family, lang)
+        new_base = self._strip_cat_prefix(new_cat_full, family, lang)
+        prefixes = self._cat_prefixes(family, lang)
+        name_group = '(?:' + '|'.join(re.escape(p[:-1]) for p in prefixes) + ')'
+
+        def esc_title_pat(t: str) -> str:
+            pat = re.escape(t)
+            pat = pat.replace(r'\ ', r'[ _]+').replace(r'\_', r'[ _]+')
+            return pat
+
+        pat_old = esc_title_pat(old_base)
+        rx = re.compile(r'\[\[\s*(' + name_group + r')\s*:\s*' + pat_old + r'\s*(\|[^]]*)?\]\]', re.IGNORECASE)
+
+        count = 0
+        def repl(m):
+            nonlocal count
+            count += 1
+            pref = m.group(1)
+            tail = m.group(2) or ''
+            return f'[[{pref}:{new_base}{tail}]_]'.replace(']_', ']]')
+
+        new_text, _ = rx.subn(repl, text)
+        return new_text, count
+
+    def _find_template_param_category(self, text: str, old_cat_full: str) -> list[str]:
+        """Грубый поиск вхождений old_cat_full внутри шаблонов {{...}} как значения параметра.
+        Возвращает список строк полных вызовов шаблонов, где найдено совпадение.
+        """
+        results: list[str] = []
+        seen: set[str] = set()
+        if not old_cat_full:
+            return results
+        start_pos = 0
+        while True:
+            idx = text.find(old_cat_full, start_pos)
+            if idx == -1:
+                break
+
+            l = text.rfind('{{', 0, idx)
+            r = text.find('}}', idx)
+            if l != -1 and r != -1 and r > l:
+                chunk = text[l:r+2]
+                if '|' in chunk:
+                    if chunk not in seen:
+                        seen.add(chunk)
+                        results.append(chunk)
+            start_pos = idx + len(old_cat_full)
+        return results
+
+    def _on_review_response(self, payload: object) -> None:
+        try:
+            data = payload or {}
+            req_id = int(data.get('request_id'))
+            action = str(data.get('action') or '')
+            ev = self._prompt_events.get(req_id)
+            if ev is not None:
+                self._prompt_results[req_id] = action
+                ev.set()
+        except Exception:
+            pass
+
+    def _prompt_user_template_replace(self, page_title: str, template_str: str, old_full: str, new_full: str) -> str:
+        """Синхронно запрашивает у пользователя подтверждение. Возвращает 'confirm'|'skip'|'cancel'."""
+        try:
+            self._req_seq += 1
+            req_id = self._req_seq
+            ev = Event()
+            self._prompt_events[req_id] = ev
+            self._prompt_results[req_id] = ''
+            self.template_review_request.emit({
+                'request_id': req_id,
+                'page_title': page_title,
+                'template': template_str,
+                'old_full': old_full,
+                'new_full': new_full,
+            })
+
+            while not self._stop and not ev.wait(0.1):
+                pass
+            action = self._prompt_results.get(req_id, '')
+
+            self._prompt_events.pop(req_id, None)
+            self._prompt_results.pop(req_id, None)
+            return action or 'skip'
+        except Exception:
+            return 'skip'
+
+    def _move_category_members(self, site: pywikibot.Site, old_name: str, new_name: str):
+        family, lang = self.family, self.lang
+        old_full = _ensure_title_with_ns(old_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
+        new_full = _ensure_title_with_ns(new_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
+
+        try:
+            if not pywikibot.Page(site, new_full).exists():
+                self.progress.emit(f"Новая категория '{new_full}' не найдена — перенос участников пропущен.")
+                return
+        except Exception:
+            pass
+
+        api = build_api_url(family, lang)
+        params = {
+            'action': 'query',
+            'list': 'categorymembers',
+            'cmtitle': old_full,
+            'cmlimit': 'max',
+            'cmprop': 'title',
+            'format': 'json'
+        }
+        moved_direct = 0
+        moved_via_template = 0
+        backlog: list[str] = []
+        backlog_seen: set[str] = set()
+
+
+        while not self._stop:
+            _rate_wait()
+            r = REQUEST_SESSION.get(api, params=params, timeout=20, headers=REQUEST_HEADERS)
+            if r.status_code != 200:
+                self.progress.emit(f"Ошибка API при получении участников категории '{old_full}': HTTP {r.status_code}")
+                break
+            data = r.json()
+            members = [m.get('title') for m in data.get('query', {}).get('categorymembers', []) if m.get('title')]
+            for title in members:
+                if self._stop:
+                    break
+                try:
+                    any_changed = False
+                    targets = {title}
+                    try:
+                        page_obj = pywikibot.Page(site, title)
+                        ns_id = page_obj.namespace().id
+                    except Exception:
+                        ns_id = None
+
+                    if isinstance(ns_id, int) and ns_id in (10, 828):  # Template:, Module:
+                        if title.endswith('/doc'):
+                            base = title[:-4]
+                            targets.add(base)
+                        else:
+                            targets.add(f"{title}/doc")
+
+                    for t in targets:
+                        if self._stop:
+                            break
+                        try:
+                            page = pywikibot.Page(site, t)
+                            if not page.exists():
+                                continue
+                            txt = page.text
+                            new_txt, cnt = self._replace_category_links_in_text(txt, family, lang, old_full, new_full)
+                            if cnt > 0 and new_txt != txt:
+                                page.text = new_txt
+                                page.save(summary=f"Перенос категории: [[{old_full}]] → [[{new_full}]]", minor=True)
+                                any_changed = True
+                                moved_direct += 1
+
+                                try:
+                                    nsid = page.namespace().id
+                                    typ = 'категория' if nsid == 14 else 'статья'
+                                except Exception:
+                                    typ = 'страница'
+                                self.progress.emit(f"→ {new_full} → {t}: {typ} перенесена")
+                        except Exception as e:
+                            self.progress.emit(f"{t}: ошибка переноса категории: {e}")
+                    if not any_changed and title not in backlog_seen:
+                        backlog.append(title)
+                        backlog_seen.add(title)
+                except Exception as e:
+                    self.progress.emit(f"{title}: ошибка обработки: {e}")
+            if 'continue' in data:
+                params.update(data['continue'])
+            else:
+                break
+
+        if self._stop:
+            return
+
+        if backlog and self.find_in_templates:
+            self.progress.emit(f"Не удалось авто-перенести: {len(backlog)} страниц(ы). Требуются ручные действия.")
+
+        # Фаза 2: поиск в параметрах шаблонов с подтверждением пользователя
+        for title in (backlog if self.find_in_templates else []):
+            if self._stop:
+                break
+            try:
+                page = pywikibot.Page(site, title)
+                if not page.exists():
+                    continue
+                txt = page.text
+                visited = set()
+                while not self._stop:
+                    candidates = self._find_template_param_category(txt, old_full)
+                    candidates = [c for c in candidates if c not in visited]
+                    if not candidates:
+                        break
+                    tmpl = candidates[0]
+                    visited.add(tmpl)
+                    decision = self._prompt_user_template_replace(title, tmpl, old_full, new_full)
+                    if decision == 'cancel':
+                        self._stop = True
+                        break
+                    if decision == 'confirm':
+                        try:
+                            new_tmpl = tmpl.replace(old_full, new_full)
+                            new_txt = txt.replace(tmpl, new_tmpl, 1)
+                            if new_txt != txt:
+                                page.text = new_txt
+                                page.save(summary=f"Перенос категории (через параметр шаблона): [[{old_full}]] → [[{new_full}]]", minor=True)
+                                txt = new_txt
+                                moved_via_template += 1
+                                try:
+                                    nsid = page.namespace().id
+                                    typ = 'категория' if nsid == 14 else 'статья'
+                                except Exception:
+                                    typ = 'страница'
+                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                        except Exception as e:
+                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                    # skip => продолжаем к следующему кандидату
+            except Exception as e:
+                self.progress.emit(f"{title}: ошибка обработки на ручной фазе: {e}")
+
+        if self._stop:
+            return
+
+        # Итоговая проверка: сколько осталось в старой категории
+        remaining = 0
+        try:
+            params2 = {
+                'action': 'query',
+                'list': 'categorymembers',
+                'cmtitle': old_full,
+                'cmlimit': 'max',
+                'cmprop': 'ids',
+                'format': 'json'
+            }
+            while True:
+                _rate_wait()
+                r2 = REQUEST_SESSION.get(api, params=params2, timeout=20, headers=REQUEST_HEADERS)
+                if r2.status_code != 200:
+                    break
+                data2 = r2.json()
+                remaining += len(data2.get('query', {}).get('categorymembers', []) or [])
+                if 'continue' in data2:
+                    params2.update(data2['continue'])
+                else:
+                    break
+        except Exception:
+            remaining = -1
+
+        self.progress.emit(
+            f"Перенос завершён: авто={moved_direct}, по подтверждению={moved_via_template}, осталось={remaining if remaining>=0 else 'неизвестно'}"
+        )
+
+# ===== Login Worker =====
 class LoginWorker(QThread):
-    success = Signal(str, str, str)  # username, lang, family
+    success = Signal(str, str, str)
     failure = Signal(str)
 
     def __init__(self, username: str, password: str, lang: str, family: str):
@@ -1127,9 +1391,9 @@ class LoginWorker(QThread):
             cfg_dir = apply_pwb_config(self.lang, self.family)
             _delete_all_cookies(cfg_dir)
             reset_pywikibot_session(self.lang)
-            # ограничим таймауты сетевых запросов pywikibot
+            # Ограничим таймауты сетевых запросов pywikibot
             try:
-                pwb_config.socket_timeout = 20  # seconds
+                pwb_config.socket_timeout = 20
             except Exception:
                 pass
             site = pywikibot.Site(self.lang, self.family)
@@ -1153,36 +1417,31 @@ class LoginWorker(QThread):
         except Exception as e:
             self.failure.emit(f"{type(e).__name__}: {e}")
 
-# -------------------- main window -------------------- #
+# ===== Main Window =====
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Wiki Category Tool')
-        # используем иконку по умолчанию системы
-        self.setMinimumSize(800, 600)
+
+        self.setMinimumSize(1200, 700)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
-        # текущая сессия
+
         self.current_user = None
         self.current_lang = None
-        # скрытый флаг обхода AWB: буфер для секрета
         self._secret_buffer = ''
-        # признак временного закрепления окна сверху
         self._stay_on_top_active = False
-        # ---- tabs ---- #
+
         self.init_auth_tab()
-        # Попытка загрузить обход из встроенного секрета и/или файла-ключа
         try_load_bypass_awb_from_embedded()
-        try_load_bypass_awb_from_file()
-        # По флагу можно авто-включить обход
         maybe_auto_activate_bypass(self)
         self.init_parse_tab()
         self.init_replace_tab()
         self.init_create_tab()
-        self.init_rename_tab()  # New tab for mass rename
+        self.init_rename_tab()
 
-    # ---- info button helper ---- #
+
     def _add_info_button(self, host_layout, text: str):
         """Insert an ℹ button aligned to the top-right of *host_layout*.
 
@@ -1191,38 +1450,38 @@ class MainWindow(QMainWindow):
         btn = QToolButton()
         btn.setText('ℹ')
         btn.setAutoRaise(True)
-        btn.setToolTip(text)  # quick hint on hover
+        btn.setToolTip(text)
         btn.clicked.connect(lambda _=None, t=text: QMessageBox.information(self, 'Справка', t))
 
-        # Если это горизонтальный контейнер, ставим кнопку прямо в нём.
+
         if isinstance(host_layout, QHBoxLayout):
             host_layout.addStretch()
             host_layout.addWidget(btn)
-        else:  # для вертикального — создаём отдельный верхний ряд
+        else:
             row = QHBoxLayout()
             row.addStretch()
             row.addWidget(btn)
             host_layout.insertLayout(0, row)
         return btn
 
-    # ---- tabs ---- #
+
     def init_auth_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         self.user_edit = QLineEdit(); self.user_edit.setPlaceholderText('Имя пользователя')
         self.pass_edit = QLineEdit(); self.pass_edit.setPlaceholderText('Пароль'); self.pass_edit.setEchoMode(QLineEdit.Password)
-        # выбор языка проекта по центру
+
         layout_form = QVBoxLayout()
         layout_form.setAlignment(Qt.AlignHCenter)
         layout_form.setSpacing(4)
-        # Верхний растягивающий блок для вертикального центрирования
+
         layout.addStretch(1)
         layout.addLayout(layout_form)
-        # Нижний растягивающий блок
+
         layout.addStretch(2)
         layout.setContentsMargins(0, 10, 0, 10)
 
-        # строка языка + справка
+
         lang_help = (
             'Можно вручную ввести любой код языка.\n'
             'Для большинства языков локальные префиксы определяются автоматически через кэш/API.'
@@ -1238,7 +1497,7 @@ class MainWindow(QMainWindow):
         self.prev_lang = 'ru'
         self.lang_combo.currentTextChanged.connect(self._on_lang_change)
         row_lang.addWidget(self.lang_combo)
-        # info button без растяжки — оставляем ряд компактным
+
         info_btn = QToolButton(); info_btn.setText('ℹ'); info_btn.setAutoRaise(True)
         info_btn.setToolTip(lang_help)
         info_btn.clicked.connect(lambda _=None: QMessageBox.information(self, 'Справка', lang_help))
@@ -1246,7 +1505,7 @@ class MainWindow(QMainWindow):
         layout_form.addLayout(row_lang)
         layout_form.setAlignment(row_lang, Qt.AlignHCenter)
 
-        # строка выбора проекта (family)
+
         fam_help = (
             'Выберите проект: Wikipedia, Commons или иной (Wikibooks, Wiktionary, Wikiquote, Wikisource, '
             'Wikiversity, Wikidata, Wikifunctions, Wikivoyage, Wikinews, Meta, MediaWiki).\n\n'
@@ -1258,7 +1517,7 @@ class MainWindow(QMainWindow):
         fam_label = QLabel('Проект:')
         row_fam.addWidget(fam_label)
         self.family_combo = QComboBox(); self.family_combo.setEditable(False)
-        # Список: wikipedia, commons, затем разделитель, затем остальные по алфавиту
+
         primary = ['wikipedia', 'commons']
         others = sorted([
             'wikibooks', 'wiktionary', 'wikiquote',
@@ -1267,11 +1526,9 @@ class MainWindow(QMainWindow):
             'wikivoyage', 'wikinews',
             'meta', 'mediawiki'
         ])
-        # добавляем первые элементы
+
         self.family_combo.addItems(primary)
-        # нативный разделитель (серая линия, не выделяется)
         self.family_combo.insertSeparator(self.family_combo.count())
-        # остальные по алфавиту
         self.family_combo.addItems(others)
         self.family_combo.setCurrentText('wikipedia')
         self.family_combo.setMaximumWidth(250)
@@ -1282,7 +1539,7 @@ class MainWindow(QMainWindow):
         row_fam.addWidget(fam_btn)
         layout_form.addLayout(row_fam)
         layout_form.setAlignment(row_fam, Qt.AlignHCenter)
-        # При смене проекта тоже пересобираем списки префиксов
+
         try:
             self.family_combo.currentTextChanged.connect(lambda fam: [
                 _populate_ns_combo(self.ns_combo_parse, fam, (self.lang_combo.currentText() or 'ru')),
@@ -1297,45 +1554,44 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # поля логина/пароля под языком
+
         self.user_edit.setMinimumWidth(250)
         self.pass_edit.setMinimumWidth(250)
         layout_form.addWidget(self.user_edit, alignment=Qt.AlignHCenter)
         layout_form.addWidget(self.pass_edit, alignment=Qt.AlignHCenter)
         self.login_btn = QPushButton('Авторизоваться')
         self.login_btn.clicked.connect(self.save_creds)
-        # Enter в полях логина/пароля запускает авторизацию
+
         try:
             self.user_edit.returnPressed.connect(self.save_creds)
             self.pass_edit.returnPressed.connect(self.save_creds)
         except Exception:
             pass
         self.status_label = QLabel('Авторизация (pywikibot)')
-        # Разрешаем кликабельные ссылки в статусе
+
         try:
             self.status_label.setTextFormat(Qt.RichText)
             self.status_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
             self.status_label.setOpenExternalLinks(True)
         except Exception:
             pass
-        # кнопка смены аккаунта — скрыта до успешной авторизации
+
         self.switch_btn = QPushButton('Сменить аккаунт')
         self.switch_btn.setVisible(False)
         self.switch_btn.clicked.connect(self.switch_account)
         layout_form.addWidget(self.login_btn, alignment=Qt.AlignHCenter)
         layout_form.addWidget(self.status_label, alignment=Qt.AlignHCenter)
         layout_form.addWidget(self.switch_btn, alignment=Qt.AlignHCenter)
-        # уменьшить расстояние между кнопкой и статусом
+
         layout_form.setStretchFactor(self.login_btn, 0)
-        # --- debug button at bottom-right ---
+
         dbg_btn = QPushButton('Debug'); dbg_btn.setFixedWidth(60)
         dbg_btn.clicked.connect(self.show_debug)
         layout.addWidget(dbg_btn, alignment=Qt.AlignRight | Qt.AlignBottom)
         self.tabs.addTab(tab, 'Авторизация')
-        # Дополнительная подробная справка выводится при наведении/нажатии на кнопку ℹ рядом с полем "Язык вики".
-        # Фильтр событий для секрета будет навешан на поле Debug-лога при его открытии
 
-    # ---- creds helpers ---- #
+
+
     def _creds_ok(self):
         return bool(self.user_edit.text().strip() and self.pass_edit.text().strip())
 
@@ -1358,7 +1614,7 @@ class MainWindow(QMainWindow):
         """Включает/выключает доступ к операциям записи в зависимости от допуска AWB.
         Оставляет доступной вкладку считывания.
         """
-        # Если включён режим обхода, считаем, что AWB есть
+
         if is_bypass_awb():
             has_awb = True
         lang = (self.current_lang or self.lang_combo.currentText() or 'ru').strip()
@@ -1368,7 +1624,6 @@ class MainWindow(QMainWindow):
             if is_bypass_awb():
                 self.status_label.setText(f'Авторизовано · <a href="{awb_url}">AWB</a>: обход включён')
             else:
-                # если страница AWB отсутствует — права не требуются
                 text = 'есть'
                 try:
                     if note and ('отсутств' in note.lower() or 'not exist' in note.lower()):
@@ -1378,7 +1633,7 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f'Авторизовано · <a href="{awb_url}">AWB</a>: {text}')
         else:
             self.status_label.setText(f'Авторизовано. Требуется получить доступ к <a href="{awb_url}">AWB</a>')
-        # Управление кнопками запуска опасных операций
+
         for btn_name in ('replace_btn', 'create_btn', 'rename_btn'):
             try:
                 btn = getattr(self, btn_name, None)
@@ -1400,20 +1655,20 @@ class MainWindow(QMainWindow):
             note = detail if not is_bypass_awb() else None
         except Exception:
             note = None
-        # если включён bypass из файла — сразу обновим UI
+
         if is_bypass_awb():
             self._set_awb_ui(True)
         else:
             self._set_awb_ui(ok_awb, note)
         QMessageBox.information(self, 'OK', 'Авторизация прошла успешно.')
-        # гарантируем возвращение окна на передний план (на случай кражи фокуса)
+
         try:
             self.raise_(); self.activateWindow()
         except Exception:
             pass
-        # вернуть обычное поведение окон чуть позже, чтобы перекрыть возможный увод фокуса
+
         self._force_on_top(False, delay_ms=600)
-        # повторно восстановить фокус с небольшими задержками
+
         self._bring_to_front_sequence()
         self.login_btn.setEnabled(True)
 
@@ -1450,7 +1705,7 @@ class MainWindow(QMainWindow):
             self._force_on_top(False, delay_ms=600),
             self._bring_to_front_sequence()
         ])
-        # удерживаем ссылку, чтобы поток не был собран GC
+
         self._login_worker = worker
         worker.start()
 
@@ -1559,7 +1814,7 @@ class MainWindow(QMainWindow):
         fam = cur_family or (self.family_combo.currentText() or 'wikipedia')
         if cur_lang and (cur_lang in username_map) and password and cookies_exist(cfg_dir, username_map[cur_lang]):
             self._apply_cred_style(True)
-            # Показать индикатор AWB-доступа и включить/выключить кнопки
+
             try:
                 ok_awb, detail = is_user_awb_enabled(cur_lang, username_map[cur_lang], fam)
                 self._set_awb_ui(ok_awb, detail)
@@ -1570,117 +1825,131 @@ class MainWindow(QMainWindow):
 
     def init_parse_tab(self):
         tab = QWidget()
-        v = QVBoxLayout(tab)
-        # help text previously used in tooltip
+        main_layout = QVBoxLayout(tab)
+        
+        # Справочная информация
         parse_help = (
-            '1. Укажите корневую категорию (без префикса) и нажмите «Получить». Будут загружены все подкатегории.\n\n'
+            '1. Укажите корневую категорию и нажмите «Получить». Будут загружены все подкатегории.\n\n'
             '2. Список можно редактировать или загрузить из .txt (по одной строке).\n\n'
-            'Подсказка: Ctrl+клик по «Получить» — откроет категорию в PetScan с расширенными настройками.\n\n'
-            'Префиксы: для любого языка локальные префиксы автоматически подгружаются из API и кэшируются. '
-            '«Авто» — не изменяет заголовки; при выборе конкретного пространства префикс подставляется (англ.).'
+            'Подсказка: Ctrl+клик по «Получить» — откроет категорию в PetScan с расширенными настройками.'
         )
-        # --- layouts: left (список) and right (настройки) ---
+        
+        # === ГОРИЗОНТАЛЬНОЕ РАЗДЕЛЕНИЕ ===
         h_main = QHBoxLayout()
-        left = QVBoxLayout(); right = QVBoxLayout()
-        # Wrap each side into QWidget for stretch control
-        left_widget = QWidget(); left_widget.setLayout(left)
-        right_widget = QWidget(); right_widget.setLayout(right)
-
-        # --- row to fetch subcategories via Petscan (top of left) ---
-        row_cat = QHBoxLayout()
-        row_cat.addWidget(QLabel('Получить список подкатегорий:'))
-        self.cat_edit = QLineEdit(); self.cat_edit.setPlaceholderText('Название категории (без префикса)'); self.cat_edit.setMinimumWidth(260)
-        row_cat.addWidget(self.cat_edit)
+        
+        # === ЛЕВАЯ ПАНЕЛЬ: ВВОД ДАННЫХ ===
+        left_group = QGroupBox("Настройка и ввод данных")
+        left_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        left_layout = QVBoxLayout(left_group)
+        
+        # Префиксы пространства имён
+        prefix_layout = QHBoxLayout()
+        prefix_label = QLabel('Префиксы:')
+        prefix_label.setToolTip(PREFIX_TOOLTIP)
+        prefix_layout.addWidget(prefix_label)
+        self.ns_combo_parse = QComboBox()
+        self.ns_combo_parse.setEditable(False)
+        _populate_ns_combo(self.ns_combo_parse, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
+        prefix_layout.addWidget(self.ns_combo_parse)
+        prefix_layout.addStretch()
+        left_layout.addLayout(prefix_layout)
+        
+        # Получение подкатегорий
+        left_layout.addWidget(QLabel('<b>Получить подкатегории:</b>'))
+        petscan_input_layout = QHBoxLayout()
+        self.cat_edit = QLineEdit()
+        self.cat_edit.setPlaceholderText('Название корневой категории')
+        petscan_input_layout.addWidget(self.cat_edit, 1)
+        
         self.petscan_btn = QPushButton('Получить')
         self.petscan_btn.setToolTip('Клик — получить подкатегории через API.\nCtrl+клик — открыть Petscan с расширенными настройками')
         self.petscan_btn.clicked.connect(self.open_petscan)
-        row_cat.addWidget(self.petscan_btn)
-        left.addLayout(row_cat)
-
-        # label above manual list
-        left.addWidget(QLabel('<b>Список категорий для считывания содержимого:</b>'))
-
-        # --- Manual list input ---
+        petscan_input_layout.addWidget(self.petscan_btn)
+        left_layout.addLayout(petscan_input_layout)
+        
+        # Ручной ввод списка
+        left_layout.addWidget(QLabel('<b>Список категорий для считывания:</b>'))
         self.manual_list = QTextEdit()
-        self.manual_list.setPlaceholderText('По одному названию на строке')
-        self.manual_list.setMinimumHeight(140)
-        left.addWidget(self.manual_list, 1)
-
-        # --- file picker для list.txt (под списком) ---
-        # bold label for file input
-        left.addWidget(QLabel('<b>или укажите список файлом:</b>'))
-
-        h1 = QHBoxLayout()
-        # кнопка подсказки ставится в строку с радиокнопками
-        # (до добавления растяжки)
-        # выбор пространства (выпадающий список)
-        types = QHBoxLayout()
-        types.addWidget(QLabel('Префиксы:'))
-        self.ns_combo_parse = QComboBox(); self.ns_combo_parse.setEditable(False)
-        _populate_ns_combo(self.ns_combo_parse, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
-        types.addWidget(self.ns_combo_parse)
-
-        # Info button appended to same row
-        self._add_info_button(types, parse_help)
-        right.addLayout(types)
-
-        # file picker list.txt
+        self.manual_list.setPlaceholderText('По одному названию категории на строке')
+        self.manual_list.setMinimumHeight(220)
+        left_layout.addWidget(self.manual_list, 1)
+        
+        # Загрузка из файла
+        left_layout.addWidget(QLabel('<b>Или загрузить из файла:</b>'))
+        file_layout = QHBoxLayout()
+        file_layout.addWidget(QLabel('Файл (.txt):'))
+        
         self.in_path = QLineEdit()
-        self.in_path.setMinimumWidth(300)
-        self.in_path.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        btn_browse_in = QPushButton('…'); btn_browse_in.clicked.connect(lambda: self.pick_file(self.in_path, '*.txt'))
-        h1.addWidget(QLabel('Список страниц (.txt):'))
-        h1.addWidget(self.in_path); h1.addWidget(btn_browse_in)
-        left.addLayout(h1)
-
-        # --- Right side (settings) ---
-        # Row 1 уже отрисован сверху (комбобокс + ℹ)
-
-        # Row 2: result file picker
-        h2 = QHBoxLayout()
+        self.in_path.setMinimumWidth(0)
+        self._embed_button_in_lineedit(self.in_path, lambda: self.pick_file(self.in_path, '*.txt'))
+        file_layout.addWidget(self.in_path, 1)
+        
+        btn_open_in = QPushButton('Открыть')
+        btn_open_in.clicked.connect(lambda: self.open_from_edit(self.in_path))
+        file_layout.addWidget(btn_open_in)
+        left_layout.addLayout(file_layout)
+        
+        # === ПРАВАЯ ПАНЕЛЬ: ХОД СЧИТЫВАНИЯ ===
+        right_group = QGroupBox("Ход считывания")
+        right_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        right_layout = QVBoxLayout(right_group)
+        
+        # Заголовок с кнопкой справки
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel('<b>Результат и управление</b>'))
+        header_layout.addStretch()
+        self._add_info_button(header_layout, parse_help)
+        right_layout.addLayout(header_layout)
+        
+        # Файл сохранения
+        save_layout = QHBoxLayout()
+        save_layout.addWidget(QLabel('Сохранить в:'))
+        
         self.out_path = QLineEdit('categories.tsv')
-        self.out_path.setMinimumWidth(250); self.out_path.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        btn_out = QPushButton('…'); btn_out.setFixedWidth(30)
-        btn_out.clicked.connect(lambda: self.pick_save(self.out_path, '.tsv'))
-        h2.addWidget(QLabel('Файл результата (.tsv):'))
-        h2.addWidget(self.out_path)
-        h2.addWidget(btn_out)
-        right.addLayout(h2)
-
-        # Row 3: parse buttons (start/stop)
-        row_run = QHBoxLayout()
-        self.parse_btn = QPushButton('Начать считывание'); self.parse_btn.clicked.connect(self.start_parse)
+        self.out_path.setMinimumWidth(0)
+        self._embed_button_in_lineedit(self.out_path, lambda: self.pick_save(self.out_path, '.tsv'))
+        save_layout.addWidget(self.out_path, 1)
+        
+        btn_open_out = QPushButton('Открыть')
+        btn_open_out.clicked.connect(lambda: self.open_from_edit(self.out_path))
+        save_layout.addWidget(btn_open_out)
+        right_layout.addLayout(save_layout)
+        
+        # Лог процесса (основная область)
+        right_layout.addWidget(QLabel('<b>Лог выполнения:</b>'))
+        self.parse_log = QTextEdit()
+        self.parse_log.setReadOnly(True)
+        self.parse_log.setMinimumHeight(220)
+        right_layout.addWidget(self.parse_log, 1)
+        
+        # Прогресс-бар
+        self.parse_bar = QProgressBar()
+        self.parse_bar.setMaximum(1)
+        self.parse_bar.setValue(0)
+        right_layout.addWidget(self.parse_bar)
+        
+        # Кнопки управления
+        control_layout = QHBoxLayout()
+        control_layout.addStretch()
+        self.parse_btn = QPushButton('Начать считывание')
+        self.parse_btn.clicked.connect(self.start_parse)
+        control_layout.addWidget(self.parse_btn)
         self.parse_stop_btn = QPushButton('Остановить')
         self.parse_stop_btn.setEnabled(False)
         self.parse_stop_btn.clicked.connect(self.stop_parse)
-        row_run.addWidget(self.parse_btn)
-        row_run.addWidget(self.parse_stop_btn)
-        row_run.addStretch()
-        right.addLayout(row_run)
-        # ширина старт/стоп в соотношении 3:1
+        control_layout.addWidget(self.parse_stop_btn)
+        control_layout.addStretch()
+        right_layout.addLayout(control_layout)
         self._set_start_stop_ratio(self.parse_btn, self.parse_stop_btn, 3)
-
-        # Row 4: log (fills remaining space)
-        # progress bar
-        self.parse_bar = QProgressBar(); self.parse_bar.setMaximum(1); self.parse_bar.setValue(0)
-        right.addWidget(self.parse_bar)
-
-        self.parse_log = QTextEdit(); self.parse_log.setReadOnly(True)
-        right.addWidget(self.parse_log, 1)
-
-        # open result button
-        self.open_res_btn = QPushButton('Открыть результат')
-        self.open_res_btn.clicked.connect(self.open_result_file)
-        right.addWidget(self.open_res_btn)
-
-        h_main.addWidget(left_widget, 1)
-        h_main.addWidget(right_widget, 2)
-
-        v.addLayout(h_main)
-
+        
+        # Добавление панелей в основной макет
+        h_main.addWidget(left_group, 1)
+        h_main.addWidget(right_group, 1)
+        main_layout.addLayout(h_main)
+        
         self.tabs.addTab(tab, 'Считать')
 
-    # ---- Petscan opener ---- #
+
     def open_petscan(self):
         debug(f"Fetch subcats btn pressed: cat={self.cat_edit.text().strip()}")
         category = self.cat_edit.text().strip()
@@ -1752,30 +2021,33 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(tab)
         replace_help = (
             'TSV: Title<TAB>line1<TAB>line2…\n\n'
-            'Префиксы: для любого языка локальные префиксы автоматически подгружаются из API и кэшируются. '
-            '«Авто» — оставляет заголовки как есть; выбранный NS — добавляет локальный префикс. '
-            'Если в исходных данных уже указан английский префикс (Category:/Template: и т.п.), он распознаётся.'
+            'Указанные страницы будут найдены и в них выполнены замены текста согласно списку.'
         )
         h = QHBoxLayout()
         self.tsv_path = QLineEdit('categories.tsv')
-        self.tsv_path.setMinimumWidth(350)
+        self.tsv_path.setMinimumWidth(0)
         self.tsv_path.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        btn = QPushButton('…'); btn.clicked.connect(lambda: self.pick_file(self.tsv_path, '*.tsv'))
+        self._embed_button_in_lineedit(self.tsv_path, lambda: self.pick_file(self.tsv_path, '*.tsv'))
         h.addWidget(QLabel('Список для замен (.tsv):'))
-        h.addWidget(self.tsv_path); h.addWidget(btn)
+        h.addWidget(self.tsv_path, 1)
+        btn_open_tsv = QPushButton('Открыть'); btn_open_tsv.clicked.connect(lambda: self.open_from_edit(self.tsv_path))
+        btn_open_tsv.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        h.addWidget(btn_open_tsv)
         # компактный выбор префикса (выпадающий список)
-        h.addWidget(QLabel('Префиксы:'))
+        prefix_label_replace = QLabel('Префиксы:')
+        prefix_label_replace.setToolTip(PREFIX_TOOLTIP)
+        h.addWidget(prefix_label_replace)
         self.ns_combo_replace = QComboBox(); self.ns_combo_replace.setEditable(False)
         _populate_ns_combo(self.ns_combo_replace, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_replace)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, replace_help)
-        # summary field
+
         sum_layout = QHBoxLayout()
         sum_layout.addWidget(QLabel('Комментарий к правкам:'))
         self.summary_edit = QLineEdit()
         sum_layout.addWidget(self.summary_edit)
-        # начальное значение по умолчанию (ru)
+
         self.summary_edit.setText(default_summary('ru'))
 
 
@@ -1789,8 +2061,9 @@ class MainWindow(QMainWindow):
         self.replace_stop_btn.setEnabled(False)
         self.replace_stop_btn.clicked.connect(self.stop_replace)
         self.rep_log = QTextEdit(); self.rep_log.setReadOnly(True)
-        row_run = QHBoxLayout(); row_run.addWidget(self.replace_btn); row_run.addWidget(self.replace_stop_btn); row_run.addStretch()
-        v.addLayout(h); v.addLayout(sum_layout); v.addLayout(row_run); v.addWidget(self.rep_log)
+        # Перемещаем кнопки вправо вниз под лог
+        row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.replace_btn); row_run.addWidget(self.replace_stop_btn)
+        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(self.rep_log, 1); v.addLayout(row_run)
         self._set_start_stop_ratio(self.replace_btn, self.replace_stop_btn, 3)
         self.tabs.addTab(tab, 'Перезаписать')
 
@@ -1798,40 +2071,45 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         v = QVBoxLayout(tab)
         create_help = (
-            'TSV: Title<TAB>line1<TAB>line2…  Одна строка — одна новая страница.\n\n'
-            'Префиксы: для любого языка локальные префиксы автоматически подгружаются из API и кэшируются. '
-            '«Авто» — не меняет заголовки; выбранный NS — добавляет локальный префикс. '
-            'Английские префиксы в исходных названиях также поддерживаются.'
+            'TSV: Title<TAB>line1<TAB>line2…\n\n'
+            'Одна строка — одна новая страница.\n\n'
+            'Будут созданы новые страницы с указанными названиями и содержимым.'
         )
         h = QHBoxLayout()
         self.tsv_path_create = QLineEdit('categories.tsv')
-        self.tsv_path_create.setMinimumWidth(350)
+        self.tsv_path_create.setMinimumWidth(0)
         self.tsv_path_create.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        btn = QPushButton('…'); btn.clicked.connect(lambda: self.pick_file(self.tsv_path_create, '*.tsv'))
+        self._embed_button_in_lineedit(self.tsv_path_create, lambda: self.pick_file(self.tsv_path_create, '*.tsv'))
         h.addWidget(QLabel('Список для создания (.tsv):'))
-        h.addWidget(self.tsv_path_create); h.addWidget(btn)
+        h.addWidget(self.tsv_path_create, 1)
+        btn_open_tsv_create = QPushButton('Открыть'); btn_open_tsv_create.clicked.connect(lambda: self.open_from_edit(self.tsv_path_create))
+        btn_open_tsv_create.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        h.addWidget(btn_open_tsv_create)
         # компактный выбор префикса (выпадающий список)
-        h.addWidget(QLabel('Префиксы:'))
+        prefix_label_create = QLabel('Префиксы:')
+        prefix_label_create.setToolTip(PREFIX_TOOLTIP)
+        h.addWidget(prefix_label_create)
         self.ns_combo_create = QComboBox(); self.ns_combo_create.setEditable(False)
         _populate_ns_combo(self.ns_combo_create, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_create)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, create_help)
-        # summary field
+
         sum_layout = QHBoxLayout()
         sum_layout.addWidget(QLabel('Комментарий к правкам:'))
         self.summary_edit_create = QLineEdit()
         sum_layout.addWidget(self.summary_edit_create)
         self.summary_edit_create.setText(default_create_summary('ru'))
-        # run buttons
+
         self.create_btn = QPushButton('Начать создание')
         self.create_btn.clicked.connect(self.start_create)
         self.create_stop_btn = QPushButton('Остановить')
         self.create_stop_btn.setEnabled(False)
         self.create_stop_btn.clicked.connect(self.stop_create)
         self.create_log = QTextEdit(); self.create_log.setReadOnly(True)
-        row_run = QHBoxLayout(); row_run.addWidget(self.create_btn); row_run.addWidget(self.create_stop_btn); row_run.addStretch()
-        v.addLayout(h); v.addLayout(sum_layout); v.addLayout(row_run); v.addWidget(self.create_log)
+        # кнопки справа внизу
+        row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.create_btn); row_run.addWidget(self.create_stop_btn)
+        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(self.create_log, 1); v.addLayout(row_run)
         self._set_start_stop_ratio(self.create_btn, self.create_stop_btn, 3)
         self.tabs.addTab(tab, 'Создать')
 
@@ -1839,21 +2117,40 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         v = QVBoxLayout(tab)
         rename_help = (
-            'TSV: OldTitle<TAB>NewTitle<TAB>Reason  — одна строка = одно переименование.\n\n'
-            'Префиксы: подгружаются из API для любого языка. "Авто" — имена без изменений; '
-            'при выборе пространства имён к обоим названиям добавляется локальный префикс. '
-            'Если переданы английские префиксы, они корректно распознаются.'
+            'TSV: OldTitle<TAB>NewTitle<TAB>Reason\n\n'
+            'Одна строка = одно переименование.\n\n'
+            'Процедура переноса:\n'
+            '1) Переименовывается сама категория (учёт опции «Оставлять перенаправления: …»).\n'
+            '2) Фаза 1 (авто): обновляются прямые ссылки [[Категория:Старая]] → [[Категория:Новая]] у участников категории.\n'
+            '   — Для страниц в пространствах Template:/Module: дополнительно проверяются основная страница и её /doc.\n'
+            '   — Успешные переносы логируются как «→ НоваяКатегория → Заголовок: статья/категория перенесена».\n'
+            '3) Фаза 2 (ручная): если включено «Искать категоризацию через параметры шаблонов».\n'
+            '   — Для страниц, где прямых ссылок нет, ищется полное имя категории внутри вызовов шаблонов {{…|…}}.\n'
+            '   — Для каждого найденного вызова показывается диалог с подсветкой (красным — старое, зелёным — новое)\n'
+            '     и кнопками: Подтвердить, Пропустить, Отмена (останавливает процесс).\n'
+            '   — В одной статье может быть несколько таких шаблонов — предлагаются по очереди.\n\n'
+            'Итог и статистика:\n'
+            '— В конце выводится сводка: сколько перенесено автоматически, сколько по подтверждению, сколько осталось в старой категории.\n\n'
+            'Настройки на этой вкладке:\n'
+            '— «Переносить содержимое категории»: включает Фазу 1 (авто) после переименования категории.\n'
+            '— «Искать категоризацию через параметры шаблонов»: включает Фазу 2 (ручную) для проблемных страниц.\n'
+            '— «Оставлять перенаправления: для категорий/для остальных страниц»: управляет редиректами при переименовании.\n\n'
         )
-        # --- File picker for TSV ---
+
         h = QHBoxLayout()
         self.tsv_path_rename = QLineEdit('categories.tsv')
-        self.tsv_path_rename.setMinimumWidth(350)
+        self.tsv_path_rename.setMinimumWidth(0)
         self.tsv_path_rename.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        btn_browse = QPushButton('…'); btn_browse.clicked.connect(lambda: self.pick_file(self.tsv_path_rename, '*.tsv'))
+        self._embed_button_in_lineedit(self.tsv_path_rename, lambda: self.pick_file(self.tsv_path_rename, '*.tsv'))
         h.addWidget(QLabel('Список для переименования (.tsv):'))
-        h.addWidget(self.tsv_path_rename); h.addWidget(btn_browse)
+        h.addWidget(self.tsv_path_rename, 1)
+        btn_open_tsv_rename = QPushButton('Открыть'); btn_open_tsv_rename.clicked.connect(lambda: self.open_from_edit(self.tsv_path_rename))
+        btn_open_tsv_rename.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        h.addWidget(btn_open_tsv_rename)
         # компактный выбор префикса (выпадающий список)
-        h.addWidget(QLabel('Префиксы:'))
+        prefix_label_rename = QLabel('Префиксы:')
+        prefix_label_rename.setToolTip(PREFIX_TOOLTIP)
+        h.addWidget(prefix_label_rename)
         self.ns_combo_rename = QComboBox(); self.ns_combo_rename.setEditable(False)
         _populate_ns_combo(self.ns_combo_rename, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_rename)
@@ -1861,43 +2158,123 @@ class MainWindow(QMainWindow):
         self._add_info_button(h, rename_help)
         v.addLayout(h)
 
-        # --- Redirect options ---
-        opts = QHBoxLayout()
-        self.chk_redirect_cat = QCheckBox('Оставлять редирект для категорий')
-        self.chk_redirect_cat.setChecked(False)  # соответствует скрипту по умолчанию
-        self.chk_redirect_other = QCheckBox('Оставлять редирект для других страниц')
-        self.chk_redirect_other.setChecked(True)
-        opts.addWidget(self.chk_redirect_cat); opts.addWidget(self.chk_redirect_other)
-        v.addLayout(opts)
+        # Опции в две колонки
+        col_left = QVBoxLayout()
+        self.chk_move_members = QCheckBox('Переносить содержимое категории')
+        self.chk_move_members.setChecked(True)
+        self.chk_find_in_templates = QCheckBox('Искать категоризацию через параметры шаблонов')
+        self.chk_find_in_templates.setChecked(True)
+        col_left.addWidget(self.chk_move_members)
+        col_left.addWidget(self.chk_find_in_templates)
 
-        # --- Run buttons ---
+
+        col_right = QVBoxLayout()
+        self.chk_redirect_cat = QCheckBox('Оставлять перенаправления для категорий')
+        self.chk_redirect_cat.setChecked(False)
+        self.chk_redirect_other = QCheckBox('Оставлять перенаправления для других страниц')
+        self.chk_redirect_other.setChecked(True)
+        col_right.addWidget(self.chk_redirect_cat)
+        col_right.addWidget(self.chk_redirect_other)
+
+        # Две колонки рядом, с небольшим зазором
+        row = QHBoxLayout()
+        row.addLayout(col_left)
+        row.addSpacing(24)
+        row.addLayout(col_right)
+
+        # Выравнивание блока колонок по левому краю
+        v.addLayout(row)
+
+
+        self.rename_log = QTextEdit(); self.rename_log.setReadOnly(True)
+        v.addWidget(self.rename_log, 1)
+
+
         self.rename_btn = QPushButton('Начать переименование')
         self.rename_btn.clicked.connect(self.start_rename)
         self.rename_stop_btn = QPushButton('Остановить')
         self.rename_stop_btn.setEnabled(False)
         self.rename_stop_btn.clicked.connect(self.stop_rename)
-        row_run = QHBoxLayout(); row_run.addWidget(self.rename_btn); row_run.addWidget(self.rename_stop_btn); row_run.addStretch()
+        row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.rename_btn); row_run.addWidget(self.rename_stop_btn)
         v.addLayout(row_run)
         self._set_start_stop_ratio(self.rename_btn, self.rename_stop_btn, 3)
-        # Warning for users
-        v.addWidget(QLabel('<b>ВНИМАНИЕ!</b> Переименовываются только названия категорий, содержимое нужно переносить вручную.' ))
-
-        # --- Log widget ---
-        self.rename_log = QTextEdit(); self.rename_log.setReadOnly(True)
-        v.addWidget(self.rename_log)
         self.tabs.addTab(tab, 'Переименовать')
 
-    # ---- secret code handler ---- #
+        # Диалог подтверждения замены внутри шаблона (подключение сигнала)
+        try:
+            # Будем ловить запросы от воркера и показывать диалог пользователю
+            def on_review_request(payload: object):
+                try:
+                    data = payload or {}
+                    req_id = int(data.get('request_id'))
+                    page_title = str(data.get('page_title') or '')
+                    template_str = str(data.get('template') or '')
+                    old_full = str(data.get('old_full') or '')
+                    new_full = str(data.get('new_full') or '')
+                    # Подсветка внутри шаблона
+                    esc_tmpl = html.escape(template_str)
+                    esc_old = html.escape(old_full)
+                    esc_new = html.escape(new_full)
+                    highlighted_old = esc_tmpl.replace(esc_old, f"<span style='color:#8b0000;font-weight:bold'>{esc_old}</span>")
+                    proposed = html.escape(template_str.replace(old_full, new_full, 1))
+                    highlighted_new = proposed.replace(esc_new, f"<span style='color:#0b6623;font-weight:bold'>{esc_new}</span>")
+
+                    msg = (
+                        f"Категория в статье не найдена. Возможно категоризация происходит через шаблон:<br/><br/>"
+                        f"<code>{highlighted_old}</code><br/><br/>"
+                        f"Подтверждаете ли вы замену шаблона на:<br/><br/>"
+                        f"<code>{highlighted_new}</code>"
+                    )
+                    dlg = QMessageBox(self)
+                    dlg.setWindowTitle('Подтверждение замены')
+                    dlg.setTextFormat(Qt.RichText)
+                    dlg.setIcon(QMessageBox.Question)
+                    dlg.setText(msg)
+                    confirm_btn = dlg.addButton('Подтвердить', QMessageBox.AcceptRole)
+                    skip_btn = dlg.addButton('Пропустить', QMessageBox.DestructiveRole)
+                    cancel_btn = dlg.addButton('Отмена', QMessageBox.RejectRole)
+                    dlg.exec()
+                    clicked = dlg.clickedButton()
+                    if clicked is confirm_btn:
+                        action = 'confirm'
+                    elif clicked is skip_btn:
+                        action = 'skip'
+                    else:
+                        action = 'cancel'
+                    w = getattr(self, 'mrworker', None)
+                    if w is not None:
+                        try:
+                            w.review_response.emit({'request_id': req_id, 'action': action})
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # подключение при инициализации вкладки; пересоздаётся при каждом запуске воркера
+
+            def _connect_worker_signal():
+                try:
+                    w = getattr(self, 'mrworker', None)
+                    if w is not None:
+                        w.template_review_request.connect(on_review_request)
+                except Exception:
+                    pass
+
+            self._connect_template_review_signal = _connect_worker_signal
+        except Exception:
+            pass
+
+
     def eventFilter(self, obj, event):
         try:
             if event.type() == QEvent.KeyPress and DEBUG_VIEW is not None and obj is DEBUG_VIEW:
-                # Считываем секрет только из поля лога Debug и только не авто-повтор
+
                 if hasattr(event, 'isAutoRepeat') and not event.isAutoRepeat():
-                    # Секрет из файла-ключа или переменной окружения BYPASS_AWB_TOKEN
-                    token = (BYPASS_TOKEN or os.environ.get('BYPASS_AWB_TOKEN', '')).strip().lower()
+
+                    token = (BYPASS_TOKEN or '').strip().lower()
                     if token and len(token) >= 3:
                         ch_raw = event.text() or ''
-                        # Принимаем ровно один печатаемый символ; приводим к lower
+
                         if len(ch_raw) == 1 and ch_raw.isprintable() and not ch_raw.isspace():
                             ch = ch_raw.lower()
                             max_len = len(token)
@@ -1914,7 +2291,7 @@ class MainWindow(QMainWindow):
             pass
         return super().eventFilter(obj, event)
 
-    # ---- helpers ---- #
+
     def pick_file(self, edit: QLineEdit, pattern):
         path, _ = QFileDialog.getOpenFileName(self, 'Выберите файл', filter=f'Files ({pattern})')
         if path: edit.setText(path)
@@ -1923,9 +2300,58 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, 'Куда сохранить', filter=f'*.{default_ext.lstrip(".")}')
         if path: edit.setText(path)
 
+    def _embed_button_in_lineedit(self, edit: QLineEdit, on_click):
+        """Добавляет кнопку '…' внутрь правой части QLineEdit."""
+        try:
+            btn = QToolButton(edit)
+            btn.setText('…')
+            btn.setAutoRaise(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.clicked.connect(on_click)
+
+            def _reposition():
+                try:
+                    # располагать кнопку справа, по центру по вертикали
+                    bw = btn.sizeHint().width()
+                    bh = btn.sizeHint().height()
+                    x = edit.rect().right() - bw - 4
+                    y = (edit.rect().height() - bh) // 2
+                    btn.move(x, y)
+                    edit.setTextMargins(0, 0, bw + 8, 0)
+                except Exception:
+                    pass
+
+            def _resize(ev):
+                try:
+                    QLineEdit.resizeEvent(edit, ev)
+                except Exception:
+                    pass
+                _reposition()
+
+            edit.resizeEvent = _resize
+            _reposition()
+            return btn
+        except Exception:
+            return None
+
+    def open_from_edit(self, edit: QLineEdit):
+        """Открыть файл из пути, указанного в QLineEdit."""
+        try:
+            path = (edit.text() or '').strip()
+            if not path:
+                QMessageBox.warning(self, 'Ошибка', 'Сначала укажите путь к файлу.')
+                return
+            if not os.path.exists(path):
+                QMessageBox.warning(self, 'Ошибка', 'Файл не найден: ' + path)
+                return
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as e:
+            QMessageBox.warning(self, 'Ошибка', f'Не удалось открыть файл: {e}')
+
     def log(self, widget: QTextEdit, msg: str):
         debug(msg)
-        # simple coloring: ошибки красным, успехи зелёным
+
         lower = msg.lower()
         color = None
         if 'ошибка' in lower or 'не найдено' in lower:
@@ -1933,6 +2359,9 @@ class MainWindow(QMainWindow):
         elif 'уже существует' in lower:
             # тёмно-жёлтый для статуса "уже существует"
             color = '#b8860b'
+        elif 'перенесена' in lower:
+            # тёмно-синий для успешно перенесённых участников категории/статей
+            color = '#1e3a8a'
         elif any(k in lower for k in ('записано', 'создано', 'переименована', 'готово')):
             # более тёмный зелёный для лучшей читаемости на светлой теме
             color = '#2e7d32'
@@ -1951,11 +2380,11 @@ class MainWindow(QMainWindow):
             stop_btn.setFixedWidth(stop_w)
             start_btn.setFixedWidth(start_w)
         except Exception:
-            # fallback sizes
+
             stop_btn.setFixedWidth(100)
             start_btn.setFixedWidth(300)
 
-    # ---- actions ---- #
+
     def start_parse(self):
         if not self.out_path.text():
             QMessageBox.warning(self, 'Ошибка', 'Укажите файл результата.')
@@ -1978,7 +2407,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 'Ошибка', 'Не указан ни файл со списком, ни текст списка.')
             return
         lang = self.lang_combo.currentText()
-        # init progress bar
+
         self.parse_bar.setMaximum(len(titles))
         self.parse_bar.setValue(0)
         self.parse_btn.setEnabled(False); self.parse_log.clear()
@@ -1996,7 +2425,7 @@ class MainWindow(QMainWindow):
         w = getattr(self, 'worker', None)
         if w and w.isRunning():
             w.request_stop()
-            # мгновенная реакция UI
+
             try:
                 self.parse_stop_btn.setEnabled(False)
                 self.log(self.parse_log, 'Останавливаю...')
@@ -2012,7 +2441,7 @@ class MainWindow(QMainWindow):
     def _inc_parse_prog(self):
         self.parse_bar.setValue(self.parse_bar.value()+1)
 
-    # ---- open result file ---- #
+
     def open_result_file(self):
         path = self.out_path.text().strip()
         if not path or not os.path.isfile(path):
@@ -2120,10 +2549,20 @@ class MainWindow(QMainWindow):
         ns_sel = self.ns_combo_rename.currentData()
         leave_cat = self.chk_redirect_cat.isChecked()
         leave_other = self.chk_redirect_other.isChecked()
+        move_members = self.chk_move_members.isChecked()
+        find_in_templates = getattr(self, 'chk_find_in_templates', None)
+        find_in_templates_flag = bool(find_in_templates.isChecked()) if find_in_templates is not None else True
         self.rename_btn.setEnabled(False); self.rename_stop_btn.setEnabled(True); self.rename_log.clear()
-        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, ns_sel, leave_cat, leave_other)
+        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, ns_sel, leave_cat, leave_other, move_members, find_in_templates_flag)
         self.mrworker.progress.connect(lambda m: self.log(self.rename_log, m))
         self.mrworker.finished.connect(self._on_rename_finished)
+        try:
+            # подключить обработчик запросов подтверждения для текущего воркера
+            cb = getattr(self, '_connect_template_review_signal', None)
+            if cb:
+                cb()
+        except Exception:
+            pass
         self.mrworker.start()
 
     def stop_rename(self):
@@ -2137,7 +2576,7 @@ class MainWindow(QMainWindow):
         msg = 'Остановлено!' if getattr(self, 'mrworker', None) and getattr(self.mrworker, '_stop', False) else 'Переименование завершено!'
         self.log(self.rename_log, msg)
 
-    # ---- react to language change ---- #
+
     def _on_lang_change(self, new_lang):
         edits = [
             (getattr(self, 'summary_edit', None), default_summary),
@@ -2165,7 +2604,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ---- window close event ---- #
+
     def closeEvent(self, event):
         running_threads = []
         for attr in ('worker','rworker','cworker','mrworker'):
@@ -2179,7 +2618,7 @@ class MainWindow(QMainWindow):
                 return
         super().closeEvent(event)
 
-    # ---- debug window ---- #
+
     def show_debug(self):
         global DEBUG_VIEW
         if DEBUG_VIEW is not None and not DEBUG_VIEW.parent().isHidden():
@@ -2193,8 +2632,8 @@ class MainWindow(QMainWindow):
         txt = QPlainTextEdit('\n'.join(DEBUG_BUFFER))
         txt.setReadOnly(True)
         v.addWidget(txt)
-        DEBUG_VIEW = txt  # store for live updates
-        # Перехватываем клавиши в окне Debug и поле вывода лога
+        DEBUG_VIEW = txt
+
         try:
             txt.installEventFilter(self)
         except Exception:
@@ -2212,24 +2651,24 @@ class MainWindow(QMainWindow):
         v.addLayout(h)
         dlg.show()
 
-    # ---- account switching ---- #
+
     def switch_account(self):
-        # Разблокировать поля и скрыть кнопку "Сменить аккаунт"
+
         lang = (self.lang_combo.currentText() or 'ru').strip()
         cfg_dir = config_base_dir()
-        # Удаляем куки для текущего пользователя (если введён)
+
         user = self.user_edit.text().strip()
         _delete_all_cookies(cfg_dir)
         reset_pywikibot_session(None)
-        # Сбрасываем текущую сессию в UI
+
         self.current_user = None
         self.current_lang = None
         self._apply_cred_style(False)
-        # переинициализируем конфиг (создаст throttle.ctrl при необходимости)
+
         fam = (self.family_combo.currentText() or 'wikipedia')
         apply_pwb_config(lang, fam)
 
-# -------------------- main -------------------- #
+# ===== Main =====
 
 def main():
     app = QApplication(sys.argv)

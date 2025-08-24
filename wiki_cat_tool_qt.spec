@@ -14,7 +14,7 @@ a = Analysis(
         ('configs', 'configs')
     ],
     hiddenimports=pywikibot_hidden + [
-        'wikicat_tool._embedded_secrets'
+        '_embedded_secrets'
     ],
     hookspath=[],
     hooksconfig={},
