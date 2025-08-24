@@ -8,13 +8,14 @@ import time
 import urllib.parse
 import webbrowser
 import re
+import difflib
 import html
 import ast
 import ctypes
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from threading import Lock, Event
-from queue import Queue
+
 
 # Инициализация окружения для Pywikibot
 _startup_base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
@@ -52,11 +53,11 @@ if getattr(sys, 'stderr', None) is None:
     sys.stderr = _GuiStdWriter()
 
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QEvent, QTimer
-from PySide6.QtGui import QIcon
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout, QRadioButton,
-    QButtonGroup, QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
+    QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout,
+    QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
     QSizePolicy, QDialog, QPlainTextEdit, QGroupBox
 )
 from PySide6.QtGui import QDesktopServices
@@ -73,11 +74,11 @@ if 'PYWIKIBOT_DIR' not in os.environ:
 
 import pywikibot
 from pywikibot import config as pwb_config
-from pywikibot.login import LoginManager
+
 from pywikibot.comms import http as pywb_http
 
 # Перехват вывода pywikibot
-def _pywb_log(msg, *a, **kw):
+def _pywb_log(msg, *_args, **_kwargs):
     debug('PYWIKIBOT: ' + str(msg))
 pywikibot.output = _pywb_log
 pywikibot.warning = _pywb_log
@@ -85,10 +86,6 @@ pywikibot.error = _pywb_log
 
 write_lock = Lock()
 
-# ===== Assets Helper =====
-def asset_path(name: str) -> str:
-    base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
-    return os.path.join(base, name)
 
 # ===== HTTP Session + Rate Limiting =====
 REQUEST_SESSION = requests.Session()
@@ -234,7 +231,6 @@ def build_project_awb_url(family: str, lang: str) -> str:
 
 # ===== Namespace Helpers =====
 NS_CACHE: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
-DEFAULT_LANGS: set[str] = {'ru', 'uk', 'be', 'en', 'fr', 'es', 'de'}
 
 # Предзаданные локальные префиксы для популярных языков/проектов
 DEFAULT_NS_PREFIXES: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
@@ -264,8 +260,7 @@ def _ns_cache_file(family: str, lang: str) -> str:
     safe_l = re.sub(r"[^a-z0-9_-]+", "_", (lang or '').lower())
     return os.path.join(_ns_cache_dir(), f"ns_{safe_f}_{safe_l}.json")
 
-def is_default_lang_or_commons(family: str, lang: str) -> bool:
-    return (family or '') == 'commons' or (lang or '') in DEFAULT_LANGS
+ 
 
 def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]]:
     key = (family, lang)
@@ -522,10 +517,7 @@ def _populate_ns_combo(combo, family: str, lang: str) -> None:
     _adjust_combo_popup_width(combo)
 
 
-def cred_path():
-
-    base = tool_base_dir()
-    return os.path.join(base, 'credentials.txt')
+ 
 
 # ===== Pywikibot Config Helpers =====
 def _dist_configs_dir() -> str:
@@ -590,6 +582,13 @@ def apply_pwb_config(lang: str, family: str = 'wikipedia') -> str:
     pwb_config.family = family
     pwb_config.mylang = lang
     pwb_config.password_file = os.path.join(cfg_dir, 'user-password.py')
+    # Ускоряем операции записи pywikibot: убираем внутренние задержки между правками.
+    # Кнопки записи в UI доступны только при наличии допуска AWB/обходе, поэтому это безопасно.
+    try:
+        pwb_config.put_throttle = 0.0
+        pwb_config.maxlag = 5
+    except Exception:
+        pass
     return cfg_dir
 
 def cookies_exist(cfg_dir: str, username: str) -> bool:
@@ -615,34 +614,7 @@ def _delete_all_cookies(cfg_dir: str, username: str | None = None) -> None:
     except Exception:
         pass
 
-def verify_credentials_clientlogin(lang: str, username: str, password: str, family: str = 'wikipedia') -> tuple[str, str]:
-    """Return ('pass'|'fail'|'unknown', message). Uses MediaWiki clientlogin.
-
-    We treat explicit wrong username/password as 'fail'. Other statuses are 'unknown'.
-    """
-    api = build_api_url(family, lang)
-    sess = requests.Session()
-    try:
-        r1 = sess.get(api, params={
-            'action': 'query', 'meta': 'tokens', 'type': 'login', 'format': 'json'
-        }, timeout=15)
-        token = r1.json().get('query', {}).get('tokens', {}).get('logintoken')
-        if not token:
-            return 'unknown', 'Не удалось получить login-token'
-        r2 = sess.post(api, data={
-            'action': 'clientlogin', 'username': username, 'password': password,
-            'loginreturnurl': 'https://example.com/', 'logintoken': token, 'format': 'json'
-        }, timeout=15)
-        cl = r2.json().get('clientlogin', {})
-        status = cl.get('status')
-        code = cl.get('messagecode', '')
-        if status == 'PASS':
-            return 'pass', 'OK'
-        if status == 'FAIL' and code in {'wrongpassword', 'nosuchuser'}:
-            return 'fail', cl.get('message', code)
-        return 'unknown', cl.get('message', status or 'UNKNOWN')
-    except Exception as e:
-        return 'unknown', str(e)
+ 
 
 def fetch_awb_lists(lang: str, timeout: int = 15, family: str = 'wikipedia') -> tuple[str, dict | None]:
     """Загружает JSON со страницы Wikipedia:AutoWikiBrowser/CheckPageJSON для данного языка.
@@ -898,6 +870,58 @@ class ReplaceWorker(QThread):
     def request_stop(self):
         self._stop = True
 
+    # --- Внутренний троттлинг сохранений (ускорить, но избегать 429) ---
+    def _init_save_ratelimit(self):
+        # Базовый минимальный интервал между сохранениями; будет адаптироваться
+        self._save_min_interval = 0.25
+        self._last_save_ts = 0.0
+
+    def _wait_before_save(self):
+        now = time.time()
+        to_wait = max(0.0, (self._last_save_ts + self._save_min_interval) - now)
+        if to_wait > 0:
+            time.sleep(to_wait)
+        self._last_save_ts = time.time()
+
+    def _increase_save_interval(self, attempt: int):
+        # Увеличиваем интервал агрессивно при срабатывании лимитов
+        target = max(self._save_min_interval * 1.5, 0.6 * attempt)
+        self._save_min_interval = min(target, 2.5)
+
+    def _decay_save_interval(self):
+        # Плавно уменьшаем интервал при стабильной работе
+        self._save_min_interval = max(0.2, self._save_min_interval * 0.9)
+
+    def _is_rate_error(self, err: Exception) -> bool:
+        msg = (str(err) or '').lower()
+        return (
+            '429' in msg or 'too many requests' in msg or 'ratelimit' in msg or
+            'rate limit' in msg or 'maxlag' in msg or 'readonly' in msg
+        )
+
+    def _save_with_retry(self, page: 'pywikibot.Page', text: str, summary: str, minor: bool, retries: int = 6) -> bool:
+        for attempt in range(1, retries + 1):
+            try:
+                self._wait_before_save()
+                page.text = text
+                page.save(summary=summary, minor=minor)
+                self._decay_save_interval()
+                return True
+            except Exception as e:
+                if self._is_rate_error(e) and attempt < retries:
+                    self._increase_save_interval(attempt)
+                    try:
+                        self.progress.emit(f"Лимит запросов: пауза {self._save_min_interval:.2f}s · попытка {attempt}/{retries}")
+                    except Exception:
+                        pass
+                    continue
+                try:
+                    self.progress.emit(f"Ошибка сохранения: {type(e).__name__}: {e}")
+                except Exception:
+                    pass
+                return False
+        return False
+
     def run(self):
         site = pywikibot.Site(self.lang, self.family)
         debug(f'Login attempt replace lang={self.lang}')
@@ -913,6 +937,9 @@ class ReplaceWorker(QThread):
             except Exception as e:
                 self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
                 return
+        # Инициализируем адаптивный интервал между сохранениями
+        self._init_save_ratelimit()
+
         # Читаем как utf-8-sig, чтобы убрать BOM у первой ячейки
         with open(self.tsv_path, newline='', encoding='utf-8-sig') as f:
             reader = csv.reader(f, delimiter='\t')
@@ -930,9 +957,11 @@ class ReplaceWorker(QThread):
                 norm_title = normalize_title_by_selection(title, self.family, self.lang, self.ns_sel)
                 page = pywikibot.Page(site, norm_title)
                 if page.exists():
-                    page.text = "\n".join(lines)
-                    page.save(summary=self.summary, minor=self.minor)
-                    self.progress.emit(f"{title}: записано {len(lines)} строк")
+                    ok = self._save_with_retry(page, "\n".join(lines), self.summary, self.minor)
+                    if ok:
+                        self.progress.emit(f"{title}: записано {len(lines)} строк")
+                    else:
+                        self.progress.emit(f"{title}: не удалось сохранить после повторных попыток")
                 else:
                     self.progress.emit(f"{title}: страница отсутствует")
 
@@ -969,8 +998,54 @@ class CreateWorker(QThread):
             except Exception as e:
                 self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
                 return
-        try:
+        # Локальный адаптивный троттлинг сохранений
+        save_min_interval = 0.25
+        last_save_ts = 0.0
 
+        def wait_before_save():
+            nonlocal last_save_ts
+            now = time.time()
+            to_wait = max(0.0, (last_save_ts + save_min_interval) - now)
+            if to_wait > 0:
+                time.sleep(to_wait)
+            last_save_ts = time.time()
+
+        def increase_interval(attempt: int):
+            nonlocal save_min_interval
+            save_min_interval = min(max(save_min_interval * 1.5, 0.6 * attempt), 2.5)
+
+        def decay_interval():
+            nonlocal save_min_interval
+            save_min_interval = max(0.2, save_min_interval * 0.9)
+
+        def is_rate_error(err: Exception) -> bool:
+            msg = (str(err) or '').lower()
+            return ('429' in msg or 'too many requests' in msg or 'ratelimit' in msg or 'rate limit' in msg or 'maxlag' in msg or 'readonly' in msg)
+
+        def save_with_retry(page: 'pywikibot.Page', text: str, retries: int = 6) -> bool:
+            for attempt in range(1, retries + 1):
+                try:
+                    wait_before_save()
+                    page.text = text
+                    page.save(summary=self.summary, minor=self.minor)
+                    decay_interval()
+                    return True
+                except Exception as e:
+                    if is_rate_error(e) and attempt < retries:
+                        increase_interval(attempt)
+                        try:
+                            self.progress.emit(f"Лимит запросов: пауза {save_min_interval:.2f}s · попытка {attempt}/{retries}")
+                        except Exception:
+                            pass
+                        continue
+                    try:
+                        self.progress.emit(f"Ошибка сохранения: {type(e).__name__}: {e}")
+                    except Exception:
+                        pass
+                    return False
+            return False
+
+        try:
             with open(self.tsv_path, newline='', encoding='utf-8-sig') as f:
                 reader = csv.reader(f, delimiter='\t')
                 for row in reader:
@@ -981,13 +1056,15 @@ class CreateWorker(QThread):
                     raw_title = row[0] if row[0] is not None else ''
                     title = raw_title.strip().lstrip('\ufeff')
                     lines = [((s or '').lstrip('\ufeff')) for s in row[1:]]
-    
+
                     norm_title = normalize_title_by_selection(title, self.family, self.lang, self.ns_sel)
                     page = pywikibot.Page(site, norm_title)
                     if not page.exists():
-                        page.text = "\n".join(lines)
-                        page.save(summary=self.summary, minor=self.minor)
-                        self.progress.emit(f"{title}: создано ({len(lines)} строк)")
+                        ok = save_with_retry(page, "\n".join(lines))
+                        if ok:
+                            self.progress.emit(f"{title}: создано ({len(lines)} строк)")
+                        else:
+                            self.progress.emit(f"{title}: не удалось создать после повторных попыток")
                     else:
                         self.progress.emit(f"{title}: уже существует")
         except Exception as e:
@@ -1071,6 +1148,17 @@ class RenameWorker(QThread):
                         old_name = old_name_raw
                         new_name = new_name_raw
                         is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
+
+                    # Если переименовываем категорию и перенос содержимого ВЫКЛЮЧЕН —
+                    # при отсутствии самой категории просто сообщаем и переходим к следующей строке
+                    if is_category and not self.move_members:
+                        try:
+                            old_full_check = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
+                            if not pywikibot.Page(site, old_full_check).exists():
+                                self.progress.emit(f"Категория '{old_full_check}' не существует. Перенос содержимого отключён.")
+                                continue
+                        except Exception:
+                            pass
 
                     leave_redirect = self.leave_cat_redirect if is_category else self.leave_other_redirect
                     self._move_page(site, old_name, new_name, reason, leave_redirect)
@@ -1168,53 +1256,321 @@ class RenameWorker(QThread):
             start_pos = idx + len(old_cat_full)
         return results
 
+    # ====== Поиск и предложения «по частям» для параметров шаблонов ======
+    def _compute_partial_pairs(self, old_full: str, new_full: str, family: str, lang: str) -> list[tuple[str, str]]:
+        """Строит список пар (old_piece -> new_piece) на основе различий между базовыми
+        именами категорий без префиксов. Пары упорядочены от более длинных к более коротким.
+        """
+        try:
+            old_base = self._strip_cat_prefix(old_full, family, lang)
+            new_base = self._strip_cat_prefix(new_full, family, lang)
+            sm = difflib.SequenceMatcher(a=old_base, b=new_base)
+            pairs: list[tuple[str, str]] = []
+
+            def _token_at(s: str, idx: int, direction: int) -> str:
+                # Возвращает соседнее слово слева (direction=-1) или справа (direction=+1)
+                if not s:
+                    return ''
+                if direction < 0:
+                    left = s[:idx]
+                    m = re.search(r"(\S+)\s*$", left)
+                    return m.group(1) if m else ''
+                else:
+                    right = s[idx:]
+                    m = re.match(r"^\s*(\S+)", right)
+                    return m.group(1) if m else ''
+
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                if tag in ('replace',):
+                    base_old = old_base[i1:i2]
+                    base_new = new_base[j1:j2]
+                    if base_old and base_new:
+                        pairs.append((base_old, base_new))
+                        # Попробуем расширить влево на короткий предлог (в/во/на/к/с/из/у/о/об/от/по/за/для/при)
+                        left_old = _token_at(old_base, i1, -1)
+                        left_new = _token_at(new_base, j1, -1)
+                        if left_old and len(left_old) <= 3 and left_new and len(left_new) <= 3:
+                            pairs.append((f"{left_old} {base_old}", f"{left_new} {base_new}"))
+                        # Попробуем расширить вправо на одно слово (напр. «левом районе»)
+                        right_old = _token_at(old_base, i2, +1)
+                        right_new = _token_at(new_base, j2, +1)
+                        if right_old and right_new:
+                            pairs.append((f"{base_old} {right_old}", f"{base_new} {right_new}"))
+                        # Попробуем расширить и слева и справа (предлог + слово + следующее слово)
+                        if left_old and len(left_old) <= 3 and left_new and len(left_new) <= 3 and right_old and right_new:
+                            pairs.append((f"{left_old} {base_old} {right_old}", f"{left_new} {base_new} {right_new}"))
+                elif tag == 'delete':
+                    base_old = old_base[i1:i2]
+                    if base_old:
+                        pairs.append((base_old, ''))
+                elif tag == 'insert':
+                    base_new = new_base[j1:j2]
+                    if base_new:
+                        # Вставка — специфично, добавим пару пустого в новый текст как справочную
+                        pairs.append(('', base_new))
+
+            # Удалим дубликаты и отсортируем по длине убыванию старого фрагмента
+            seen_pairs: set[tuple[str, str]] = set()
+            uniq: list[tuple[str, str]] = []
+            for p in pairs:
+                if p not in seen_pairs and p[0] != p[1]:
+                    seen_pairs.add(p)
+                    uniq.append(p)
+            # Дополнительно: дифф по словам, чтобы получать целые словоформы
+            def _words(s: str) -> list[str]:
+                # Делим на слова (буквы/числа/подчёркивания) и прочие токены
+                return re.findall(r"[^\W_\d]+|\d+|_+|[^\s]", s, flags=re.UNICODE)
+            ow = _words(old_base)
+            nw = _words(new_base)
+            if ow and nw:
+                smw = difflib.SequenceMatcher(a=[w.casefold() for w in ow], b=[w.casefold() for w in nw])
+                for tag, i1, i2, j1, j2 in smw.get_opcodes():
+                    if tag in ('replace',):
+                        so = ''.join(ow[i1:i2]).strip()
+                        sn = ''.join(nw[j1:j2]).strip()
+                        if so and sn and (so, sn) not in seen_pairs:
+                            seen_pairs.add((so, sn))
+                            uniq.append((so, sn))
+            uniq.sort(key=lambda x: len(x[0] or ''), reverse=True)
+            return uniq
+        except Exception:
+            return []
+
+    def _compile_wordish(self, text: str) -> re.Pattern:
+        r"""Компилирует регэксп для поиска фразы по границам слов с гибкими пробелами.
+        Пробелы в тексте сопоставляются как \s+, добавляются границы (?<!\w) и (?!\w).
+        """
+        t = re.sub(r"[\s\u00A0]+", " ", (text or '').strip())
+        esc = re.escape(t).replace(r"\ ", r"[\s\u00A0]+")
+        return re.compile(rf"(?<!\w){esc}(?!\w)", re.IGNORECASE | re.UNICODE)
+
+    def _norm_space_fold(self, s: str) -> str:
+        try:
+            return re.sub(r"[\s\u00A0]+", " ", (s or '').strip()).casefold()
+        except Exception:
+            return (s or '').strip().lower()
+
+    def _replace_in_unnamed_params_once(self, template_chunk: str, old_sub: str, new_sub: str, replace_entire_token: bool = False) -> tuple[str, bool]:
+        """Заменяет ОДНО вхождение в безымянных параметрах шаблона.
+        Если replace_entire_token=True — целиком заменяет значение параметра на new_sub,
+        иначе выполняет точечную подстановку old_sub→new_sub внутри параметра.
+        Возвращает (новый_шаблон, были_ли_изменения).
+        """
+        try:
+            if '{{' not in template_chunk or '}}' not in template_chunk or '|' not in template_chunk:
+                return template_chunk, False
+            inner = template_chunk[2:-2]
+            parts = inner.split('|')
+            if not parts:
+                return template_chunk, False
+            head = parts[0]
+            tail = parts[1:]
+            changed = False
+            # Только по границам слов/фраз, с гибкими пробелами
+            ci_old_word = self._compile_wordish(old_sub)
+            indices: list[int] = []
+            for idx, token in enumerate(tail):
+                if '=' not in token and ci_old_word.search(token):
+                    indices.append(idx)
+
+            def _starts_with_short_word(tok: str) -> bool:
+                # Универсально: слово 1–3 букв (любой язык, исключая цифры/подчёркивания), затем пробел
+                t = tok.lstrip()
+                return bool(re.match(r'^([^\W\d_]{1,3})\s', t, flags=re.UNICODE))
+
+            # Сортируем: сначала параметры, начинающиеся с короткого слова (обычно предлоги), затем остальные
+            indices.sort(key=lambda i: (0 if _starts_with_short_word(tail[i]) else 1, i))
+
+            for idx in indices:
+                token = tail[idx]
+                if replace_entire_token:
+                    # Не заменяем целиком, если новая подстрока пустая/короткая
+                    # или параметр не совпадает полностью со старым фрагментом (после нормализации пробелов)
+                    if not new_sub or len(old_sub.strip()) < 2:
+                        pass
+                    else:
+                        norm = lambda s: re.sub(r"\s+", " ", (s or '').strip()).casefold()
+                        if norm(token) == norm(old_sub):
+                            tail[idx] = new_sub
+                            changed = True
+                            break
+                if not changed:
+                    new_token, n = ci_old_word.subn(new_sub, token, count=1)
+                    if n > 0:
+                        tail[idx] = new_token
+                        changed = True
+                        break
+            if changed:
+                new_inner = '|'.join([head] + tail)
+                return '{{' + new_inner + '}}', True
+            return template_chunk, False
+        except Exception:
+            return template_chunk, False
+
+    def _find_template_param_partial(self, text: str, old_full: str, new_full: str, family: str, lang: str) -> list[dict]:
+        """Ищет кандидатов в шаблонах, где в безымянных параметрах встречаются части старого названия.
+        Возвращает список словарей: {'template', 'proposed_template', 'old_sub', 'new_sub'}
+        """
+        results: list[dict] = []
+        try:
+            pairs = self._compute_partial_pairs(old_full, new_full, family, lang)
+            if not pairs:
+                return results
+            seen_templates: set[str] = set()
+            # Находим грубо все куски шаблонов
+            start = 0
+            while True:
+                l = text.find('{{', start)
+                if l == -1:
+                    break
+                r = text.find('}}', l + 2)
+                if r == -1:
+                    break
+                chunk = text[l:r+2]
+                start = r + 2
+                if '|' not in chunk:
+                    continue
+                if chunk in seen_templates:
+                    continue
+                for old_sub, new_sub in pairs:
+                    if not old_sub:
+                        continue
+                    pat = self._compile_wordish(old_sub)
+                    if pat.search(chunk) or (self._norm_space_fold(old_sub) in self._norm_space_fold(chunk)):
+                        # Если new_sub пуст (удаление, как «район1» → «район»), не заменяем целиком — только точечно
+                        if new_sub:
+                            # Сначала пробуем заменить целиком значение параметра
+                            new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub, replace_entire_token=True)
+                        else:
+                            new_chunk, changed = (chunk, False)
+                        if not changed:
+                            # Если не вышло — fallback на точечную подстановку внутри параметра
+                            new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub, replace_entire_token=False)
+                        if changed:
+                            seen_templates.add(chunk)
+                            results.append({
+                                'template': chunk,
+                                'proposed_template': new_chunk,
+                                'old_sub': old_sub,
+                                'new_sub': new_sub,
+                            })
+                            break
+                # Дополнительно, если ничего не найдено по парам, пробуем упрощённое правило «предлог+слово → предлог+слово»
+                if chunk not in seen_templates:
+                    # извлекаем безымянные параметры
+                    inner = chunk[2:-2]
+                    parts = inner.split('|')
+                    unnamed = [p for p in parts[1:] if '=' not in p]
+                    # соберём все предлоговые фразы длиной 2 токена минимум
+                    for tok in unnamed:
+                        m = re.search(r"(^|\s)([^\W\d_]{1,3})\s+([^|]+)$", tok.strip(), flags=re.UNICODE)
+                        if m:
+                            short = m.group(2)
+                            rest = m.group(3).strip()
+                            # ищем соответствие старой/новой фразы по словам
+                            for old_sub, new_sub in pairs:
+                                if not old_sub or not new_sub:
+                                    continue
+                                # старое/новое должно начинаться с короткого слова
+                                mo = re.match(rf"^([^\W\d_]{{1,3}})\s+(.+)$", old_sub.strip(), flags=re.UNICODE)
+                                mn = re.match(rf"^([^\W\d_]{{1,3}})\s+(.+)$", new_sub.strip(), flags=re.UNICODE)
+                                if not mo or not mn:
+                                    continue
+                                if mo.group(1).casefold() == short.casefold():
+                                    # если хвосты совпадают по началу/слову — предлагаем замену целиком
+                                    if self._norm_space_fold(rest).startswith(self._norm_space_fold(mo.group(2))[:1]):
+                                        new_tail = f"{short} {mn.group(2)}"
+                                        new_chunk, changed = self._replace_in_unnamed_params_once(chunk, tok, new_tail, replace_entire_token=True)
+                                        if changed:
+                                            seen_templates.add(chunk)
+                                            results.append({
+                                                'template': chunk,
+                                                'proposed_template': new_chunk,
+                                                'old_sub': tok,
+                                                'new_sub': new_tail,
+                                            })
+                                            break
+            return results
+        except Exception:
+            return results
+
     def _on_review_response(self, payload: object) -> None:
         try:
             data = payload or {}
             req_id = int(data.get('request_id'))
-            action = str(data.get('action') or '')
             ev = self._prompt_events.get(req_id)
             if ev is not None:
-                self._prompt_results[req_id] = action
+                # Сохраняем весь ответ (включая возможное edited_template)
+                self._prompt_results[req_id] = data
                 ev.set()
         except Exception:
             pass
 
-    def _prompt_user_template_replace(self, page_title: str, template_str: str, old_full: str, new_full: str) -> str:
-        """Синхронно запрашивает у пользователя подтверждение. Возвращает 'confirm'|'skip'|'cancel'."""
+    def _prompt_user_template_replace(self, page_title: str, template_str: str, old_full: str, new_full: str,
+                                      proposed_template: str | None = None,
+                                      old_sub: str | None = None,
+                                      new_sub: str | None = None) -> dict:
+        """Синхронно запрашивает у пользователя подтверждение.
+        Возвращает словарь с полями: {'action': 'confirm'|'skip'|'cancel', 'edited_template'?: str}
+        """
         try:
             self._req_seq += 1
             req_id = self._req_seq
             ev = Event()
             self._prompt_events[req_id] = ev
-            self._prompt_results[req_id] = ''
+            self._prompt_results[req_id] = {}
             self.template_review_request.emit({
                 'request_id': req_id,
                 'page_title': page_title,
                 'template': template_str,
                 'old_full': old_full,
                 'new_full': new_full,
+                'mode': 'partial' if proposed_template is not None else 'direct',
+                'proposed_template': proposed_template or '',
+                'old_sub': old_sub or '',
+                'new_sub': new_sub or '',
             })
 
             while not self._stop and not ev.wait(0.1):
                 pass
-            action = self._prompt_results.get(req_id, '')
+            result = self._prompt_results.get(req_id, {}) or {}
 
             self._prompt_events.pop(req_id, None)
             self._prompt_results.pop(req_id, None)
-            return action or 'skip'
+            action = str(result.get('action') or '') or 'skip'
+            result['action'] = action
+            return result
         except Exception:
-            return 'skip'
+            return {'action': 'skip'}
 
     def _move_category_members(self, site: pywikibot.Site, old_name: str, new_name: str):
         family, lang = self.family, self.lang
         old_full = _ensure_title_with_ns(old_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
         new_full = _ensure_title_with_ns(new_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
 
+        # Если страница категории отсутствует, но есть участники — сообщаем и всё равно начнём перенос
         try:
-            if not pywikibot.Page(site, new_full).exists():
-                self.progress.emit(f"Новая категория '{new_full}' не найдена — перенос участников пропущен.")
-                return
+            try:
+                old_page_exists = pywikibot.Page(site, old_full).exists()
+            except Exception:
+                old_page_exists = None
+            if old_page_exists is False:
+                api_check = build_api_url(family, lang)
+                params_check = {
+                    'action': 'query',
+                    'list': 'categorymembers',
+                    'cmtitle': old_full,
+                    'cmlimit': '1',
+                    'cmprop': 'ids',
+                    'format': 'json'
+                }
+                _rate_wait()
+                r_check = REQUEST_SESSION.get(api_check, params=params_check, timeout=20, headers=REQUEST_HEADERS)
+                if r_check.status_code == 200:
+                    data_check = r_check.json()
+                    has_any = bool(data_check.get('query', {}).get('categorymembers') or [])
+                    if has_any:
+                        self.progress.emit(f"Категория '{old_full}' не существует, но в ней есть содержимое — пытаемся перенести в '{new_full}'.")
         except Exception:
             pass
 
@@ -1271,7 +1627,7 @@ class RenameWorker(QThread):
                             new_txt, cnt = self._replace_category_links_in_text(txt, family, lang, old_full, new_full)
                             if cnt > 0 and new_txt != txt:
                                 page.text = new_txt
-                                page.save(summary=f"Перенос категории: [[{old_full}]] → [[{new_full}]]", minor=True)
+                                page.save(summary=f"[[{old_full}]] → [[{new_full}]]", minor=True)
                                 any_changed = True
                                 moved_direct += 1
 
@@ -1280,7 +1636,7 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f"→ {new_full} → {t}: {typ} перенесена")
+                                self.progress.emit(f"▪️ {new_full} → {t}: {typ} перенесена")
                         except Exception as e:
                             self.progress.emit(f"{t}: ошибка переноса категории: {e}")
                     if not any_changed and title not in backlog_seen:
@@ -1297,7 +1653,7 @@ class RenameWorker(QThread):
             return
 
         if backlog and self.find_in_templates:
-            self.progress.emit(f"Не удалось авто-перенести: {len(backlog)} страниц(ы). Требуются ручные действия.")
+            self.progress.emit(f"Не удалось перенести автоматически: {len(backlog)} страниц(ы). Требуются ручные действия.")
 
         # Фаза 2: поиск в параметрах шаблонов с подтверждением пользователя
         for title in (backlog if self.find_in_templates else []):
@@ -1309,6 +1665,8 @@ class RenameWorker(QThread):
                     continue
                 txt = page.text
                 visited = set()
+                made_change = False
+                # 1) Сначала пытаемся найти прямые указания полной категории в шаблонах
                 while not self._stop:
                     candidates = self._find_template_param_category(txt, old_full)
                     candidates = [c for c in candidates if c not in visited]
@@ -1316,19 +1674,22 @@ class RenameWorker(QThread):
                         break
                     tmpl = candidates[0]
                     visited.add(tmpl)
-                    decision = self._prompt_user_template_replace(title, tmpl, old_full, new_full)
-                    if decision == 'cancel':
+                    result = self._prompt_user_template_replace(title, tmpl, old_full, new_full)
+                    action = result.get('action') if isinstance(result, dict) else str(result)
+                    if action == 'cancel':
                         self._stop = True
                         break
-                    if decision == 'confirm':
+                    if action == 'confirm':
                         try:
-                            new_tmpl = tmpl.replace(old_full, new_full)
+                            edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
+                            new_tmpl = edited if edited.strip() else tmpl.replace(old_full, new_full)
                             new_txt = txt.replace(tmpl, new_tmpl, 1)
                             if new_txt != txt:
                                 page.text = new_txt
-                                page.save(summary=f"Перенос категории (через параметр шаблона): [[{old_full}]] → [[{new_full}]]", minor=True)
+                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
                                 txt = new_txt
                                 moved_via_template += 1
+                                made_change = True
                                 try:
                                     nsid = page.namespace().id
                                     typ = 'категория' if nsid == 14 else 'статья'
@@ -1338,6 +1699,54 @@ class RenameWorker(QThread):
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
                     # skip => продолжаем к следующему кандидату
+
+                # 2) Если прямых указаний нет или пользователь всё пропустил — пробуем «по частям»
+                if not self._stop and not made_change:
+                    partial_seen: set[str] = set()
+                    while not self._stop:
+                        cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
+                        # уберём уже показанные кандидаты
+                        cand_list = [c for c in cand_list if c.get('template') not in partial_seen]
+                        if not cand_list:
+                            # прямых и частичных совпадений не найдено
+                            self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
+                            break
+                        c0 = cand_list[0]
+                        partial_seen.add(str(c0.get('template')))
+                        result = self._prompt_user_template_replace(
+                            title,
+                            str(c0.get('template') or ''),
+                            old_full,
+                            new_full,
+                            proposed_template=str(c0.get('proposed_template') or ''),
+                            old_sub=str(c0.get('old_sub') or ''),
+                            new_sub=str(c0.get('new_sub') or ''),
+                        )
+                        action = result.get('action') if isinstance(result, dict) else str(result)
+                        if action == 'cancel':
+                            self._stop = True
+                            break
+                        if action == 'confirm':
+                            try:
+                                edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
+                                replacement = edited if edited.strip() else str(c0.get('proposed_template') or '')
+                                tmpl_old = str(c0.get('template') or '')
+                                if replacement and tmpl_old and replacement != tmpl_old:
+                                    new_txt = txt.replace(tmpl_old, replacement, 1)
+                                    if new_txt != txt:
+                                        page.text = new_txt
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        txt = new_txt
+                                        moved_via_template += 1
+                                        made_change = True
+                                        try:
+                                            nsid = page.namespace().id
+                                            typ = 'категория' if nsid == 14 else 'статья'
+                                        except Exception:
+                                            typ = 'страница'
+                                        self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена (частичная замена)")
+                            except Exception as e:
+                                self.progress.emit(f"{title}: ошибка правки шаблона (частично): {e}")
             except Exception as e:
                 self.progress.emit(f"{title}: ошибка обработки на ручной фазе: {e}")
 
@@ -1592,8 +2001,7 @@ class MainWindow(QMainWindow):
 
 
 
-    def _creds_ok(self):
-        return bool(self.user_edit.text().strip() and self.pass_edit.text().strip())
+ 
 
     def _apply_cred_style(self, ok: bool):
         css_ok = 'background-color:#d4edda'
@@ -2207,46 +2615,118 @@ class MainWindow(QMainWindow):
                 try:
                     data = payload or {}
                     req_id = int(data.get('request_id'))
-                    page_title = str(data.get('page_title') or '')
                     template_str = str(data.get('template') or '')
                     old_full = str(data.get('old_full') or '')
                     new_full = str(data.get('new_full') or '')
+                    mode = str(data.get('mode') or 'direct')
+                    proposed_template = str(data.get('proposed_template') or '')
+                    old_sub = str(data.get('old_sub') or '')
+                    new_sub = str(data.get('new_sub') or '')
                     # Подсветка внутри шаблона
                     esc_tmpl = html.escape(template_str)
                     esc_old = html.escape(old_full)
                     esc_new = html.escape(new_full)
-                    highlighted_old = esc_tmpl.replace(esc_old, f"<span style='color:#8b0000;font-weight:bold'>{esc_old}</span>")
-                    proposed = html.escape(template_str.replace(old_full, new_full, 1))
-                    highlighted_new = proposed.replace(esc_new, f"<span style='color:#0b6623;font-weight:bold'>{esc_new}</span>")
+                    if mode == 'direct':
+                        highlighted_old = esc_tmpl.replace(esc_old, f"<span style='color:#8b0000;font-weight:bold'>{esc_old}</span>")
+                        proposed = html.escape(template_str.replace(old_full, new_full, 1))
+                        highlighted_new = proposed.replace(esc_new, f"<span style='color:#0b6623;font-weight:bold'>{esc_new}</span>")
 
-                    msg = (
-                        f"Категория в статье не найдена. Возможно категоризация происходит через шаблон:<br/><br/>"
-                        f"<code>{highlighted_old}</code><br/><br/>"
-                        f"Подтверждаете ли вы замену шаблона на:<br/><br/>"
-                        f"<code>{highlighted_new}</code>"
-                    )
-                    dlg = QMessageBox(self)
-                    dlg.setWindowTitle('Подтверждение замены')
-                    dlg.setTextFormat(Qt.RichText)
-                    dlg.setIcon(QMessageBox.Question)
-                    dlg.setText(msg)
-                    confirm_btn = dlg.addButton('Подтвердить', QMessageBox.AcceptRole)
-                    skip_btn = dlg.addButton('Пропустить', QMessageBox.DestructiveRole)
-                    cancel_btn = dlg.addButton('Отмена', QMessageBox.RejectRole)
-                    dlg.exec()
-                    clicked = dlg.clickedButton()
-                    if clicked is confirm_btn:
-                        action = 'confirm'
-                    elif clicked is skip_btn:
-                        action = 'skip'
+                        msg = (
+                            f"Категория в статье не найдена. Возможно категоризация происходит через шаблон:<br/><br/>"
+                            f"<code>{highlighted_old}</code><br/><br/>"
+                            f"Подтверждаете ли вы замену шаблона на:<br/><br/>"
+                            f"<code>{highlighted_new}</code>"
+                        )
+                        dlg = QMessageBox(self)
+                        dlg.setWindowTitle('Подтверждение замены')
+                        dlg.setTextFormat(Qt.RichText)
+                        dlg.setIcon(QMessageBox.Question)
+                        dlg.setText(msg)
+                        confirm_btn = dlg.addButton('Подтвердить', QMessageBox.AcceptRole)
+                        skip_btn = dlg.addButton('Пропустить', QMessageBox.DestructiveRole)
+                        dlg.addButton('Отмена', QMessageBox.RejectRole)
+                        dlg.exec()
+                        clicked = dlg.clickedButton()
+                        if clicked is confirm_btn:
+                            action = 'confirm'
+                        elif clicked is skip_btn:
+                            action = 'skip'
+                        else:
+                            action = 'cancel'
+                        w = getattr(self, 'mrworker', None)
+                        if w is not None:
+                            try:
+                                w.review_response.emit({'request_id': req_id, 'action': action})
+                            except Exception:
+                                pass
                     else:
-                        action = 'cancel'
-                    w = getattr(self, 'mrworker', None)
-                    if w is not None:
-                        try:
-                            w.review_response.emit({'request_id': req_id, 'action': action})
-                        except Exception:
-                            pass
+                        # partial: показываем редактируемый диалог с предложенным вариантом
+                        esc_old_sub = html.escape(old_sub)
+                        esc_new_sub = html.escape(new_sub)
+                        highlighted_old = esc_tmpl
+                        if esc_old_sub:
+                            highlighted_old = highlighted_old.replace(esc_old_sub, f"<span style='color:#8b0000;font-weight:bold'>{esc_old_sub}</span>")
+                        esc_prop = html.escape(proposed_template or (template_str.replace(old_sub, new_sub, 1) if old_sub and new_sub else template_str))
+                        highlighted_new = esc_prop
+                        if esc_new_sub:
+                            highlighted_new = highlighted_new.replace(esc_new_sub, f"<span style='color:#0b6623;font-weight:bold'>{esc_new_sub}</span>")
+
+                        dlg = QDialog(self)
+                        dlg.setWindowTitle('Замена по частям в параметрах шаблона')
+                        lay = QVBoxLayout(dlg)
+                        msg_top = QLabel(
+                            (
+                                "Категория не найдена напрямую. Обнаружены совпадения по частям в параметрах шаблона."\
+                                " Проверьте и при необходимости подредактируйте.")
+                        )
+                        msg_top.setWordWrap(True)
+                        lay.addWidget(msg_top)
+
+                        lbl_old = QLabel(f"<b>Исходный вызов:</b><br/><code>{highlighted_old}</code>")
+                        lbl_old.setTextFormat(Qt.RichText)
+                        lay.addWidget(lbl_old)
+
+                        lbl_new = QLabel(f"<b>Предлагаемая замена:</b><br/><code>{highlighted_new}</code>")
+                        lbl_new.setTextFormat(Qt.RichText)
+                        lay.addWidget(lbl_new)
+
+                        edit = QPlainTextEdit()
+                        edit.setPlainText(proposed_template or (template_str.replace(old_sub, new_sub, 1) if old_sub and new_sub else template_str))
+                        edit.setMinimumHeight(160)
+                        lay.addWidget(edit)
+
+                        row = QHBoxLayout()
+                        btn_confirm = QPushButton('Подтвердить и сохранить')
+                        btn_skip = QPushButton('Пропустить')
+                        btn_cancel = QPushButton('Отмена')
+                        row.addStretch(); row.addWidget(btn_confirm); row.addWidget(btn_skip); row.addWidget(btn_cancel)
+                        lay.addLayout(row)
+
+                        def _on(btn):
+                            nonlocal action
+                            if btn is btn_confirm:
+                                action = 'confirm'
+                            elif btn is btn_skip:
+                                action = 'skip'
+                            else:
+                                action = 'cancel'
+                            dlg.accept()
+
+                        action = 'skip'
+                        btn_confirm.clicked.connect(lambda: _on(btn_confirm))
+                        btn_skip.clicked.connect(lambda: _on(btn_skip))
+                        btn_cancel.clicked.connect(lambda: _on(btn_cancel))
+                        dlg.exec()
+
+                        w = getattr(self, 'mrworker', None)
+                        if w is not None:
+                            try:
+                                payload = {'request_id': req_id, 'action': action}
+                                if action == 'confirm':
+                                    payload['edited_template'] = edit.toPlainText()
+                                w.review_response.emit(payload)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
@@ -2356,6 +2836,9 @@ class MainWindow(QMainWindow):
         color = None
         if 'ошибка' in lower or 'не найдено' in lower:
             color = 'red'
+        elif 'не существует' in lower:
+            # оранжевый для статуса "не существует"
+            color = '#ff8c00'
         elif 'уже существует' in lower:
             # тёмно-жёлтый для статуса "уже существует"
             color = '#b8860b'
@@ -2417,6 +2900,16 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(lambda m: [self._inc_parse_prog(), self.log(self.parse_log, m)])
         self.worker.finished.connect(self._on_parse_finished)
         self.parse_btn.setEnabled(False)
+        # Возвращаем кнопку в режим «Остановить» при старте нового считывания
+        try:
+            try:
+                self.parse_stop_btn.clicked.disconnect()
+            except Exception:
+                pass
+            self.parse_stop_btn.setText('Остановить')
+            self.parse_stop_btn.clicked.connect(self.stop_parse)
+        except Exception:
+            pass
         self.parse_stop_btn.setEnabled(True)
         self.parse_log.clear()
         self.worker.start()
@@ -2431,23 +2924,52 @@ class MainWindow(QMainWindow):
                 self.log(self.parse_log, 'Останавливаю...')
             except Exception:
                 pass
+        else:
+            # Если не запущено — считаем, что кнопка в режиме «Открыть» и ничего не делаем
+            pass
 
     def _on_parse_finished(self):
-        self.parse_btn.setEnabled(True)
-        self.parse_stop_btn.setEnabled(False)
-        msg = 'Остановлено!' if getattr(self, 'worker', None) and getattr(self.worker, '_stop', False) else 'Готово!'
-        self.log(self.parse_log, msg)
+        # Переключаем кнопку «Остановить» → «Открыть» по завершении
+        try:
+            self.parse_btn.setEnabled(True)
+            if getattr(self, 'worker', None) and getattr(self.worker, '_stop', False):
+                # Если остановлено — вернём кнопку к исходному состоянию
+                self.parse_stop_btn.setText('Остановить')
+                self.parse_stop_btn.setEnabled(False)
+                msg = 'Остановлено!'
+            else:
+                # Завершено штатно — меняем на «Открыть»
+                self.parse_stop_btn.setText('Открыть')
+                self.parse_stop_btn.setEnabled(True)
+                # Привяжем к открытию файла результата
+                out_path = self.out_path.text().strip()
+                def _open_result():
+                    try:
+                        if out_path and os.path.isfile(out_path):
+                            os.startfile(out_path)
+                        else:
+                            QMessageBox.information(self, 'Файл не найден', 'Файл результата не найден.')
+                    except Exception as e:
+                        QMessageBox.warning(self, 'Ошибка', str(e))
+                try:
+                    # Сбрасываем старые коннекты, если были
+                    try:
+                        self.parse_stop_btn.clicked.disconnect()
+                    except Exception:
+                        pass
+                    self.parse_stop_btn.clicked.connect(_open_result)
+                except Exception:
+                    pass
+                msg = 'Готово!'
+            self.log(self.parse_log, msg)
+        except Exception:
+            pass
 
     def _inc_parse_prog(self):
         self.parse_bar.setValue(self.parse_bar.value()+1)
 
 
-    def open_result_file(self):
-        path = self.out_path.text().strip()
-        if not path or not os.path.isfile(path):
-            QMessageBox.warning(self, 'Файл не найден', 'Файл результата ещё не создан.')
-            return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+ 
 
     def start_replace(self):
         debug(f'Start replace: file={self.tsv_path.text()}')
@@ -2657,7 +3179,8 @@ class MainWindow(QMainWindow):
         lang = (self.lang_combo.currentText() or 'ru').strip()
         cfg_dir = config_base_dir()
 
-        user = self.user_edit.text().strip()
+        # Считываем введённое имя пользователя (значение не требуется далее)
+        self.user_edit.text().strip()
         _delete_all_cookies(cfg_dir)
         reset_pywikibot_session(None)
 
