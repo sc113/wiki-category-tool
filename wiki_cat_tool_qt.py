@@ -121,6 +121,7 @@ DEBUG_VIEW = None
 # ===== AWB Bypass System =====
 BYPASS_AWB = False
 BYPASS_TOKEN: str | None = None
+AWB_CHECKS_DISABLED = True  # TEMP: отключение проверок AWB
 
 def set_bypass_awb(flag: bool) -> None:
     global BYPASS_AWB
@@ -128,7 +129,7 @@ def set_bypass_awb(flag: bool) -> None:
     debug(f"Bypass AWB set to {BYPASS_AWB}")
 
 def is_bypass_awb() -> bool:
-    return bool(BYPASS_AWB)
+    return True if AWB_CHECKS_DISABLED else bool(BYPASS_AWB)
 
 def try_load_bypass_awb_from_embedded() -> bool:
     """Пытается загрузить токен обхода AWB только из модуля `_embedded_secrets`.
@@ -1185,10 +1186,43 @@ class RenameWorker(QThread):
                 self.progress.emit(f"Страница назначения '{new_name}' уже существует.")
                 return
 
-            # noredirect=True означает НЕ оставлять редирект
-            page.move(new_name, reason=reason, movetalk=True, noredirect=not leave_redirect)
-            redir_status = "с редиректом" if leave_redirect else "без редиректа"
-            self.progress.emit(f"Переименована '{old_name}' → '{new_name}' {redir_status}.")
+            # Адаптивный бэкофф для move
+            move_min_interval = 0.25
+            last_move_ts = 0.0
+
+            def wait_before_move():
+                nonlocal last_move_ts
+                now = time.time()
+                to_wait = max(0.0, (last_move_ts + move_min_interval) - now)
+                if to_wait > 0:
+                    time.sleep(to_wait)
+                last_move_ts = time.time()
+
+            def increase_interval(attempt: int):
+                nonlocal move_min_interval
+                move_min_interval = min(max(move_min_interval * 1.5, 0.6 * attempt), 2.5)
+
+            def is_rate_error(err: Exception) -> bool:
+                msg = (str(err) or '').lower()
+                return ('429' in msg or 'too many requests' in msg or 'ratelimit' in msg or 'rate limit' in msg or 'maxlag' in msg or 'readonly' in msg)
+
+            for attempt in range(1, 6):
+                try:
+                    wait_before_move()
+                    # noredirect=True означает НЕ оставлять редирект
+                    page.move(new_name, reason=reason, movetalk=True, noredirect=not leave_redirect)
+                    redir_status = "с редиректом" if leave_redirect else "без редиректа"
+                    self.progress.emit(f"Переименована '{old_name}' → '{new_name}' {redir_status}.")
+                    break
+                except Exception as e:
+                    if is_rate_error(e) and attempt < 6:
+                        increase_interval(attempt)
+                        try:
+                            self.progress.emit(f"Лимит при переименовании: пауза {move_min_interval:.2f}s · попытка {attempt}/5")
+                        except Exception:
+                            pass
+                        continue
+                    raise
         except Exception as e:
             self.progress.emit(f"Ошибка при переименовании '{old_name}' → '{new_name}': {e}")
 
@@ -1266,6 +1300,9 @@ class RenameWorker(QThread):
             new_base = self._strip_cat_prefix(new_full, family, lang)
             sm = difflib.SequenceMatcher(a=old_base, b=new_base)
             pairs: list[tuple[str, str]] = []
+            # В первую очередь — полная пара «всё старое имя» → «всё новое имя»
+            if old_base and new_base and old_base != new_base:
+                pairs.append((old_base, new_base))
 
             def _token_at(s: str, idx: int, direction: int) -> str:
                 # Возвращает соседнее слово слева (direction=-1) или справа (direction=+1)
@@ -1437,15 +1474,11 @@ class RenameWorker(QThread):
                         continue
                     pat = self._compile_wordish(old_sub)
                     if pat.search(chunk) or (self._norm_space_fold(old_sub) in self._norm_space_fold(chunk)):
-                        # Если new_sub пуст (удаление, как «район1» → «район»), не заменяем целиком — только точечно
-                        if new_sub:
-                            # Сначала пробуем заменить целиком значение параметра
-                            new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub, replace_entire_token=True)
-                        else:
-                            new_chunk, changed = (chunk, False)
+                        # Сначала пробуем заменить целиком совпадающий параметр, если весь токен равен old_sub
+                        new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub or '', replace_entire_token=True)
                         if not changed:
                             # Если не вышло — fallback на точечную подстановку внутри параметра
-                            new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub, replace_entire_token=False)
+                            new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub or '', replace_entire_token=False)
                         if changed:
                             seen_templates.add(chunk)
                             results.append({
@@ -1588,10 +1621,24 @@ class RenameWorker(QThread):
         backlog: list[str] = []
         backlog_seen: set[str] = set()
 
+        # Адаптивные интервалы для чтения и записи
+        read_min_interval = 0.15
+        last_read_ts = 0.0
+        write_min_interval = 0.25
+        last_write_ts = 0.0
 
         while not self._stop:
-            _rate_wait()
+            # локальный адаптивный троттлинг чтения списка участников
+            now = time.time()
+            to_wait = max(0.0, (last_read_ts + read_min_interval) - now)
+            if to_wait > 0:
+                time.sleep(to_wait)
+            last_read_ts = time.time()
             r = REQUEST_SESSION.get(api, params=params, timeout=20, headers=REQUEST_HEADERS)
+            if r.status_code == 429:
+                read_min_interval = min(max(read_min_interval * 1.7, 0.6), 2.0)
+                debug(f"Read members backoff: {read_min_interval:.2f}s")
+                continue
             if r.status_code != 200:
                 self.progress.emit(f"Ошибка API при получении участников категории '{old_full}': HTTP {r.status_code}")
                 break
@@ -1626,8 +1673,29 @@ class RenameWorker(QThread):
                             txt = page.text
                             new_txt, cnt = self._replace_category_links_in_text(txt, family, lang, old_full, new_full)
                             if cnt > 0 and new_txt != txt:
-                                page.text = new_txt
-                                page.save(summary=f"[[{old_full}]] → [[{new_full}]]", minor=True)
+                                # сохранение с адаптивным бэкоффом
+                                saved = False
+                                for attempt in range(1, 6):
+                                    try:
+                                        now2 = time.time()
+                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        if wait2 > 0:
+                                            time.sleep(wait2)
+                                        page.text = new_txt
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]]", minor=True)
+                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        last_write_ts = time.time()
+                                        saved = True
+                                        break
+                                    except Exception as e:
+                                        msg = (str(e) or '').lower()
+                                        if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(f"Move member save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            continue
+                                        raise
+                                if not saved:
+                                    continue
                                 any_changed = True
                                 moved_direct += 1
 
@@ -1685,8 +1753,25 @@ class RenameWorker(QThread):
                             new_tmpl = edited if edited.strip() else tmpl.replace(old_full, new_full)
                             new_txt = txt.replace(tmpl, new_tmpl, 1)
                             if new_txt != txt:
-                                page.text = new_txt
-                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                # сохранение с адаптивным бэкоффом
+                                for attempt in range(1, 6):
+                                    try:
+                                        now2 = time.time()
+                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        if wait2 > 0:
+                                            time.sleep(wait2)
+                                        page.text = new_txt
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        last_write_ts = time.time()
+                                        break
+                                    except Exception as e:
+                                        msg = (str(e) or '').lower()
+                                        if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            continue
+                                        raise
                                 txt = new_txt
                                 moved_via_template += 1
                                 made_change = True
@@ -1734,8 +1819,25 @@ class RenameWorker(QThread):
                                 if replacement and tmpl_old and replacement != tmpl_old:
                                     new_txt = txt.replace(tmpl_old, replacement, 1)
                                     if new_txt != txt:
-                                        page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        # сохранение с адаптивным бэкоффом
+                                        for attempt in range(1, 6):
+                                            try:
+                                                now2 = time.time()
+                                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                                if wait2 > 0:
+                                                    time.sleep(wait2)
+                                                page.text = new_txt
+                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                                last_write_ts = time.time()
+                                                break
+                                            except Exception as e:
+                                                msg = (str(e) or '').lower()
+                                                if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                                    debug(f"Template partial save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                                    continue
+                                                raise
                                         txt = new_txt
                                         moved_via_template += 1
                                         made_change = True
@@ -2022,6 +2124,22 @@ class MainWindow(QMainWindow):
         """Включает/выключает доступ к операциям записи в зависимости от допуска AWB.
         Оставляет доступной вкладку считывания.
         """
+
+        # TEMP: при отключённых проверках считаем доступ всегда есть и скрываем ссылки/тексты AWB
+        try:
+            if AWB_CHECKS_DISABLED:
+                has_awb = True
+                self.status_label.setText('Авторизовано')
+                for btn_name in ('replace_btn', 'create_btn', 'rename_btn'):
+                    try:
+                        btn = getattr(self, btn_name, None)
+                        if btn is not None:
+                            btn.setEnabled(True)
+                    except Exception:
+                        pass
+                return
+        except NameError:
+            pass
 
         if is_bypass_awb():
             has_awb = True
@@ -2763,7 +2881,9 @@ class MainWindow(QMainWindow):
                                 set_bypass_awb(True)
                                 self._set_awb_ui(True)
                                 debug('Bypass AWB activated via token')
-                                QMessageBox.information(self, 'Режим обхода', 'Доступ к AWB: обход включён.')
+                                # TEMP: не показываем всплывающее сообщение об обходе при отключённых проверках
+                                if not AWB_CHECKS_DISABLED:
+                                    QMessageBox.information(self, 'Режим обхода', 'Доступ к AWB: обход включён.')
                     else:
                         # Токен не задан — обход по клавишам невозможен
                         self._secret_buffer = ''
