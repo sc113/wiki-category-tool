@@ -52,11 +52,11 @@ if getattr(sys, 'stdout', None) is None:
 if getattr(sys, 'stderr', None) is None:
     sys.stderr = _GuiStdWriter()
 
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QEvent, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QUrl, QEvent, QTimer, QPoint
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout,
+    QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
     QSizePolicy, QDialog, QPlainTextEdit, QGroupBox
 )
@@ -1077,7 +1077,7 @@ class RenameWorker(QThread):
     template_review_request = Signal(object)
     review_response = Signal(object)
 
-    def __init__(self, tsv_path, username, password, lang, family, ns_selection: str | int, leave_cat_redirect: bool, leave_other_redirect: bool, move_members: bool, find_in_templates: bool):
+    def __init__(self, tsv_path, username, password, lang, family, ns_selection: str | int, leave_cat_redirect: bool, leave_other_redirect: bool, move_members: bool, find_in_templates: bool, phase1_enabled: bool, move_category: bool = True):
         super().__init__()
         self.tsv_path = tsv_path
         self.username = username
@@ -1088,8 +1088,15 @@ class RenameWorker(QThread):
         self.leave_cat_redirect = leave_cat_redirect
         self.leave_other_redirect = leave_other_redirect
         self.move_members = move_members
+        # Переименовывать ли саму категорию (если строка — категория)
+        self.move_category = move_category
+        # Фаза 2 (поиск в параметрах шаблонов)
         self.find_in_templates = find_in_templates
+        # Фаза 1 (прямые ссылки на категорию)
+        self.phase1_enabled = phase1_enabled
         self._stop = False
+        # Автоподтверждение прямых совпадений категории в параметрах шаблонов (фаза 2)
+        self.auto_confirm_direct_all: bool = False
 
         self._prompt_events: dict[int, Event] = {}
         self._prompt_results: dict[int, str] = {}
@@ -1150,9 +1157,9 @@ class RenameWorker(QThread):
                         new_name = new_name_raw
                         is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
 
-                    # Если переименовываем категорию и перенос содержимого ВЫКЛЮЧЕН —
+                    # Если переименовываем категорию и перенос содержимого (обе фазы) выключен —
                     # при отсутствии самой категории просто сообщаем и переходим к следующей строке
-                    if is_category and not self.move_members:
+                    if is_category and not (self.move_members and (self.phase1_enabled or self.find_in_templates)):
                         try:
                             old_full_check = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
                             if not pywikibot.Page(site, old_full_check).exists():
@@ -1162,9 +1169,16 @@ class RenameWorker(QThread):
                             pass
 
                     leave_redirect = self.leave_cat_redirect if is_category else self.leave_other_redirect
-                    self._move_page(site, old_name, new_name, reason, leave_redirect)
-                    # Если это категория и опция переноса включена — переносим участников
-                    if is_category and self.move_members and not self._stop:
+                    # Если отключено переименование категории — пропускаем сам move для категорий
+                    if is_category and not self.move_category:
+                        try:
+                            self.progress.emit(f"Пропущено переименование категории <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>. Переносим содержимое…")
+                        except Exception:
+                            pass
+                    else:
+                        self._move_page(site, old_name, new_name, reason, leave_redirect)
+                    # Если это категория и хотя бы одна фаза переноса включена — переносим участников
+                    if is_category and self.move_members and (self.phase1_enabled or self.find_in_templates) and not self._stop:
                         try:
                             self._move_category_members(site, old_name, new_name)
                         except Exception as e:
@@ -1180,10 +1194,10 @@ class RenameWorker(QThread):
             page = pywikibot.Page(site, old_name)
             new_page = pywikibot.Page(site, new_name)
             if not page.exists():
-                self.progress.emit(f"Страница '{old_name}' не найдена.")
+                self.progress.emit(f"Страница <b>{html.escape(old_name)}</b> не найдена.")
                 return
             if new_page.exists():
-                self.progress.emit(f"Страница назначения '{new_name}' уже существует.")
+                self.progress.emit(f"Страница назначения <b>{html.escape(new_name)}</b> уже существует.")
                 return
 
             # Адаптивный бэкофф для move
@@ -1212,7 +1226,7 @@ class RenameWorker(QThread):
                     # noredirect=True означает НЕ оставлять редирект
                     page.move(new_name, reason=reason, movetalk=True, noredirect=not leave_redirect)
                     redir_status = "с редиректом" if leave_redirect else "без редиректа"
-                    self.progress.emit(f"Переименована '{old_name}' → '{new_name}' {redir_status}.")
+                    self.progress.emit(f"Переименована <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b> {redir_status}.")
                     break
                 except Exception as e:
                     if is_rate_error(e) and attempt < 6:
@@ -1224,7 +1238,7 @@ class RenameWorker(QThread):
                         continue
                     raise
         except Exception as e:
-            self.progress.emit(f"Ошибка при переименовании '{old_name}' → '{new_name}': {e}")
+            self.progress.emit(f"Ошибка при переименовании <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>: {html.escape(str(e))}")
 
     def _cat_prefixes(self, family: str, lang: str) -> set[str]:
         info = _load_ns_info(family, lang)
@@ -1450,6 +1464,8 @@ class RenameWorker(QThread):
         """
         results: list[dict] = []
         try:
+            old_base = self._strip_cat_prefix(old_full, family, lang)
+            new_base = self._strip_cat_prefix(new_full, family, lang)
             pairs = self._compute_partial_pairs(old_full, new_full, family, lang)
             if not pairs:
                 return results
@@ -1469,6 +1485,55 @@ class RenameWorker(QThread):
                     continue
                 if chunk in seen_templates:
                     continue
+                # 0) Поиск точного значения категории в ИМЕНОВАННЫХ параметрах (с или без префикса)
+                try:
+                    inner = chunk[2:-2]
+                    parts = inner.split('|')
+                    head = parts[0]
+                    params = parts[1:]
+                    prefixes = self._cat_prefixes(family, lang)
+                    def _norm(s: str) -> str:
+                        return re.sub(r"\s+", " ", (s or '').strip()).replace('_', ' ').casefold()
+                    norm_old_base = _norm(old_base)
+                    for i, raw in enumerate(params):
+                        if '=' not in raw:
+                            continue
+                        m = re.match(r"^(?P<left>\s*[^=]+?)(?P<eq>\s*=\s*)(?P<val>.*)$", raw)
+                        if not m:
+                            continue
+                        val = m.group('val').strip()
+                        val_no_pref = val
+                        # Снимем возможный префикс пространства имён
+                        val_lower = val.casefold()
+                        for p in sorted(prefixes, key=len, reverse=True):
+                            p_no_colon = p[:-1]
+                            if val_lower.startswith(p_no_colon):
+                                # допускаем варианты без двоеточия/со пробелами
+                                m2 = re.match(rf"^{re.escape(p_no_colon)}\s*:\s*(.+)$", val, flags=re.IGNORECASE)
+                                if m2:
+                                    val_no_pref = m2.group(1).strip()
+                                break
+                        if _norm(val_no_pref) == norm_old_base:
+                            # Предлагаем замену, сохраняя стиль (с префиксом или без)
+                            new_val = val
+                            # если было с префиксом, заменим только хвост
+                            if val_no_pref != val:
+                                new_val = re.sub(r"(:\s*)(.+)$", lambda mm: f"{mm.group(1)}{new_base}", val, count=1)
+                            else:
+                                new_val = new_base
+                            new_param = f"{m.group('left')}{m.group('eq')}{new_val}"
+                            new_inner = '|'.join([head] + params[:i] + [new_param] + params[i+1:])
+                            proposed = '{{' + new_inner + '}}'
+                            seen_templates.add(chunk)
+                            results.append({
+                                'template': chunk,
+                                'proposed_template': proposed,
+                                'old_sub': val,
+                                'new_sub': new_val,
+                            })
+                            continue
+                except Exception:
+                    pass
                 for old_sub, new_sub in pairs:
                     if not old_sub:
                         continue
@@ -1671,7 +1736,9 @@ class RenameWorker(QThread):
                             if not page.exists():
                                 continue
                             txt = page.text
-                            new_txt, cnt = self._replace_category_links_in_text(txt, family, lang, old_full, new_full)
+                            new_txt, cnt = (txt, 0)
+                            if self.phase1_enabled:
+                                new_txt, cnt = self._replace_category_links_in_text(txt, family, lang, old_full, new_full)
                             if cnt > 0 and new_txt != txt:
                                 # сохранение с адаптивным бэкоффом
                                 saved = False
@@ -1707,7 +1774,8 @@ class RenameWorker(QThread):
                                 self.progress.emit(f"▪️ {new_full} → {t}: {typ} перенесена")
                         except Exception as e:
                             self.progress.emit(f"{t}: ошибка переноса категории: {e}")
-                    if not any_changed and title not in backlog_seen:
+                    # Если правки по Фазе 1 не было, а Фаза 2 включена — добавляем в backlog
+                    if not any_changed and self.find_in_templates and title not in backlog_seen:
                         backlog.append(title)
                         backlog_seen.add(title)
                 except Exception as e:
@@ -1742,11 +1810,55 @@ class RenameWorker(QThread):
                         break
                     tmpl = candidates[0]
                     visited.add(tmpl)
+                    # Если включено автоподтверждение для прямых совпадений — применяем без диалога
+                    if getattr(self, 'auto_confirm_direct_all', False):
+                        try:
+                            new_tmpl = tmpl.replace(old_full, new_full)
+                            new_txt = txt.replace(tmpl, new_tmpl, 1)
+                            if new_txt != txt:
+                                # сохранение с адаптивным бэкоффом
+                                for attempt in range(1, 6):
+                                    try:
+                                        now2 = time.time()
+                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        if wait2 > 0:
+                                            time.sleep(wait2)
+                                        page.text = new_txt
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        last_write_ts = time.time()
+                                        break
+                                    except Exception as e:
+                                        msg = (str(e) or '').lower()
+                                        if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            continue
+                                        raise
+                                txt = new_txt
+                                moved_via_template += 1
+                                made_change = True
+                                try:
+                                    nsid = page.namespace().id
+                                    typ = 'категория' if nsid == 14 else 'статья'
+                                except Exception:
+                                    typ = 'страница'
+                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                        except Exception as e:
+                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                        # Переходим к следующему кандидату
+                        continue
                     result = self._prompt_user_template_replace(title, tmpl, old_full, new_full)
                     action = result.get('action') if isinstance(result, dict) else str(result)
                     if action == 'cancel':
                         self._stop = True
                         break
+                    # Включаем авто-подтверждение для всех последующих прямых совпадений, если пользователь так решил
+                    try:
+                        if action == 'confirm' and isinstance(result, dict) and bool(result.get('auto_confirm_all')):
+                            self.auto_confirm_direct_all = True
+                    except Exception:
+                        pass
                     if action == 'confirm':
                         try:
                             edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
@@ -1880,8 +1992,12 @@ class RenameWorker(QThread):
         except Exception:
             remaining = -1
 
+        # Итоговая строка: компактно и наглядно; присутствует слово «готово» для зелёной подсветки в логе
         self.progress.emit(
-            f"Перенос завершён: авто={moved_direct}, по подтверждению={moved_via_template}, осталось={remaining if remaining>=0 else 'неизвестно'}"
+            "✅ Готово:\n"
+            f"— прямые замены: <b>{moved_direct}</b>,\n"
+            f"— через параметры шаблонов: <b>{moved_via_template}</b>,\n"
+            f"— осталось: <b>{remaining if remaining>=0 else 'неизвестно'}</b>."
         )
 
 # ===== Login Worker =====
@@ -1935,7 +2051,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('Wiki Category Tool')
 
-        self.setMinimumSize(1200, 700)
+        # Стартовый размер как раньше, но можно сжимать до меньшего минимума
+        self.resize(1200, 700)
+        self.setMinimumSize(900, 540)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
@@ -1953,21 +2071,32 @@ class MainWindow(QMainWindow):
         self.init_rename_tab()
 
 
-    def _add_info_button(self, host_layout, text: str):
-        """Insert an ℹ button aligned to the top-right of *host_layout*.
+    def _add_info_button(self, host_layout, text: str, inline: bool = False):
+        """Insert an ℹ button.
+
+        When inline=True and host_layout is QHBoxLayout, the button is placed
+        immediately after the previous widget. Otherwise, it is aligned to the
+        right edge of the host layout.
 
         Clicking the button shows *text* inside a modal information dialog.
         """
         btn = QToolButton()
-        btn.setText('ℹ')
+        btn.setText('❔')
         btn.setAutoRaise(True)
         btn.setToolTip(text)
         btn.clicked.connect(lambda _=None, t=text: QMessageBox.information(self, 'Справка', t))
 
-
         if isinstance(host_layout, QHBoxLayout):
-            host_layout.addStretch()
-            host_layout.addWidget(btn)
+            if inline:
+                # Добавляем кнопку сразу за предыдущим виджетом, без растяжки
+                try:
+                    host_layout.addSpacing(6)
+                except Exception:
+                    pass
+                host_layout.addWidget(btn, 0, Qt.AlignLeft)
+            else:
+                host_layout.addStretch()
+                host_layout.addWidget(btn)
         else:
             row = QHBoxLayout()
             row.addStretch()
@@ -1979,18 +2108,22 @@ class MainWindow(QMainWindow):
     def init_auth_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        try:
+            tab.setStyleSheet("QWidget { font-size: 13px; } QLineEdit, QComboBox, QPushButton { min-height: 30px; }")
+        except Exception:
+            pass
         self.user_edit = QLineEdit(); self.user_edit.setPlaceholderText('Имя пользователя')
         self.pass_edit = QLineEdit(); self.pass_edit.setPlaceholderText('Пароль'); self.pass_edit.setEchoMode(QLineEdit.Password)
 
         layout_form = QVBoxLayout()
         layout_form.setAlignment(Qt.AlignHCenter)
-        layout_form.setSpacing(4)
+        layout_form.setSpacing(10)
 
         layout.addStretch(1)
         layout.addLayout(layout_form)
 
         layout.addStretch(2)
-        layout.setContentsMargins(0, 10, 0, 10)
+        layout.setContentsMargins(0, 14, 0, 14)
 
 
         lang_help = (
@@ -1999,6 +2132,10 @@ class MainWindow(QMainWindow):
         )
         row_lang = QHBoxLayout()
         row_lang.setAlignment(Qt.AlignHCenter)
+        try:
+            row_lang.setSpacing(8)
+        except Exception:
+            pass
         lang_label = QLabel('Язык вики:')
         row_lang.addWidget(lang_label)
         self.lang_combo = QComboBox(); self.lang_combo.setEditable(True)
@@ -2009,7 +2146,7 @@ class MainWindow(QMainWindow):
         self.lang_combo.currentTextChanged.connect(self._on_lang_change)
         row_lang.addWidget(self.lang_combo)
 
-        info_btn = QToolButton(); info_btn.setText('ℹ'); info_btn.setAutoRaise(True)
+        info_btn = QToolButton(); info_btn.setText('❔'); info_btn.setAutoRaise(True)
         info_btn.setToolTip(lang_help)
         info_btn.clicked.connect(lambda _=None: QMessageBox.information(self, 'Справка', lang_help))
         row_lang.addWidget(info_btn)
@@ -2025,6 +2162,10 @@ class MainWindow(QMainWindow):
         )
         row_fam = QHBoxLayout()
         row_fam.setAlignment(Qt.AlignHCenter)
+        try:
+            row_fam.setSpacing(8)
+        except Exception:
+            pass
         fam_label = QLabel('Проект:')
         row_fam.addWidget(fam_label)
         self.family_combo = QComboBox(); self.family_combo.setEditable(False)
@@ -2044,7 +2185,7 @@ class MainWindow(QMainWindow):
         self.family_combo.setCurrentText('wikipedia')
         self.family_combo.setMaximumWidth(250)
         row_fam.addWidget(self.family_combo)
-        fam_btn = QToolButton(); fam_btn.setText('ℹ'); fam_btn.setAutoRaise(True)
+        fam_btn = QToolButton(); fam_btn.setText('❔'); fam_btn.setAutoRaise(True)
         fam_btn.setToolTip(fam_help)
         fam_btn.clicked.connect(lambda _=None: QMessageBox.information(self, 'Справка', fam_help))
         row_fam.addWidget(fam_btn)
@@ -2066,8 +2207,13 @@ class MainWindow(QMainWindow):
             pass
 
 
-        self.user_edit.setMinimumWidth(250)
-        self.pass_edit.setMinimumWidth(250)
+        self.user_edit.setMinimumWidth(280)
+        self.pass_edit.setMinimumWidth(280)
+        try:
+            self.user_edit.setMinimumHeight(30)
+            self.pass_edit.setMinimumHeight(30)
+        except Exception:
+            pass
         layout_form.addWidget(self.user_edit, alignment=Qt.AlignHCenter)
         layout_form.addWidget(self.pass_edit, alignment=Qt.AlignHCenter)
         self.login_btn = QPushButton('Авторизоваться')
@@ -2353,11 +2499,15 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         main_layout = QVBoxLayout(tab)
         
-        # Справочная информация
-        parse_help = (
-            '1. Укажите корневую категорию и нажмите «Получить». Будут загружены все подкатегории.\n\n'
-            '2. Список можно редактировать или загрузить из .txt (по одной строке).\n\n'
-            'Подсказка: Ctrl+клик по «Получить» — откроет категорию в PetScan с расширенными настройками.'
+        # Справочная информация (кратко и по делу)
+        parse_help_left = (
+            'Префиксы: «Авто» не меняет и не добавляет префиксы; Выбирать пространство имён из списка нужно когда в списке указаны только названия страниц, без префиксов.\n'
+            'Английские префиксы в исходных названиях распознаются.\n'
+            'Ctrl+клик по «Получить» — открыть PetScan для выбранной категории.'
+        )
+        parse_help_right = (
+            'Результат сохраняется в .tsv (UTF‑8 с BOM).\n'
+            'При лимитах API инструмент сам замедляется.'
         )
         
         # === ГОРИЗОНТАЛЬНОЕ РАЗДЕЛЕНИЕ ===
@@ -2367,6 +2517,12 @@ class MainWindow(QMainWindow):
         left_group = QGroupBox("Настройка и ввод данных")
         left_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
         left_layout = QVBoxLayout(left_group)
+        try:
+            left_layout.setContentsMargins(8, 12, 8, 8)  # не двигаем (i) у верхней кромки
+            left_layout.setSpacing(2)  # уменьшили зазор между (i) и строкой «Префиксы»
+        except Exception:
+            pass
+        # (i) будет добавлена в строку «Префиксы» справа — без влияния на вертикальные отступы
         
         # Префиксы пространства имён
         prefix_layout = QHBoxLayout()
@@ -2377,10 +2533,13 @@ class MainWindow(QMainWindow):
         self.ns_combo_parse.setEditable(False)
         _populate_ns_combo(self.ns_combo_parse, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         prefix_layout.addWidget(self.ns_combo_parse)
+        # Толкаем (i) к правому краю в этой же строке
         prefix_layout.addStretch()
+        self._add_info_button(prefix_layout, parse_help_left, inline=True)
         left_layout.addLayout(prefix_layout)
         
         # Получение подкатегорий
+        left_layout.addSpacing(6)
         left_layout.addWidget(QLabel('<b>Получить подкатегории:</b>'))
         petscan_input_layout = QHBoxLayout()
         self.cat_edit = QLineEdit()
@@ -2394,11 +2553,17 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(petscan_input_layout)
         
         # Ручной ввод списка
-        left_layout.addWidget(QLabel('<b>Список категорий для считывания:</b>'))
+        left_layout.addSpacing(6)
+        lbl_left_top = QLabel('<b>Список категорий для считывания:</b>')
+        left_layout.addWidget(lbl_left_top)
         self.manual_list = QTextEdit()
         self.manual_list.setPlaceholderText('По одному названию категории на строке')
         self.manual_list.setMinimumHeight(220)
         left_layout.addWidget(self.manual_list, 1)
+        try:
+            left_layout.setStretchFactor(self.manual_list, 1)
+        except Exception:
+            pass
         
         # Загрузка из файла
         left_layout.addWidget(QLabel('<b>Или загрузить из файла:</b>'))
@@ -2419,13 +2584,13 @@ class MainWindow(QMainWindow):
         right_group = QGroupBox("Ход считывания")
         right_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
         right_layout = QVBoxLayout(right_group)
+        try:
+            right_layout.setContentsMargins(8, 12, 8, 8)
+            right_layout.setSpacing(8)
+        except Exception:
+            pass
         
-        # Заголовок с кнопкой справки
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel('<b>Результат и управление</b>'))
-        header_layout.addStretch()
-        self._add_info_button(header_layout, parse_help)
-        right_layout.addLayout(header_layout)
+        # i-кнопка справа будет прикреплена к рамке, без участия в layout
         
         # Файл сохранения
         save_layout = QHBoxLayout()
@@ -2439,20 +2604,49 @@ class MainWindow(QMainWindow):
         btn_open_out = QPushButton('Открыть')
         btn_open_out.clicked.connect(lambda: self.open_from_edit(self.out_path))
         save_layout.addWidget(btn_open_out)
+        # Толкаем (i) к правому краю верхней строки справа
+        save_layout.addStretch()
+        self._add_info_button(save_layout, parse_help_right, inline=True)
         right_layout.addLayout(save_layout)
         
-        # Лог процесса (основная область)
-        right_layout.addWidget(QLabel('<b>Лог выполнения:</b>'))
-        self.parse_log = QTextEdit()
-        self.parse_log.setReadOnly(True)
-        self.parse_log.setMinimumHeight(220)
-        right_layout.addWidget(self.parse_log, 1)
+        # Небольшой отступ и лог процесса (основная область)
+        right_layout.addSpacing(6)
+        lbl_right_top = QLabel('<b>Лог выполнения:</b>')
+        # Заголовок
+        right_layout.addWidget(lbl_right_top)
+        # Контейнер для лога с кнопкой очистки в правом нижнем углу
+        self.parse_log = QTextEdit(); self.parse_log.setReadOnly(True); self.parse_log.setMinimumHeight(220)
+        parse_log_wrap = QWidget(); parse_log_grid = QGridLayout(parse_log_wrap)
+        try:
+            parse_log_grid.setContentsMargins(0, 0, 0, 0); parse_log_grid.setSpacing(0)
+        except Exception:
+            pass
+        parse_log_grid.addWidget(self.parse_log, 0, 0)
+        btn_clear_parse = QToolButton(); btn_clear_parse.setText('🧹'); btn_clear_parse.setAutoRaise(True); btn_clear_parse.setToolTip('<span style="font-size:12px">Очистить</span>')
+        try:
+            btn_clear_parse.setStyleSheet('font-size: 20px; padding: 0px;')
+            btn_clear_parse.setFixedSize(32, 32)
+            btn_clear_parse.setCursor(Qt.PointingHandCursor)
+        except Exception:
+            pass
+        btn_clear_parse.clicked.connect(lambda: self.parse_log.clear())
+        parse_log_grid.addWidget(btn_clear_parse, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+        right_layout.addWidget(parse_log_wrap, 1)
+        try:
+            right_layout.setStretchFactor(parse_log_wrap, 1)
+        except Exception:
+            pass
         
         # Прогресс-бар
         self.parse_bar = QProgressBar()
         self.parse_bar.setMaximum(1)
         self.parse_bar.setValue(0)
         right_layout.addWidget(self.parse_bar)
+        try:
+            # Синхронизируем нижние поля по высоте (лог справа и список слева)
+            right_layout.setStretchFactor(self.parse_log, 1)
+        except Exception:
+            pass
         
         # Кнопки управления
         control_layout = QHBoxLayout()
@@ -2472,6 +2666,8 @@ class MainWindow(QMainWindow):
         h_main.addWidget(left_group, 1)
         h_main.addWidget(right_group, 1)
         main_layout.addLayout(h_main)
+
+        # Удалён код закрепления (i) как дочерних виджетов — используется упрощённый вариант в строках выше
         
         self.tabs.addTab(tab, 'Считать')
 
@@ -2546,8 +2742,13 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         v = QVBoxLayout(tab)
         replace_help = (
+            'Форматирование исходного файла:\n'
             'TSV: Title<TAB>line1<TAB>line2…\n\n'
-            'Указанные страницы будут найдены и в них выполнены замены текста согласно списку.'
+            'Одна строка — одна новая страница.\n\n'
+            'Пустая колонка в файле добавляет новую строку.\n\n'
+            'Указанные страницы будут найдены и в них выполнены замены текста согласно списку.\n\n'
+            'Опции:\n'
+            '• Малая правка (minor edit) — отметка малой правки для каждого действия.\n'
         )
         h = QHBoxLayout()
         self.tsv_path = QLineEdit('categories.tsv')
@@ -2586,10 +2787,27 @@ class MainWindow(QMainWindow):
         self.replace_stop_btn = QPushButton('Остановить')
         self.replace_stop_btn.setEnabled(False)
         self.replace_stop_btn.clicked.connect(self.stop_replace)
+        # Лог выполнения и кнопка очистки в правом нижнем углу
+        v.addWidget(QLabel('<b>Лог выполнения:</b>'))
         self.rep_log = QTextEdit(); self.rep_log.setReadOnly(True)
+        rep_wrap = QWidget(); rep_grid = QGridLayout(rep_wrap)
+        try:
+            rep_grid.setContentsMargins(0, 0, 0, 0); rep_grid.setSpacing(0)
+        except Exception:
+            pass
+        rep_grid.addWidget(self.rep_log, 0, 0)
+        btn_clear_rep = QToolButton(); btn_clear_rep.setText('🧹'); btn_clear_rep.setAutoRaise(True); btn_clear_rep.setToolTip('<span style="font-size:12px">Очистить</span>')
+        try:
+            btn_clear_rep.setStyleSheet('font-size: 20px; padding: 0px;')
+            btn_clear_rep.setFixedSize(32, 32)
+            btn_clear_rep.setCursor(Qt.PointingHandCursor)
+        except Exception:
+            pass
+        btn_clear_rep.clicked.connect(lambda: self.rep_log.clear())
+        rep_grid.addWidget(btn_clear_rep, 0, 0, Qt.AlignBottom | Qt.AlignRight)
         # Перемещаем кнопки вправо вниз под лог
         row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.replace_btn); row_run.addWidget(self.replace_stop_btn)
-        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(self.rep_log, 1); v.addLayout(row_run)
+        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(rep_wrap, 1); v.addLayout(row_run)
         self._set_start_stop_ratio(self.replace_btn, self.replace_stop_btn, 3)
         self.tabs.addTab(tab, 'Перезаписать')
 
@@ -2597,8 +2815,10 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         v = QVBoxLayout(tab)
         create_help = (
+            'Форматирование исходного файла:\n'
             'TSV: Title<TAB>line1<TAB>line2…\n\n'
             'Одна строка — одна новая страница.\n\n'
+            'Пустая колонка в файле добавляет новую строку.\n\n'
             'Будут созданы новые страницы с указанными названиями и содержимым.'
         )
         h = QHBoxLayout()
@@ -2632,10 +2852,27 @@ class MainWindow(QMainWindow):
         self.create_stop_btn = QPushButton('Остановить')
         self.create_stop_btn.setEnabled(False)
         self.create_stop_btn.clicked.connect(self.stop_create)
+        # Лог выполнения и кнопка очистки в правом нижнем углу
+        v.addWidget(QLabel('<b>Лог выполнения:</b>'))
         self.create_log = QTextEdit(); self.create_log.setReadOnly(True)
+        create_wrap = QWidget(); create_grid = QGridLayout(create_wrap)
+        try:
+            create_grid.setContentsMargins(0, 0, 0, 0); create_grid.setSpacing(0)
+        except Exception:
+            pass
+        create_grid.addWidget(self.create_log, 0, 0)
+        btn_clear_create = QToolButton(); btn_clear_create.setText('🧹'); btn_clear_create.setAutoRaise(True); btn_clear_create.setToolTip('<span style="font-size:12px">Очистить</span>')
+        try:
+            btn_clear_create.setStyleSheet('font-size: 20px; padding: 0px;')
+            btn_clear_create.setFixedSize(32, 32)
+            btn_clear_create.setCursor(Qt.PointingHandCursor)
+        except Exception:
+            pass
+        btn_clear_create.clicked.connect(lambda: self.create_log.clear())
+        create_grid.addWidget(btn_clear_create, 0, 0, Qt.AlignBottom | Qt.AlignRight)
         # кнопки справа внизу
         row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.create_btn); row_run.addWidget(self.create_stop_btn)
-        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(self.create_log, 1); v.addLayout(row_run)
+        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(create_wrap, 1); v.addLayout(row_run)
         self._set_start_stop_ratio(self.create_btn, self.create_stop_btn, 3)
         self.tabs.addTab(tab, 'Создать')
 
@@ -2643,24 +2880,21 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         v = QVBoxLayout(tab)
         rename_help = (
-            'TSV: OldTitle<TAB>NewTitle<TAB>Reason\n\n'
-            'Одна строка = одно переименование.\n\n'
-            'Процедура переноса:\n'
-            '1) Переименовывается сама категория (учёт опции «Оставлять перенаправления: …»).\n'
-            '2) Фаза 1 (авто): обновляются прямые ссылки [[Категория:Старая]] → [[Категория:Новая]] у участников категории.\n'
-            '   — Для страниц в пространствах Template:/Module: дополнительно проверяются основная страница и её /doc.\n'
-            '   — Успешные переносы логируются как «→ НоваяКатегория → Заголовок: статья/категория перенесена».\n'
-            '3) Фаза 2 (ручная): если включено «Искать категоризацию через параметры шаблонов».\n'
-            '   — Для страниц, где прямых ссылок нет, ищется полное имя категории внутри вызовов шаблонов {{…|…}}.\n'
-            '   — Для каждого найденного вызова показывается диалог с подсветкой (красным — старое, зелёным — новое)\n'
-            '     и кнопками: Подтвердить, Пропустить, Отмена (останавливает процесс).\n'
-            '   — В одной статье может быть несколько таких шаблонов — предлагаются по очереди.\n\n'
+            'Форматирование исходного файла:\n'
+            'TSV: OldTitle<TAB>NewTitle<TAB>Комментарий к правке\n\n'
+            'Одна строка — одно переименование.\n\n'
+            'Как работает перенос:\n'
+            '1) Переименовывается сама категория (с учётом опций «Оставлять перенаправления…»).\n'
+            '2) Перенос содержимого категорий (включите нужные опции слева):\n'
+            '   — Обновлять прямые ссылки у содержимого: [[Категория:Старая|Ключ]] → [[Категория:Новая|Ключ]].\n'
+            '     Ключи сортировки после «|» сохраняются. Для «Шаблон:»/«Модуль:» дополнительно проверяется основная страница и её /doc.\n'
+            '   — Искать и исправлять категоризацию через параметры шаблонов: обрабатываются позиционные и именованные параметры.\n'
+            '     Режимы:\n'
+            '       • Полное имя категории в параметре — можно включить «Автоматически подтверждать все последующие».\n'
+            '       • Поиск по частям названия — всегда с ручным подтверждением в диалоге.\n'
+            '     Префикс «Категория:» в параметрах обычно не указывают — это учитывается.\n\n'
             'Итог и статистика:\n'
-            '— В конце выводится сводка: сколько перенесено автоматически, сколько по подтверждению, сколько осталось в старой категории.\n\n'
-            'Настройки на этой вкладке:\n'
-            '— «Переносить содержимое категории»: включает Фазу 1 (авто) после переименования категории.\n'
-            '— «Искать категоризацию через параметры шаблонов»: включает Фазу 2 (ручную) для проблемных страниц.\n'
-            '— «Оставлять перенаправления: для категорий/для остальных страниц»: управляет редиректами при переименовании.\n\n'
+            '— В конце выводится строка «Готово: Прямые замены: N — Через параметры шаблонов: M — Осталось: K».\n\n'
         )
 
         h = QHBoxLayout()
@@ -2686,34 +2920,143 @@ class MainWindow(QMainWindow):
 
         # Опции в две колонки
         col_left = QVBoxLayout()
-        self.chk_move_members = QCheckBox('Переносить содержимое категории')
-        self.chk_move_members.setChecked(True)
-        self.chk_find_in_templates = QCheckBox('Искать категоризацию через параметры шаблонов')
+        lbl_left = QLabel('<b>Переименование</b>')
+        col_left.addWidget(lbl_left)
+        # Подсказки для опций переноса
+        phase1_help = (
+            'Обновление прямых ссылок на категорию в тексте страниц-участников.\n\n'
+            'Пример: [[Категория:Старая|Ключ]] → [[Категория:Новая|Ключ]].\n'
+            'Для Шаблон:/Модуль: дополнительно проверяются основная страница и её /doc.\n'
+        )
+        phase2_help = (
+            'Поиск и исправление указания категории в параметрах шаблонов\n'
+            '{{Шаблон|Название категории}} или {{Название|категории A|категории Б}}.\n\n'
+            'Режимы:\n'
+            '1. Нахождение полного имени категории в параметра (позиционный или именованный). Можно включить «Автоматически подтверждать все последующие».\n'
+            '2. Поиск по частям названия категории в параметрах шаблонов. Работает нестабильно, требует ручного подтверждения каждой правки.\n'
+        )
+        # Первая опция: прямые ссылки
+        row_p1 = QHBoxLayout()
+        self.chk_phase1 = QCheckBox('Переносить содержимое категории по прямым ссылкам')
+        self.chk_phase1.setChecked(True)
+        try:
+            self.chk_phase1.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        except Exception:
+            pass
+        row_p1.addWidget(self.chk_phase1)
+        self._add_info_button(row_p1, phase1_help, inline=True)
+        try:
+            row_p1.addStretch(1)
+        except Exception:
+            pass
+        
+        # Опция: переименовывать саму категорию
+        row_move_cat = QHBoxLayout()
+        self.chk_move_category = QCheckBox('Переименовывать страницы')
+        self.chk_move_category.setChecked(True)
+        try:
+            self.chk_move_category.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        except Exception:
+            pass
+        row_move_cat.addWidget(self.chk_move_category)
+        try:
+            row_move_cat.addStretch(1)
+        except Exception:
+            pass
+        col_left.addLayout(row_move_cat)
+        # Блок перенаправлений (объединённый виджет, отключается при снятой галке «Переименовывать»)
+        redirect_block = QWidget()
+        redirect_block_layout = QVBoxLayout(redirect_block)
+        try:
+            redirect_block_layout.setContentsMargins(0, 0, 0, 0)
+            redirect_block_layout.setSpacing(4)
+        except Exception:
+            pass
+        # Заголовок блока перенаправлений скрыт по требованию
+        # Вторая опция: параметры шаблонов
+        row_p2 = QHBoxLayout()
+        self.chk_find_in_templates = QCheckBox('Искать и исправлять категоризацию через параметры шаблонов')
         self.chk_find_in_templates.setChecked(True)
-        col_left.addWidget(self.chk_move_members)
-        col_left.addWidget(self.chk_find_in_templates)
+        try:
+            self.chk_find_in_templates.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        except Exception:
+            pass
+        row_p2.addWidget(self.chk_find_in_templates)
+        self._add_info_button(row_p2, phase2_help, inline=True)
+        try:
+            row_p2.addStretch(1)
+        except Exception:
+            pass
+        
 
 
         col_right = QVBoxLayout()
+        # Заголовок правой колонки
+        lbl_right = QLabel('<b>Перенос содержимого категорий</b>')
+        col_right.addWidget(lbl_right)
+
         self.chk_redirect_cat = QCheckBox('Оставлять перенаправления для категорий')
+        try:
+            self.chk_redirect_cat.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        except Exception:
+            pass
         self.chk_redirect_cat.setChecked(False)
+        redirect_block_layout.addWidget(self.chk_redirect_cat)
         self.chk_redirect_other = QCheckBox('Оставлять перенаправления для других страниц')
+        try:
+            self.chk_redirect_other.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        except Exception:
+            pass
         self.chk_redirect_other.setChecked(True)
-        col_right.addWidget(self.chk_redirect_cat)
-        col_right.addWidget(self.chk_redirect_other)
+        redirect_block_layout.addWidget(self.chk_redirect_other)
+        col_left.addWidget(redirect_block)
+        try:
+            redirect_block.setEnabled(self.chk_move_category.isChecked())
+            self.chk_move_category.toggled.connect(redirect_block.setEnabled)
+        except Exception:
+            pass
+        
+        # Перенос содержимого (как было) — в правой колонке
+        col_right.addLayout(row_p1)
+        col_right.addLayout(row_p2)
 
-        # Две колонки рядом, с небольшим зазором
-        row = QHBoxLayout()
-        row.addLayout(col_left)
-        row.addSpacing(24)
-        row.addLayout(col_right)
+        # Две колонки как отдельные виджеты с равным растяжением — правая начинается от центра
+        row_cols = QHBoxLayout()
+        try:
+            row_cols.setSpacing(24)
+        except Exception:
+            pass
+        left_widget = QWidget(); left_widget.setLayout(col_left)
+        right_widget = QWidget(); right_widget.setLayout(col_right)
+        try:
+            left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        except Exception:
+            pass
+        row_cols.addWidget(left_widget, 1)
+        row_cols.addWidget(right_widget, 1)
+        v.addLayout(row_cols)
 
-        # Выравнивание блока колонок по левому краю
-        v.addLayout(row)
 
-
+        # Лог выполнения и кнопка очистки в правом нижнем углу
+        v.addWidget(QLabel('<b>Лог выполнения:</b>'))
         self.rename_log = QTextEdit(); self.rename_log.setReadOnly(True)
-        v.addWidget(self.rename_log, 1)
+        rename_wrap = QWidget(); rename_grid = QGridLayout(rename_wrap)
+        try:
+            rename_grid.setContentsMargins(0, 0, 0, 0); rename_grid.setSpacing(0)
+        except Exception:
+            pass
+        rename_grid.addWidget(self.rename_log, 0, 0)
+        btn_clear_rename = QToolButton(); btn_clear_rename.setText('🧹'); btn_clear_rename.setAutoRaise(True); btn_clear_rename.setToolTip('<span style="font-size:12px">Очистить</span>')
+        try:
+            btn_clear_rename.setStyleSheet('font-size: 20px; padding: 0px;')
+            btn_clear_rename.setFixedSize(32, 32)
+            btn_clear_rename.setCursor(Qt.PointingHandCursor)
+        except Exception:
+            pass
+        btn_clear_rename.clicked.connect(lambda: self.rename_log.clear())
+        rename_grid.addWidget(btn_clear_rename, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+        v.addWidget(rename_wrap, 1)
 
 
         self.rename_btn = QPushButton('Начать переименование')
@@ -2760,6 +3103,13 @@ class MainWindow(QMainWindow):
                         dlg.setTextFormat(Qt.RichText)
                         dlg.setIcon(QMessageBox.Question)
                         dlg.setText(msg)
+                        # Чекбокс автоподтверждения всех последующих прямых совпадений
+                        auto_cb = QCheckBox('Автоматически подтверждать все последующие')
+                        try:
+                            dlg.setCheckBox(auto_cb)
+                        except Exception:
+                            # На случай, если в используемой версии отсутствует setCheckBox
+                            pass
                         confirm_btn = dlg.addButton('Подтвердить', QMessageBox.AcceptRole)
                         skip_btn = dlg.addButton('Пропустить', QMessageBox.DestructiveRole)
                         dlg.addButton('Отмена', QMessageBox.RejectRole)
@@ -2774,7 +3124,12 @@ class MainWindow(QMainWindow):
                         w = getattr(self, 'mrworker', None)
                         if w is not None:
                             try:
-                                w.review_response.emit({'request_id': req_id, 'action': action})
+                                payload = {'request_id': req_id, 'action': action}
+                                try:
+                                    payload['auto_confirm_all'] = bool(auto_cb.isChecked()) if action == 'confirm' else False
+                                except Exception:
+                                    pass
+                                w.review_response.emit(payload)
                             except Exception:
                                 pass
                     else:
@@ -2968,10 +3323,16 @@ class MainWindow(QMainWindow):
         elif any(k in lower for k in ('записано', 'создано', 'переименована', 'готово')):
             # более тёмный зелёный для лучшей читаемости на светлой теме
             color = '#2e7d32'
+        # Преобразуем переводы строк в <br/>, чтобы многострочные сообщения корректно отображались в HTML
+        def _html_lines(s: str) -> str:
+            try:
+                return s.replace('\n', '<br/>')
+            except Exception:
+                return s
         if color:
-            widget.append(f"<span style='color:{color}'>{msg}</span>")
+            widget.append(f"<span style='color:{color}'>{_html_lines(msg)}</span>")
         else:
-            widget.append(msg)
+            widget.append(_html_lines(msg))
 
     def _set_start_stop_ratio(self, start_btn: QPushButton, stop_btn: QPushButton, ratio: int = 3):
         try:
@@ -3013,7 +3374,7 @@ class MainWindow(QMainWindow):
 
         self.parse_bar.setMaximum(len(titles))
         self.parse_bar.setValue(0)
-        self.parse_btn.setEnabled(False); self.parse_log.clear()
+        self.parse_btn.setEnabled(False)
         fam = (self.family_combo.currentText() or 'wikipedia')
         ns_sel = self.ns_combo_parse.currentData()
         self.worker = ParseWorker(titles, self.out_path.text(), ns_sel, lang, fam)
@@ -3031,7 +3392,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.parse_stop_btn.setEnabled(True)
-        self.parse_log.clear()
+        # не очищаем лог автоматически — пользователь может очистить вручную
         self.worker.start()
 
     def stop_parse(self):
@@ -3152,7 +3513,7 @@ class MainWindow(QMainWindow):
         if not summary:
             summary = default_create_summary(lang)
         minor = False  # Малая правка не применяется при создании
-        self.create_btn.setEnabled(False); self.create_stop_btn.setEnabled(True); self.create_log.clear()
+        self.create_btn.setEnabled(False); self.create_stop_btn.setEnabled(True)
         ns_sel = self.ns_combo_create.currentData()
         self.cworker = CreateWorker(self.tsv_path_create.text(), user, pwd, lang, fam, ns_sel, summary, minor)
         self.cworker.progress.connect(lambda m: self.log(self.create_log, m))
@@ -3191,11 +3552,15 @@ class MainWindow(QMainWindow):
         ns_sel = self.ns_combo_rename.currentData()
         leave_cat = self.chk_redirect_cat.isChecked()
         leave_other = self.chk_redirect_other.isChecked()
-        move_members = self.chk_move_members.isChecked()
+        move_members = True  # общий чекбокс переноса больше не используется как мастер-переключатель
         find_in_templates = getattr(self, 'chk_find_in_templates', None)
         find_in_templates_flag = bool(find_in_templates.isChecked()) if find_in_templates is not None else True
-        self.rename_btn.setEnabled(False); self.rename_stop_btn.setEnabled(True); self.rename_log.clear()
-        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, ns_sel, leave_cat, leave_other, move_members, find_in_templates_flag)
+        phase1_widget = getattr(self, 'chk_phase1', None)
+        phase1_flag = bool(phase1_widget.isChecked()) if phase1_widget is not None else True
+        move_category_widget = getattr(self, 'chk_move_category', None)
+        move_category_flag = bool(move_category_widget.isChecked()) if move_category_widget is not None else True
+        self.rename_btn.setEnabled(False); self.rename_stop_btn.setEnabled(True)
+        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, ns_sel, leave_cat, leave_other, move_members, find_in_templates_flag, phase1_flag, move_category_flag)
         self.mrworker.progress.connect(lambda m: self.log(self.rename_log, m))
         self.mrworker.finished.connect(self._on_rename_finished)
         try:
@@ -3215,7 +3580,7 @@ class MainWindow(QMainWindow):
     def _on_rename_finished(self):
         self.rename_btn.setEnabled(True)
         self.rename_stop_btn.setEnabled(False)
-        msg = 'Остановлено!' if getattr(self, 'mrworker', None) and getattr(self.mrworker, '_stop', False) else 'Переименование завершено!'
+        msg = 'Остановлено!' if getattr(self, 'mrworker', None) and getattr(self.mrworker, '_stop', False) else '<b>Переименование завершено!</b>'
         self.log(self.rename_log, msg)
 
 
