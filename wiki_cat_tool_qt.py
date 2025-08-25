@@ -58,9 +58,9 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
-    QSizePolicy, QDialog, QPlainTextEdit, QGroupBox
+    QSizePolicy, QDialog, QPlainTextEdit, QGroupBox, QFrame
 )
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut
 
 # Настройка базовой директории
 def tool_base_dir() -> str:
@@ -90,7 +90,7 @@ write_lock = Lock()
 # ===== HTTP Session + Rate Limiting =====
 REQUEST_SESSION = requests.Session()
 REQUEST_HEADERS = {
-    'User-Agent': 'WikiCatTool/1.0 (+github:local; email:none) requests',
+    'User-Agent': 'WikiCatTool/1.0 (+https://github.com/sc113/wiki-category-tool; contact:none) requests',
     'Accept': 'application/json'
 }
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'
@@ -1166,7 +1166,10 @@ class RenameWorker(QThread):
                         try:
                             old_full_check = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
                             if not pywikibot.Page(site, old_full_check).exists():
-                                self.progress.emit(f"Категория '{old_full_check}' не существует. Перенос содержимого отключён.")
+                                try:
+                                    self.progress.emit(f"Категория <b>{html.escape(old_full_check)}</b> не существует. Перенос содержимого отключён.")
+                                except Exception:
+                                    self.progress.emit(f"Категория {old_full_check} не существует. Перенос содержимого отключён.")
                                 continue
                         except Exception:
                             pass
@@ -1610,7 +1613,9 @@ class RenameWorker(QThread):
     def _prompt_user_template_replace(self, page_title: str, template_str: str, old_full: str, new_full: str,
                                       proposed_template: str | None = None,
                                       old_sub: str | None = None,
-                                      new_sub: str | None = None) -> dict:
+                                      new_sub: str | None = None,
+                                      old_direct: str | None = None,
+                                      new_direct: str | None = None) -> dict:
         """Синхронно запрашивает у пользователя подтверждение.
         Возвращает словарь с полями: {'action': 'confirm'|'skip'|'cancel', 'edited_template'?: str}
         """
@@ -1630,6 +1635,8 @@ class RenameWorker(QThread):
                 'proposed_template': proposed_template or '',
                 'old_sub': old_sub or '',
                 'new_sub': new_sub or '',
+                'old_direct': old_direct or '',
+                'new_direct': new_direct or '',
             })
 
             while not self._stop and not ev.wait(0.1):
@@ -1671,7 +1678,10 @@ class RenameWorker(QThread):
                     data_check = r_check.json()
                     has_any = bool(data_check.get('query', {}).get('categorymembers') or [])
                     if has_any:
-                        self.progress.emit(f"Категория '{old_full}' не существует, но в ней есть содержимое — пытаемся перенести в '{new_full}'.")
+                        try:
+                            self.progress.emit(f"Категория <b>{html.escape(old_full)}</b> не существует, но в ней есть содержимое — пытаемся перенести в <b>{html.escape(new_full)}</b>.")
+                        except Exception:
+                            self.progress.emit(f"Категория {old_full} не существует, но в ней есть содержимое — пытаемся перенести в {new_full}.")
         except Exception:
             pass
 
@@ -1689,11 +1699,227 @@ class RenameWorker(QThread):
         backlog: list[str] = []
         backlog_seen: set[str] = set()
 
+        # Вспомогательная функция: обработка одной страницы по Фазе 2 (поиск в параметрах шаблонов)
+        def _process_title_templates(title: str):
+            nonlocal moved_via_template, write_min_interval, last_write_ts
+            if self._stop:
+                return
+            try:
+                page = pywikibot.Page(site, title)
+                if not page.exists():
+                    return
+                txt = page.text
+                visited = set()
+                made_change = False
+                direct_seen = False
+                # Поиск «прямых» совпадений: значение параметра равно категории (полной или «голой»)
+                def _find_equal_template_candidates(text_src: str, old_full_cat: str) -> list[tuple[str, str, str]]:
+                    results: list[tuple[str, str, str]] = []
+                    try:
+                        if not old_full_cat:
+                            return results
+                        old_bare = old_full_cat.split(':', 1)[1] if ':' in old_full_cat else old_full_cat
+                        new_bare = new_full.split(':', 1)[1] if ':' in new_full else new_full
+                        patterns = [
+                            (old_full_cat, new_full),
+                            (old_bare, new_bare)
+                        ]
+                        for old_tok, new_tok in patterns:
+                            start = 0
+                            # Ищем в тексте вхождения значения параметра вида: "| old" или "| name = old"
+                            rx = re.compile(r"\|\s*(?:[^|{}=\n]+\s*=\s*)?" + re.escape(old_tok) + r"\s*(?=\||}})", re.S)
+                            while True:
+                                m = rx.search(text_src, start)
+                                if not m:
+                                    break
+                                idx = m.start()
+                                l = text_src.rfind('{{', 0, idx)
+                                r = text_src.find('}}', idx)
+                                if l != -1 and r != -1 and r > l:
+                                    chunk = text_src[l:r+2]
+                                    if '|' in chunk and (chunk, old_tok, new_tok) not in results:
+                                        results.append((chunk, old_tok, new_tok))
+                                start = m.end()
+                    except Exception:
+                        pass
+                    return results
+
+                # 1) Прямые указания полной категории в шаблонах (только случаи равенства значения параметра)
+                auto_applied = 0
+                while not self._stop:
+                    eq_list = _find_equal_template_candidates(txt, old_full)
+                    # исключаем уже показанные кандидаты
+                    eq_list = [t for t in eq_list if t[0] not in visited]
+                    if not eq_list:
+                        break
+                    direct_seen = True
+                    tmpl, old_token, new_token = eq_list[0]
+                    visited.add(tmpl)
+                    # Автоподтверждение прямых совпадений
+                    if getattr(self, 'auto_confirm_direct_all', False):
+                        try:
+                            new_tmpl = tmpl.replace(old_token, new_token, 1)
+                            new_txt = txt.replace(tmpl, new_tmpl, 1)
+                            if new_txt != txt:
+                                # сохранение с адаптивным бэкоффом
+                                for attempt in range(1, 6):
+                                    try:
+                                        now2 = time.time()
+                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        if wait2 > 0:
+                                            time.sleep(wait2)
+                                        page.text = new_txt
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        last_write_ts = time.time()
+                                        break
+                                    except Exception as e:
+                                        msg = (str(e) or '').lower()
+                                        if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            continue
+                                        raise
+                                txt = new_txt
+                                moved_via_template += 1
+                                made_change = True
+                                auto_applied += 1
+                                try:
+                                    nsid = page.namespace().id
+                                    typ = 'категория' if nsid == 14 else 'статья'
+                                except Exception:
+                                    typ = 'страница'
+                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                        except Exception as e:
+                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                        continue
+                    # Диалог подтверждения (с флажком автоподтверждения для полных совпадений)
+                    result = self._prompt_user_template_replace(title, tmpl, old_full, new_full, old_direct=old_token, new_direct=new_token)
+                    action = result.get('action') if isinstance(result, dict) else str(result)
+                    if action == 'cancel':
+                        self._stop = True
+                        break
+                    try:
+                        if action == 'confirm' and isinstance(result, dict) and bool(result.get('auto_confirm_all')):
+                            self.auto_confirm_direct_all = True
+                    except Exception:
+                        pass
+                    if action == 'confirm':
+                        try:
+                            edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
+                            repl = edited if edited.strip() else tmpl.replace(old_token, new_token, 1)
+                            new_tmpl = repl
+                            new_txt = txt.replace(tmpl, new_tmpl, 1)
+                            if new_txt != txt:
+                                for attempt in range(1, 6):
+                                    try:
+                                        now2 = time.time()
+                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        if wait2 > 0:
+                                            time.sleep(wait2)
+                                        page.text = new_txt
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        last_write_ts = time.time()
+                                        break
+                                    except Exception as e:
+                                        msg = (str(e) or '').lower()
+                                        if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            continue
+                                        raise
+                                txt = new_txt
+                                moved_via_template += 1
+                                made_change = True
+                                try:
+                                    nsid = page.namespace().id
+                                    typ = 'категория' if nsid == 14 else 'статья'
+                                except Exception:
+                                    typ = 'страница'
+                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                        except Exception as e:
+                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+
+                # Если на странице были автоприменения (после включения галочки) — короткая сводка
+                if auto_applied > 0 and not self._stop:
+                    try:
+                        self.progress.emit(f"Автоприменено {auto_applied} замен(ы) на странице {html.escape(title)}")
+                    except Exception:
+                        self.progress.emit(f"Автоприменено {auto_applied} замен(ы) на странице {title}")
+                # 2) Поиск по частям — только если на странице не было ни одного полного совпадения
+                if not self._stop and not made_change and not direct_seen:
+                    partial_seen: set[str] = set()
+                    while not self._stop:
+                        cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
+                        cand_list = [c for c in cand_list if c.get('template') not in partial_seen]
+                        if not cand_list:
+                            self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
+                            break
+                        c0 = cand_list[0]
+                        partial_seen.add(str(c0.get('template')))
+                        result = self._prompt_user_template_replace(
+                            title,
+                            str(c0.get('template') or ''),
+                            old_full,
+                            new_full,
+                            proposed_template=str(c0.get('proposed_template') or ''),
+                            old_sub=str(c0.get('old_sub') or ''),
+                            new_sub=str(c0.get('new_sub') or ''),
+                        )
+                        action = result.get('action') if isinstance(result, dict) else str(result)
+                        if action == 'cancel':
+                            self._stop = True
+                            break
+                        if action == 'confirm':
+                            try:
+                                edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
+                                replacement = edited if edited.strip() else str(c0.get('proposed_template') or '')
+                                tmpl_old = str(c0.get('template') or '')
+                                if replacement and tmpl_old and replacement != tmpl_old:
+                                    new_txt = txt.replace(tmpl_old, replacement, 1)
+                                    if new_txt != txt:
+                                        for attempt in range(1, 6):
+                                            try:
+                                                now2 = time.time()
+                                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                                if wait2 > 0:
+                                                    time.sleep(wait2)
+                                                page.text = new_txt
+                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                                last_write_ts = time.time()
+                                                break
+                                            except Exception as e:
+                                                msg = (str(e) or '').lower()
+                                                if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                                    debug(f"Template partial save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                                    continue
+                                                raise
+                                        txt = new_txt
+                                        moved_via_template += 1
+                                        made_change = True
+                                        try:
+                                            nsid = page.namespace().id
+                                            typ = 'категория' if nsid == 14 else 'статья'
+                                        except Exception:
+                                            typ = 'страница'
+                                        self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена (частичная замена)")
+                            except Exception as e:
+                                self.progress.emit(f"{title}: ошибка правки шаблона (частично): {e}")
+            except Exception as e:
+                self.progress.emit(f"{title}: ошибка обработки на ручной фазе: {e}")
+
         # Адаптивные интервалы для чтения и записи
         read_min_interval = 0.15
         last_read_ts = 0.0
         write_min_interval = 0.25
         last_write_ts = 0.0
+
+        # Счётчик прогресса Фазы 1 (для отображения «живости» процесса)
+        scanned_phase1_count = 0
+        phase1_progress_logged = False
 
         while not self._stop:
             # локальный адаптивный троттлинг чтения списка участников
@@ -1702,16 +1928,39 @@ class RenameWorker(QThread):
             if to_wait > 0:
                 time.sleep(to_wait)
             last_read_ts = time.time()
+            # Стартовое сообщение о начале Фазы 1
+            if self.phase1_enabled and not phase1_progress_logged:
+                try:
+                    self.progress.emit("Сканируем прямые вхождения категорий…")
+                except Exception:
+                    pass
+                phase1_progress_logged = True
+
             r = REQUEST_SESSION.get(api, params=params, timeout=20, headers=REQUEST_HEADERS)
             if r.status_code == 429:
                 read_min_interval = min(max(read_min_interval * 1.7, 0.6), 2.0)
                 debug(f"Read members backoff: {read_min_interval:.2f}s")
                 continue
             if r.status_code != 200:
-                self.progress.emit(f"Ошибка API при получении участников категории '{old_full}': HTTP {r.status_code}")
+                try:
+                    self.progress.emit(f"Ошибка API при получении участников категории <b>{html.escape(old_full)}</b>: HTTP {r.status_code}")
+                except Exception:
+                    self.progress.emit(f"Ошибка API при получении участников категории {old_full}: HTTP {r.status_code}")
                 break
             data = r.json()
             members = [m.get('title') for m in data.get('query', {}).get('categorymembers', []) if m.get('title')]
+
+            # Режим «только по шаблонам»: начинаем обрабатывать сразу, без лишнего чтения страниц в Фазе 1
+            if self.find_in_templates and not self.phase1_enabled:
+                for title in members:
+                    if self._stop:
+                        break
+                    _process_title_templates(title)
+                if 'continue' in data:
+                    params.update(data['continue'])
+                    continue
+                else:
+                    break
             for title in members:
                 if self._stop:
                     break
@@ -1774,7 +2023,10 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f"▪️ {new_full} → {t}: {typ} перенесена")
+                                try:
+                                    self.progress.emit(f"▪️ {html.escape(new_full)} → {html.escape(t)}: {typ} перенесена")
+                                except Exception:
+                                    self.progress.emit(f"▪️ {new_full} → {t}: {typ} перенесена")
                         except Exception as e:
                             self.progress.emit(f"{t}: ошибка переноса категории: {e}")
                     # Если правки по Фазе 1 не было, а Фаза 2 включена — добавляем в backlog
@@ -1783,6 +2035,15 @@ class RenameWorker(QThread):
                         backlog_seen.add(title)
                 except Exception as e:
                     self.progress.emit(f"{title}: ошибка обработки: {e}")
+
+                # Обновление прогресса Фазы 1 каждые 10 проверенных страниц
+                if self.phase1_enabled:
+                    scanned_phase1_count += 1
+                    if scanned_phase1_count % 10 == 0:
+                        try:
+                            self.progress.emit(f"🔹 Проверено {scanned_phase1_count}, прямых замен {moved_direct}")
+                        except Exception:
+                            pass
             if 'continue' in data:
                 params.update(data['continue'])
             else:
@@ -2064,6 +2325,8 @@ class MainWindow(QMainWindow):
         self.current_lang = None
         self._secret_buffer = ''
         self._stay_on_top_active = False
+        # Запоминание флага «автоподтверждать прямые совпадения» между диалогами
+        self._auto_confirm_direct_all_ui: bool = False
 
         self.init_auth_tab()
         try_load_bypass_awb_from_embedded()
@@ -2282,12 +2545,12 @@ class MainWindow(QMainWindow):
             r = REQUEST_SESSION.get(GITHUB_API_RELEASES, headers=REQUEST_HEADERS, timeout=10)
             if r.status_code != 200:
                 debug(f'GitHub API status {r.status_code}')
-                QMessageBox.information(self, 'Проверка обновлений', 'Не удалось проверить обновления. Откроем страницу релизов.')
+                QMessageBox.information(self, 'Проверка обновлений', f'Не удалось проверить обновления. Текущая версия: {APP_VERSION}. Откроем страницу релизов.')
                 QDesktopServices.openUrl(QUrl(RELEASES_URL))
                 return
             data = r.json() or []
             if not isinstance(data, list) or not data:
-                QMessageBox.information(self, 'Проверка обновлений', 'Пока нет опубликованных релизов. Откроем страницу.')
+                QMessageBox.information(self, 'Проверка обновлений', f'Пока нет опубликованных релизов. Текущая версия: {APP_VERSION}. Откроем страницу.')
                 QDesktopServices.openUrl(QUrl(RELEASES_URL))
                 return
             latest = None
@@ -2298,7 +2561,7 @@ class MainWindow(QMainWindow):
                 latest = rel
                 break
             if not latest:
-                QMessageBox.information(self, 'Проверка обновлений', 'Подходящих релизов не найдено.')
+                QMessageBox.information(self, 'Проверка обновлений', f'Подходящих релизов не найдено. Текущая версия: {APP_VERSION}.')
                 return
             tag = (latest.get('tag_name') or '').strip()
             name = (latest.get('name') or tag or 'Новый релиз')
@@ -2346,25 +2609,45 @@ class MainWindow(QMainWindow):
             if cmp_res is None:
                 # Не смогли корректно сравнить — просто предложим открыть страницу
                 extra = f' ({date_str})' if date_str else ''
-                msg = f'Найден релиз: {name}{extra}.\nОткрыть страницу релизов?'
+                msg = (
+                    f'Найден релиз: {name}{extra}.\n'
+                    f'Текущая версия: {APP_VERSION}\n'
+                    f'Актуальная версия: {remote or name}\n'
+                    f'Открыть страницу релизов?'
+                )
                 res = QMessageBox.question(self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
                 if res == QMessageBox.Yes:
                     QDesktopServices.openUrl(QUrl(html_url))
             elif cmp_res < 0:
                 # remote > local
                 extra = f' ({date_str})' if date_str else ''
-                msg = f'Доступна новая версия: {name}{extra}.\nОткрыть страницу релизов?'
+                msg = (
+                    f'Доступна новая версия: {name}{extra}.\n\n'
+                    f'Текущая версия: {APP_VERSION}\n'
+                    f'Актуальная версия: {remote or name}\n'
+                    f'Открыть страницу релизов?'
+                )
                 res = QMessageBox.question(self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
                 if res == QMessageBox.Yes:
                     QDesktopServices.openUrl(QUrl(html_url))
             elif cmp_res > 0:
                 # local > remote
-                QMessageBox.information(self, 'Проверить обновления', 'У вас версия новее последнего релиза на GitHub.')
+                msg = (
+                    f'У вас версия новее последнего релиза на GitHub.\n\n'
+                    f'Текущая версия: {APP_VERSION}\n'
+                    f'Актуальная версия: {remote or name}\n'
+                )
+                QMessageBox.information(self, 'Проверить обновления', msg)
             else:
-                QMessageBox.information(self, 'Проверить обновления', 'У вас установлена актуальная версия.')
+                msg = (
+                    f'У вас установлена актуальная версия.\n\n'
+                    f'Текущая версия: {APP_VERSION}\n'
+                    f'Актуальная версия: {remote or name}'
+                )
+                QMessageBox.information(self, 'Проверить обновления', msg)
         except Exception as e:
             debug(f'Ошибка проверки обновлений: {e}')
-            QMessageBox.information(self, 'Проверка обновлений', 'Произошла ошибка. Откроем страницу релизов.')
+            QMessageBox.information(self, 'Проверка обновлений', f'Произошла ошибка. Текущая версия: {APP_VERSION}. Откроем страницу релизов.')
             QDesktopServices.openUrl(QUrl(RELEASES_URL))
 
     def _set_awb_ui(self, has_awb: bool, note: str | None = None):
@@ -2819,7 +3102,16 @@ class MainWindow(QMainWindow):
         subcats = []
         try:
             while True:
-                resp = requests.get(api_url, params=params, timeout=10).json()
+                _rate_wait()
+                r = REQUEST_SESSION.get(api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code} при запросе {api_url}")
+                try:
+                    resp = r.json()
+                except Exception:
+                    snippet = (r.text or '')[:200].replace('\n', ' ')
+                    ct = r.headers.get('Content-Type')
+                    raise RuntimeError(f"Не удалось распарсить JSON: Content-Type={ct}, тело[:200]={snippet!r}")
                 debug(f"API GET subcats len={len(resp.get('query',{}).get('categorymembers',[]))}")
                 subcats.extend(m['title'] for m in resp.get('query', {}).get('categorymembers', []))
                 if 'continue' in resp:
@@ -2888,15 +3180,16 @@ class MainWindow(QMainWindow):
         self.replace_stop_btn = QPushButton('Остановить')
         self.replace_stop_btn.setEnabled(False)
         self.replace_stop_btn.clicked.connect(self.stop_replace)
-        # Лог выполнения и кнопка очистки в правом нижнем углу
-        v.addWidget(QLabel('<b>Лог выполнения:</b>'))
+        # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
         self.rep_log = QTextEdit(); self.rep_log.setReadOnly(True)
         rep_wrap = QWidget(); rep_grid = QGridLayout(rep_wrap)
         try:
             rep_grid.setContentsMargins(0, 0, 0, 0); rep_grid.setSpacing(0)
         except Exception:
             pass
-        rep_grid.addWidget(self.rep_log, 0, 0)
+        rep_header = QLabel('<b>Лог выполнения:</b>')
+        rep_grid.addWidget(rep_header, 0, 0)
+        rep_grid.addWidget(self.rep_log, 1, 0)
         btn_clear_rep = QToolButton(); btn_clear_rep.setText('🧹'); btn_clear_rep.setAutoRaise(True); btn_clear_rep.setToolTip('<span style="font-size:12px">Очистить</span>')
         try:
             btn_clear_rep.setStyleSheet('font-size: 20px; padding: 0px;')
@@ -2905,7 +3198,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         btn_clear_rep.clicked.connect(lambda: self.rep_log.clear())
-        rep_grid.addWidget(btn_clear_rep, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+        rep_grid.addWidget(btn_clear_rep, 1, 0, Qt.AlignBottom | Qt.AlignRight)
         # Перемещаем кнопки вправо вниз под лог
         row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.replace_btn); row_run.addWidget(self.replace_stop_btn)
         v.addLayout(h); v.addLayout(sum_layout); v.addWidget(rep_wrap, 1); v.addLayout(row_run)
@@ -2953,15 +3246,16 @@ class MainWindow(QMainWindow):
         self.create_stop_btn = QPushButton('Остановить')
         self.create_stop_btn.setEnabled(False)
         self.create_stop_btn.clicked.connect(self.stop_create)
-        # Лог выполнения и кнопка очистки в правом нижнем углу
-        v.addWidget(QLabel('<b>Лог выполнения:</b>'))
+        # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
         self.create_log = QTextEdit(); self.create_log.setReadOnly(True)
         create_wrap = QWidget(); create_grid = QGridLayout(create_wrap)
         try:
             create_grid.setContentsMargins(0, 0, 0, 0); create_grid.setSpacing(0)
         except Exception:
             pass
-        create_grid.addWidget(self.create_log, 0, 0)
+        create_header = QLabel('<b>Лог выполнения:</b>')
+        create_grid.addWidget(create_header, 0, 0)
+        create_grid.addWidget(self.create_log, 1, 0)
         btn_clear_create = QToolButton(); btn_clear_create.setText('🧹'); btn_clear_create.setAutoRaise(True); btn_clear_create.setToolTip('<span style="font-size:12px">Очистить</span>')
         try:
             btn_clear_create.setStyleSheet('font-size: 20px; padding: 0px;')
@@ -2970,7 +3264,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         btn_clear_create.clicked.connect(lambda: self.create_log.clear())
-        create_grid.addWidget(btn_clear_create, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+        create_grid.addWidget(btn_clear_create, 1, 0, Qt.AlignBottom | Qt.AlignRight)
         # кнопки справа внизу
         row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.create_btn); row_run.addWidget(self.create_stop_btn)
         v.addLayout(h); v.addLayout(sum_layout); v.addWidget(create_wrap, 1); v.addLayout(row_run)
@@ -3172,7 +3466,7 @@ class MainWindow(QMainWindow):
 
         # Диалог подтверждения замены внутри шаблона (подключение сигнала)
         try:
-            # Будем ловить запросы от воркера и показывать диалог пользователю
+            # Будем ловить запросы от воркера и показывать ЕДИНЫЙ диалог пользователю
             def on_review_request(payload: object):
                 try:
                     data = payload or {}
@@ -3180,61 +3474,27 @@ class MainWindow(QMainWindow):
                     template_str = str(data.get('template') or '')
                     old_full = str(data.get('old_full') or '')
                     new_full = str(data.get('new_full') or '')
+                    page_title = str(data.get('page_title') or '')
+                    fam = (self.family_combo.currentText() or 'wikipedia').strip()
+                    lng = (self.lang_combo.currentText() or 'ru').strip()
+                    page_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(page_title.replace(' ', '_')) if page_title else ''
                     mode = str(data.get('mode') or 'direct')
                     proposed_template = str(data.get('proposed_template') or '')
                     old_sub = str(data.get('old_sub') or '')
                     new_sub = str(data.get('new_sub') or '')
-                    # Подсветка внутри шаблона
-                    esc_tmpl = html.escape(template_str)
-                    esc_old = html.escape(old_full)
-                    esc_new = html.escape(new_full)
-                    if mode == 'direct':
-                        highlighted_old = esc_tmpl.replace(esc_old, f"<span style='color:#8b0000;font-weight:bold'>{esc_old}</span>")
-                        proposed = html.escape(template_str.replace(old_full, new_full, 1))
-                        highlighted_new = proposed.replace(esc_new, f"<span style='color:#0b6623;font-weight:bold'>{esc_new}</span>")
+                    is_direct = (mode == 'direct')
 
-                        msg = (
-                            f"Категория в статье не найдена. Возможно категоризация происходит через шаблон:<br/><br/>"
-                            f"<code>{highlighted_old}</code><br/><br/>"
-                            f"Подтверждаете ли вы замену шаблона на:<br/><br/>"
-                            f"<code>{highlighted_new}</code>"
-                        )
-                        dlg = QMessageBox(self)
-                        dlg.setWindowTitle('Подтверждение замены')
-                        dlg.setTextFormat(Qt.RichText)
-                        dlg.setIcon(QMessageBox.Question)
-                        dlg.setText(msg)
-                        # Чекбокс автоподтверждения всех последующих прямых совпадений
-                        auto_cb = QCheckBox('Автоматически подтверждать все последующие')
-                        try:
-                            dlg.setCheckBox(auto_cb)
-                        except Exception:
-                            # На случай, если в используемой версии отсутствует setCheckBox
-                            pass
-                        confirm_btn = dlg.addButton('Подтвердить', QMessageBox.AcceptRole)
-                        skip_btn = dlg.addButton('Пропустить', QMessageBox.DestructiveRole)
-                        dlg.addButton('Отмена', QMessageBox.RejectRole)
-                        dlg.exec()
-                        clicked = dlg.clickedButton()
-                        if clicked is confirm_btn:
-                            action = 'confirm'
-                        elif clicked is skip_btn:
-                            action = 'skip'
-                        else:
-                            action = 'cancel'
-                        w = getattr(self, 'mrworker', None)
-                        if w is not None:
-                            try:
-                                payload = {'request_id': req_id, 'action': action}
-                                try:
-                                    payload['auto_confirm_all'] = bool(auto_cb.isChecked()) if action == 'confirm' else False
-                                except Exception:
-                                    pass
-                                w.review_response.emit(payload)
-                            except Exception:
-                                pass
+                    # Подсветка исходного и заменённого
+                    esc_tmpl = html.escape(template_str)
+                    if is_direct:
+                        old_direct = str(data.get('old_direct') or old_full)
+                        new_direct = str(data.get('new_direct') or new_full)
+                        esc_old_direct = html.escape(old_direct)
+                        esc_new_direct = html.escape(new_direct)
+                        highlighted_old = esc_tmpl.replace(esc_old_direct, f"<span style='color:#8b0000;font-weight:bold'>{esc_old_direct}</span>")
+                        proposed_raw = template_str.replace(old_direct, new_direct, 1)
+                        highlighted_new = html.escape(proposed_raw).replace(esc_new_direct, f"<span style='color:#0b6623;font-weight:bold'>{esc_new_direct}</span>")
                     else:
-                        # partial: показываем редактируемый диалог с предложенным вариантом
                         esc_old_sub = html.escape(old_sub)
                         esc_new_sub = html.escape(new_sub)
                         highlighted_old = esc_tmpl
@@ -3245,62 +3505,176 @@ class MainWindow(QMainWindow):
                         if esc_new_sub:
                             highlighted_new = highlighted_new.replace(esc_new_sub, f"<span style='color:#0b6623;font-weight:bold'>{esc_new_sub}</span>")
 
-                        dlg = QDialog(self)
-                        dlg.setWindowTitle('Замена по частям в параметрах шаблона')
-                        lay = QVBoxLayout(dlg)
-                        msg_top = QLabel(
-                            (
-                                "Категория не найдена напрямую. Обнаружены совпадения по частям в параметрах шаблона."\
-                                " Проверьте и при необходимости подредактируйте.")
+                    dlg = QDialog(self)
+                    dlg.setWindowTitle('Замена по параметрам шаблона')
+                    lay = QVBoxLayout(dlg)
+                    # Фиксированный стартовый размер (можно свободно менять потом во все стороны)
+                    try:
+                        dlg.resize(760, 620)
+                        dlg.setSizeGripEnabled(True)
+                    except Exception:
+                        pass
+                    if page_title:
+                        history_url = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(page_title.replace(' ', '_')) + "&action=history"
+                        # Верхний блок-«карточка» с информацией о переименовании категории
+                        header = QFrame()
+                        try:
+                            header.setObjectName('reviewHeader')
+                            header.setStyleSheet("QFrame#reviewHeader { background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; } QLabel { font-size:13px; }")
+                        except Exception:
+                            pass
+                        hlay = QVBoxLayout(header)
+                        try:
+                            hlay.setContentsMargins(12, 10, 12, 10)
+                            hlay.setSpacing(4)
+                        except Exception:
+                            pass
+                        old_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(old_full.replace(' ', '_'))
+                        old_hist = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(old_full.replace(' ', '_')) + "&action=history"
+                        new_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(new_full.replace(' ', '_'))
+                        new_hist = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(new_full.replace(' ', '_')) + "&action=history"
+                        move1 = QLabel(f"❌ {html.escape(old_full)} (<a href='{old_url}'>открыть</a> · <a href='{old_hist}'>история</a>)")
+                        move1.setTextFormat(Qt.RichText)
+                        try:
+                            move1.setWordWrap(True)
+                        except Exception:
+                            pass
+                        move2 = QLabel(f"✅ {html.escape(new_full)} (<a href='{new_url}'>открыть</a> · <a href='{new_hist}'>история</a>)")
+                        move2.setTextFormat(Qt.RichText)
+                        try:
+                            move2.setWordWrap(True)
+                        except Exception:
+                            pass
+                        try:
+                            for wgt in (move1, move2):
+                                wgt.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                                wgt.setOpenExternalLinks(True)
+                        except Exception:
+                            pass
+                        hlay.addWidget(move1)
+                        hlay.addWidget(move2)
+                        # Название страницы внутри карточки
+                        page_line = QLabel(
+                            f"⚜️ {html.escape(page_title)} (<a href='{page_url}'>открыть</a> · <a href='{history_url}'>история</a>)"
                         )
-                        msg_top.setWordWrap(True)
-                        lay.addWidget(msg_top)
+                        page_line.setTextFormat(Qt.RichText)
+                        try:
+                            page_line.setWordWrap(True)
+                        except Exception:
+                            pass
+                        try:
+                            page_line.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                            page_line.setOpenExternalLinks(True)
+                        except Exception:
+                            pass
+                        hlay.addSpacing(4)
+                        hlay.addWidget(page_line)
+                        lay.addWidget(header)
+                        try:
+                            lay.addSpacing(6)
+                        except Exception:
+                            pass
+                    # Заголовок для сообщения
+                    try:
+                        lay.addSpacing(6)
+                    except Exception:
+                        pass
+                    lay.addWidget(QLabel('<b>Сообщение:</b>'))
+                    msg_top = QLabel(
+                        ("Категория в статье не найдена напрямую. Обнаружено совпадение в параметрах шаблона." if is_direct
+                         else "Категория не найдена напрямую. Обнаружены совпадения по частям в параметрах шаблона. Проверьте и при необходимости подредактируйте.")
+                    )
+                    msg_top.setWordWrap(True)
+                    lay.addWidget(msg_top)
+                    # Цветовая индикация уже есть в логах; убедимся, что сообщения о «перенесена» всегда зелёные
 
-                        lbl_old = QLabel(f"<b>Исходный вызов:</b><br/><code>{highlighted_old}</code>")
-                        lbl_old.setTextFormat(Qt.RichText)
-                        lay.addWidget(lbl_old)
+                    # Отступ перед блоком «Исходный вызов»
+                    try:
+                        lay.addSpacing(6)
+                    except Exception:
+                        pass
+                    lbl_old = QLabel(f"<b>Исходный вызов:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:8px;margin:0'>{highlighted_old}</div>")
+                    lbl_old.setTextFormat(Qt.RichText)
+                    lay.addWidget(lbl_old)
 
-                        lbl_new = QLabel(f"<b>Предлагаемая замена:</b><br/><code>{highlighted_new}</code>")
-                        lbl_new.setTextFormat(Qt.RichText)
-                        lay.addWidget(lbl_new)
+                    # Отступ перед блоком «Предлагаемая замена»
+                    try:
+                        lay.addSpacing(6)
+                    except Exception:
+                        pass
+                    lbl_new = QLabel(f"<b>Предлагаемая замена:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:8px;margin:0'>{highlighted_new}</div>")
+                    lbl_new.setTextFormat(Qt.RichText)
+                    lay.addWidget(lbl_new)
 
-                        edit = QPlainTextEdit()
+                    edit = QPlainTextEdit()
+                    if is_direct:
+                        edit.setPlainText(template_str.replace(str(data.get('old_direct') or old_full), str(data.get('new_direct') or new_full), 1))
+                    else:
                         edit.setPlainText(proposed_template or (template_str.replace(old_sub, new_sub, 1) if old_sub and new_sub else template_str))
-                        edit.setMinimumHeight(160)
-                        lay.addWidget(edit)
+                    edit.setMinimumHeight(160)
+                    try:
+                        mono = QFont('Consolas')
+                        mono.setStyleHint(QFont.Monospace)
+                        mono.setFixedPitch(True)
+                        edit.setFont(mono)
+                    except Exception:
+                        pass
+                    lay.addWidget(edit)
 
-                        row = QHBoxLayout()
-                        btn_confirm = QPushButton('Подтвердить и сохранить')
-                        btn_skip = QPushButton('Пропустить')
-                        btn_cancel = QPushButton('Отмена')
-                        row.addStretch(); row.addWidget(btn_confirm); row.addWidget(btn_skip); row.addWidget(btn_cancel)
-                        lay.addLayout(row)
+                    auto_cb = QCheckBox('Автоматически подтверждать, если в параметре указано полное название категории')
+                    try:
+                        auto_cb.setChecked(bool(self._auto_confirm_direct_all_ui))
+                    except Exception:
+                        pass
+                    lay.addWidget(auto_cb)
 
-                        def _on(btn):
-                            nonlocal action
-                            if btn is btn_confirm:
-                                action = 'confirm'
-                            elif btn is btn_skip:
-                                action = 'skip'
-                            else:
-                                action = 'cancel'
-                            dlg.accept()
+                    row = QHBoxLayout()
+                    btn_confirm = QPushButton('Подтвердить и сохранить')
+                    btn_skip = QPushButton('Пропустить')
+                    btn_cancel = QPushButton('Отмена')
+                    row.addStretch(); row.addWidget(btn_confirm); row.addWidget(btn_skip); row.addWidget(btn_cancel)
+                    lay.addLayout(row)
 
-                        action = 'skip'
-                        btn_confirm.clicked.connect(lambda: _on(btn_confirm))
-                        btn_skip.clicked.connect(lambda: _on(btn_skip))
-                        btn_cancel.clicked.connect(lambda: _on(btn_cancel))
-                        dlg.exec()
+                    action = 'cancel'
+                    def _finish(act: str):
+                        nonlocal action
+                        action = act
+                        try:
+                            self._auto_confirm_direct_all_ui = bool(auto_cb.isChecked())
+                        except Exception:
+                            pass
+                        dlg.accept()
 
-                        w = getattr(self, 'mrworker', None)
-                        if w is not None:
-                            try:
-                                payload = {'request_id': req_id, 'action': action}
-                                if action == 'confirm':
-                                    payload['edited_template'] = edit.toPlainText()
-                                w.review_response.emit(payload)
-                            except Exception:
-                                pass
+                    btn_confirm.clicked.connect(lambda: _finish('confirm'))
+                    btn_skip.clicked.connect(lambda: _finish('skip'))
+                    btn_cancel.clicked.connect(lambda: _finish('cancel'))
+                    try:
+                        dlg.rejected.connect(lambda: _finish('cancel'))
+                    except Exception:
+                        pass
+                    # Горячие клавиши: Enter = подтвердить, Esc = отмена
+                    try:
+                        QShortcut(QKeySequence(Qt.Key_Return), dlg, activated=lambda: _finish('confirm'))
+                        QShortcut(QKeySequence(Qt.Key_Enter), dlg, activated=lambda: _finish('confirm'))
+                        QShortcut(QKeySequence(Qt.Key_Escape), dlg, activated=lambda: _finish('cancel'))
+                        btn_confirm.setAutoDefault(True)
+                        btn_confirm.setDefault(True)
+                        btn_confirm.setFocus()
+                    except Exception:
+                        pass
+                    dlg.exec()
+
+                    w = getattr(self, 'mrworker', None)
+                    if w is not None:
+                        try:
+                            payload = {'request_id': req_id, 'action': action}
+                            if action == 'confirm' and edit.toPlainText().strip() != template_str:
+                                payload['edited_template'] = edit.toPlainText()
+                            if is_direct and action == 'confirm':
+                                payload['auto_confirm_all'] = bool(self._auto_confirm_direct_all_ui)
+                            w.review_response.emit(payload)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -3413,8 +3787,8 @@ class MainWindow(QMainWindow):
         if 'ошибка' in lower or 'не найдено' in lower:
             color = 'red'
         elif 'не существует' in lower:
-            # оранжевый для статуса "не существует"
-            color = '#ff8c00'
+            # тёмный оранжевый для статуса "не существует"
+            color = '#cc6a00'
         elif 'уже существует' in lower:
             # тёмно-жёлтый для статуса "уже существует"
             color = '#b8860b'
