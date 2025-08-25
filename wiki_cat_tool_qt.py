@@ -93,6 +93,9 @@ REQUEST_HEADERS = {
     'User-Agent': 'WikiCatTool/1.0 (+github:local; email:none) requests',
     'Accept': 'application/json'
 }
+RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'
+GITHUB_API_RELEASES = 'https://api.github.com/repos/sc113/wiki-category-tool/releases'
+APP_VERSION = "beta5"
 _RATE_LOCK = Lock()
 _LAST_REQ_TS = 0.0
 _MIN_INTERVAL = 0.12
@@ -2242,9 +2245,15 @@ class MainWindow(QMainWindow):
 
         layout_form.setStretchFactor(self.login_btn, 0)
 
+        row_debug = QHBoxLayout()
+        row_debug.addStretch()
         dbg_btn = QPushButton('Debug'); dbg_btn.setFixedWidth(60)
         dbg_btn.clicked.connect(self.show_debug)
-        layout.addWidget(dbg_btn, alignment=Qt.AlignRight | Qt.AlignBottom)
+        row_debug.addWidget(dbg_btn)
+        upd_btn = QPushButton('Проверить обновления')
+        upd_btn.clicked.connect(self.check_updates)
+        row_debug.addWidget(upd_btn)
+        layout.addLayout(row_debug)
         self.tabs.addTab(tab, 'Авторизация')
 
 
@@ -2265,6 +2274,98 @@ class MainWindow(QMainWindow):
         if ok:
             self.current_user = self.user_edit.text().strip()
             self.current_lang = (self.lang_combo.currentText() or 'ru').strip()
+
+    def check_updates(self):
+        try:
+            debug('Проверка обновлений...')
+            _rate_wait()
+            r = REQUEST_SESSION.get(GITHUB_API_RELEASES, headers=REQUEST_HEADERS, timeout=10)
+            if r.status_code != 200:
+                debug(f'GitHub API status {r.status_code}')
+                QMessageBox.information(self, 'Проверка обновлений', 'Не удалось проверить обновления. Откроем страницу релизов.')
+                QDesktopServices.openUrl(QUrl(RELEASES_URL))
+                return
+            data = r.json() or []
+            if not isinstance(data, list) or not data:
+                QMessageBox.information(self, 'Проверка обновлений', 'Пока нет опубликованных релизов. Откроем страницу.')
+                QDesktopServices.openUrl(QUrl(RELEASES_URL))
+                return
+            latest = None
+            for rel in data:
+                # пропускаем черновики
+                if rel.get('draft'):
+                    continue
+                latest = rel
+                break
+            if not latest:
+                QMessageBox.information(self, 'Проверка обновлений', 'Подходящих релизов не найдено.')
+                return
+            tag = (latest.get('tag_name') or '').strip()
+            name = (latest.get('name') or tag or 'Новый релиз')
+            html_url = (latest.get('html_url') or RELEASES_URL)
+            # Форматируем дату публикации
+            published = (latest.get('published_at') or latest.get('created_at') or '').strip()
+            date_str = ''
+            if published:
+                try:
+                    # ISO 8601 → YYYY-MM-DD
+                    date_str = (published.split('T', 1)[0])
+                except Exception:
+                    date_str = published
+            # Сравнение версий: поддержка числовых (0.1, 1.2.3) и betaN
+            def _num(ver: str):
+                m = re.search(r"(\d+(?:\.\d+)+|\d+)", ver or '')
+                return [int(x) for x in m.group(1).split('.')] if m else None
+            def _beta(ver: str):
+                m = re.search(r"beta\s*(\d+)", (ver or ''), re.I)
+                return int(m.group(1)) if m else None
+
+            local = (APP_VERSION or '').strip()
+            remote = (tag or '').strip()
+            ln, rn = _num(local), _num(remote)
+            lb, rb = _beta(local), _beta(remote)
+
+            def _cmp_lists(a, b):
+                la, lb = len(a), len(b)
+                n = max(la, lb)
+                a = a + [0] * (n - la)
+                b = b + [0] * (n - lb)
+                if a == b:
+                    return 0
+                return 1 if a > b else -1
+
+            cmp_res = None
+            if ln and rn:
+                cmp_res = _cmp_lists(ln, rn)
+            elif lb is not None and rb is not None:
+                cmp_res = -1 if lb < rb else (1 if lb > rb else 0)
+            elif local and remote:
+                # Фолбэк: строковое сравнение по равенству
+                cmp_res = 0 if local == remote else None
+
+            if cmp_res is None:
+                # Не смогли корректно сравнить — просто предложим открыть страницу
+                extra = f' ({date_str})' if date_str else ''
+                msg = f'Найден релиз: {name}{extra}.\nОткрыть страницу релизов?'
+                res = QMessageBox.question(self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
+                if res == QMessageBox.Yes:
+                    QDesktopServices.openUrl(QUrl(html_url))
+            elif cmp_res < 0:
+                # remote > local
+                extra = f' ({date_str})' if date_str else ''
+                msg = f'Доступна новая версия: {name}{extra}.\nОткрыть страницу релизов?'
+                res = QMessageBox.question(self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
+                if res == QMessageBox.Yes:
+                    QDesktopServices.openUrl(QUrl(html_url))
+            elif cmp_res > 0:
+                # local > remote
+                QMessageBox.information(self, 'Проверить обновления', 'У вас версия новее последнего релиза на GitHub.')
+            else:
+                QMessageBox.information(self, 'Проверить обновления', 'У вас установлена актуальная версия.')
+        except Exception as e:
+            debug(f'Ошибка проверки обновлений: {e}')
+            QMessageBox.information(self, 'Проверка обновлений', 'Произошла ошибка. Откроем страницу релизов.')
+            QDesktopServices.openUrl(QUrl(RELEASES_URL))
 
     def _set_awb_ui(self, has_awb: bool, note: str | None = None):
         """Включает/выключает доступ к операциям записи в зависимости от допуска AWB.
