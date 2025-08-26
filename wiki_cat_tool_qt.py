@@ -58,7 +58,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
-    QSizePolicy, QDialog, QPlainTextEdit, QGroupBox, QFrame
+    QSizePolicy, QDialog, QPlainTextEdit, QGroupBox, QFrame,
+    QDialogButtonBox, QMenu
 )
 from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut, QIcon
 
@@ -1152,6 +1153,13 @@ class RenameWorker(QThread):
                 except Exception:
                     pass
             _load_rules()
+            # Восстановим флаги автопропуска из сохранённых правил
+            try:
+                for _k, _bucket in (self.template_auto_cache or {}).items():
+                    if isinstance(_bucket, dict) and bool(_bucket.get('skip')):
+                        self.auto_skip_templates.add(_k)
+            except Exception:
+                pass
             def _save_rules():
                 try:
                     _os.makedirs(_os.path.dirname(self._rules_file_path), exist_ok=True)
@@ -2052,6 +2060,7 @@ class RenameWorker(QThread):
         # Вспомогательная функция: обработка одной страницы по Фазе 2 (поиск в параметрах шаблонов)
         def _process_title_templates(title: str):
             nonlocal moved_via_template, write_min_interval, last_write_ts
+            user_decision_made = False
             if self._stop:
                 return
             try:
@@ -2155,6 +2164,18 @@ class RenameWorker(QThread):
                     tmpl, old_token, new_token = eq_list[0]
                     visited.add(tmpl)
                     # Автоподтверждение/автопропуск прямых совпадений
+                    # Персональный автопропуск по шаблону
+                    try:
+                        name_tmp, _ = self._parse_template_tokens(tmpl)
+                        key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
+                        if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
+                            try:
+                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                            except Exception:
+                                pass
+                            continue
+                    except Exception:
+                        pass
                     if getattr(self, 'auto_confirm_direct_all', False):
                         try:
                             new_tmpl = tmpl.replace(old_token, new_token, 1)
@@ -2219,8 +2240,20 @@ class RenameWorker(QThread):
                             self._save_rules_file()
                         elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
                             self.auto_skip_direct_all = True
+                            # Запомним автопропуск и на уровне конкретного шаблона
+                            try:
+                                name, _ = self._parse_template_tokens(tmpl)
+                                key = self._norm_tmpl_key(name, family, lang)
+                                if key:
+                                    self.auto_skip_templates.add(key)
+                                    self._ensure_cache_bucket(key)['skip'] = True
+                                    self._save_rules_file()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
+                    if action in ('confirm', 'skip'):
+                        user_decision_made = True
                     if action == 'confirm':
                         try:
                             edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
@@ -2277,7 +2310,8 @@ class RenameWorker(QThread):
                         cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
                         cand_list = [c for c in cand_list if c.get('template') not in partial_seen]
                         if not cand_list:
-                            if not made_change:
+                            # Не логируем «не найдено», если пользователь уже что-то выбрал в прямых совпадениях
+                            if not made_change and not user_decision_made:
                                 self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
                             break
                         c0 = cand_list[0]
@@ -2317,6 +2351,11 @@ class RenameWorker(QThread):
                                 key = self._norm_tmpl_key(name, family, lang)
                                 if key:
                                     self.auto_skip_templates.add(key)
+                                    try:
+                                        self._ensure_cache_bucket(key)['skip'] = True
+                                        self._save_rules_file()
+                                    except Exception:
+                                        pass
                         except Exception:
                             pass
                         if action == 'confirm':
@@ -2562,11 +2601,23 @@ class RenameWorker(QThread):
                     candidates = self._find_template_param_category(txt, old_full)
                     candidates = [c for c in candidates if c not in visited]
                     if not candidates:
-                        if not made_change:
+                        if not made_change and not user_decision_made:
                             self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
                         break
                     tmpl = candidates[0]
                     visited.add(tmpl)
+                    # Автопропуск по конкретному шаблону
+                    try:
+                        name_tmp, _ = self._parse_template_tokens(tmpl)
+                        key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
+                        if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
+                            try:
+                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                            except Exception:
+                                pass
+                            continue
+                    except Exception:
+                        pass
                     # Если включено автоподтверждение для прямых совпадений — применяем без диалога
                     if getattr(self, 'auto_confirm_direct_all', False):
                         try:
@@ -2607,6 +2658,13 @@ class RenameWorker(QThread):
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
                         # Переходим к следующему кандидату
                         continue
+                    # Если включён глобальный автопропуск — пропускаем без диалога
+                    if getattr(self, 'auto_skip_direct_all', False):
+                        try:
+                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                        except Exception:
+                            pass
+                        continue
                     result = self._prompt_user_template_replace(title, tmpl, old_full, new_full)
                     action = result.get('action') if isinstance(result, dict) else str(result)
                     if action == 'cancel':
@@ -2616,6 +2674,18 @@ class RenameWorker(QThread):
                     try:
                         if action == 'confirm' and isinstance(result, dict) and bool(result.get('auto_confirm_all')):
                             self.auto_confirm_direct_all = True
+                        elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
+                            self.auto_skip_direct_all = True
+                            # Запомним автопропуск и на уровне конкретного шаблона
+                            try:
+                                name, _ = self._parse_template_tokens(tmpl)
+                                key = self._norm_tmpl_key(name, family, lang)
+                                if key:
+                                    self.auto_skip_templates.add(key)
+                                    self._ensure_cache_bucket(key)['skip'] = True
+                                    self._save_rules_file()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                     if action == 'confirm':
@@ -2654,7 +2724,13 @@ class RenameWorker(QThread):
                                 self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
-                    # skip => продолжаем к следующему кандидату
+                    elif action == 'skip':
+                        user_decision_made = True
+                        try:
+                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено пользователем')
+                        except Exception:
+                            pass
+                        # продолжаем к следующему кандидату
 
                 # 2) Если прямых указаний нет или пользователь всё пропустил — пробуем «по частям»
                 if not self._stop and not made_change:
@@ -4380,17 +4456,49 @@ class MainWindow(QMainWindow):
                         pass
                     lay.addWidget(edit)
 
-                    # Нижняя панель управления: слева — массовые действия, справа — обычные кнопки
+                    # Нижняя панель управления: слева — массовые действия (вторичные кнопки), справа — стандартные кнопки
                     controls = QHBoxLayout()
                     btn_confirm_all = QPushButton('Подтверждать все аналогичные')
                     btn_skip_all = QPushButton('Пропускать все аналогичные')
-                    controls.addWidget(btn_confirm_all)
-                    controls.addWidget(btn_skip_all)
+                    try:
+                        # Группа в окантовке с заголовком и горизонтальными кнопками
+                        mass_group = QGroupBox("Массовые действия")
+                        mass_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+                        mass_layout = QHBoxLayout(mass_group)
+                        try:
+                            mass_layout.setContentsMargins(8, 8, 8, 8)
+                            mass_layout.setSpacing(6)
+                        except Exception:
+                            pass
+                        mass_layout.addWidget(btn_confirm_all)
+                        mass_layout.addWidget(btn_skip_all)
+                        controls.addWidget(mass_group)
+                    except Exception:
+                        # Фолбэк — просто две кнопки слева горизонтально
+                        tmp = QWidget()
+                        tmp_layout = QHBoxLayout(tmp)
+                        try:
+                            tmp_layout.setContentsMargins(0, 0, 0, 0)
+                            tmp_layout.setSpacing(6)
+                        except Exception:
+                            pass
+                        tmp_layout.addWidget(btn_confirm_all)
+                        tmp_layout.addWidget(btn_skip_all)
+                        controls.addWidget(tmp)
                     controls.addStretch()
+
+                    button_box = QDialogButtonBox()
                     btn_confirm = QPushButton('Подтвердить и сохранить')
                     btn_skip = QPushButton('Пропустить')
                     btn_cancel = QPushButton('Отмена')
-                    controls.addWidget(btn_confirm); controls.addWidget(btn_skip); controls.addWidget(btn_cancel)
+                    try:
+                        button_box.addButton(btn_confirm, QDialogButtonBox.AcceptRole)
+                        button_box.addButton(btn_skip, QDialogButtonBox.ActionRole)
+                        button_box.addButton(btn_cancel, QDialogButtonBox.RejectRole)
+                    except Exception:
+                        # Fallback если роли недоступны
+                        pass
+                    controls.addWidget(button_box)
                     lay.addLayout(controls)
 
                     action = 'cancel'
@@ -4547,16 +4655,27 @@ class MainWindow(QMainWindow):
             return None
 
     def open_from_edit(self, edit: QLineEdit):
-        """Открыть файл из пути, указанного в QLineEdit."""
+        """Открыть файл из пути, указанного в QLineEdit. Для .tsv — создать пустой, если отсутствует."""
         try:
             path = (edit.text() or '').strip()
             if not path:
                 QMessageBox.warning(self, 'Ошибка', 'Сначала укажите путь к файлу.')
                 return
+            # Если это TSV и файла нет — создаём пустой файл (как с правилами замен)
+            try:
+                _, ext = os.path.splitext(path)
+                if ext.lower() == '.tsv' and not os.path.exists(path):
+                    dir_name = os.path.dirname(path)
+                    if dir_name:
+                        os.makedirs(dir_name, exist_ok=True)
+                    with open(path, 'w', encoding='utf-8') as f:
+                        f.write('')
+            except Exception:
+                pass
             if not os.path.exists(path):
                 QMessageBox.warning(self, 'Ошибка', 'Файл не найден: ' + path)
                 return
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
         except Exception as e:
             QMessageBox.warning(self, 'Ошибка', f'Не удалось открыть файл: {e}')
 
