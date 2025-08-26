@@ -60,14 +60,28 @@ from PySide6.QtWidgets import (
     QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
     QSizePolicy, QDialog, QPlainTextEdit, QGroupBox, QFrame
 )
-from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut, QIcon
 
-# Настройка базовой директории
+# Настройка базовой директории и доступ к ресурсам (для PyInstaller onefile)
 def tool_base_dir() -> str:
     try:
         return os.path.dirname(__file__)
     except NameError:
         return os.getcwd()
+
+def _resource_path(relative: str) -> str:
+    """Return absolute path to resource, works for dev and PyInstaller onefile."""
+    try:
+        base_path = getattr(sys, '_MEIPASS', None)
+        if base_path and os.path.exists(base_path):
+            return os.path.join(base_path, relative)
+    except Exception:
+        pass
+    try:
+        base = os.path.dirname(__file__)
+    except Exception:
+        base = os.getcwd()
+    return os.path.join(base, relative)
 
 if 'PYWIKIBOT_DIR' not in os.environ:
     os.environ['PYWIKIBOT_DIR'] = tool_base_dir()
@@ -95,7 +109,7 @@ REQUEST_HEADERS = {
 }
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'
 GITHUB_API_RELEASES = 'https://api.github.com/repos/sc113/wiki-category-tool/releases'
-APP_VERSION = "beta6"
+APP_VERSION = "beta7"
 _RATE_LOCK = Lock()
 _LAST_REQ_TS = 0.0
 _MIN_INTERVAL = 0.12
@@ -2795,6 +2809,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Wiki Category Tool')
+        try:
+            icon_path = _resource_path('icon.ico')
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+        except Exception:
+            pass
 
         # Стартовый размер как раньше, но можно сжимать до меньшего минимума
         self.resize(1200, 700)
@@ -5057,7 +5077,24 @@ class MainWindow(QMainWindow):
 # ===== Main =====
 
 def main():
+    # Ensure Windows taskbar uses our EXE icon
+    try:
+        if sys.platform.startswith('win'):
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('sc113.WikiCatTool')
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
+    try:
+        icon_path = _resource_path('icon.ico')
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+            try:
+                debug(f"Icon set: {icon_path}")
+            except Exception:
+                pass
+    except Exception:
+        pass
     try:
         import qdarktheme
         app.setStyleSheet(qdarktheme.load_stylesheet())

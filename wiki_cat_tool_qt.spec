@@ -11,7 +11,8 @@ a = Analysis(
     pathex=[],
     binaries=pywikibot_binaries,
     datas=pywikibot_datas + [
-        ('configs', 'configs')
+        ('configs', 'configs'),
+        ('icon.ico', '.')
     ],
     hiddenimports=pywikibot_hidden + [
         '_embedded_secrets'
@@ -31,7 +32,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='wiki_cat_tool_qt',
+    name='WikiCatTool',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
