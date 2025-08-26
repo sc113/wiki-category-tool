@@ -95,7 +95,7 @@ REQUEST_HEADERS = {
 }
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'
 GITHUB_API_RELEASES = 'https://api.github.com/repos/sc113/wiki-category-tool/releases'
-APP_VERSION = "beta5"
+APP_VERSION = "beta6"
 _RATE_LOCK = Lock()
 _LAST_REQ_TS = 0.0
 _MIN_INTERVAL = 0.12
@@ -1769,7 +1769,7 @@ class RenameWorker(QThread):
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
                                         write_min_interval = max(0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
@@ -1789,7 +1789,8 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                                auto_note = 'автоматически' if auto_applied == 1 else f'автоматически ({auto_applied} ' + ('вхождение' if (auto_applied % 10 == 1 and auto_applied % 100 != 11) else ('вхождения' if (2 <= auto_applied % 10 <= 4 and not 11 <= auto_applied % 100 <= 14) else 'вхождений')) + ')'
+                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена {auto_note}')
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
                         continue
@@ -1837,16 +1838,18 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                    elif action == 'skip':
+                        try:
+                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено пользователем')
+                        except Exception:
+                            pass
 
-                # Если на странице были автоприменения (после включения галочки) — короткая сводка
+                # Если на странице были автоприменения (после включения галочки) — короткая сводка без повторения названия
                 if auto_applied > 0 and not self._stop:
-                    try:
-                        self.progress.emit(f"Автоприменено {auto_applied} замен(ы) на странице {html.escape(title)}")
-                    except Exception:
-                        self.progress.emit(f"Автоприменено {auto_applied} замен(ы) на странице {title}")
+                    pass
                 # 2) Поиск по частям — только если на странице не было ни одного полного совпадения
                 if not self._stop and not made_change and not direct_seen:
                     partial_seen: set[str] = set()
@@ -1905,9 +1908,14 @@ class RenameWorker(QThread):
                                             typ = 'категория' if nsid == 14 else 'статья'
                                         except Exception:
                                             typ = 'страница'
-                                        self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена (частичная замена)")
+                                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена (частичная замена)')
                             except Exception as e:
                                 self.progress.emit(f"{title}: ошибка правки шаблона (частично): {e}")
+                        elif action == 'skip':
+                            try:
+                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено пользователем (частичная замена)')
+                            except Exception:
+                                pass
             except Exception as e:
                 self.progress.emit(f"{title}: ошибка обработки на ручной фазе: {e}")
 
@@ -1931,7 +1939,7 @@ class RenameWorker(QThread):
             # Стартовое сообщение о начале Фазы 1
             if self.phase1_enabled and not phase1_progress_logged:
                 try:
-                    self.progress.emit("Сканируем прямые вхождения категорий…")
+                    self.progress.emit("Сканируем прямые указания категорий…")
                 except Exception:
                     pass
                 phase1_progress_logged = True
@@ -2024,9 +2032,9 @@ class RenameWorker(QThread):
                                 except Exception:
                                     typ = 'страница'
                                 try:
-                                    self.progress.emit(f"▪️ {html.escape(new_full)} → {html.escape(t)}: {typ} перенесена")
+                                    self.progress.emit(f'▪️ {html.escape(new_full)} : "{html.escape(t)}" — {typ} перенесена')
                                 except Exception:
-                                    self.progress.emit(f"▪️ {new_full} → {t}: {typ} перенесена")
+                                    self.progress.emit(f'▪️ {new_full} : "{t}" — {typ} перенесена')
                         except Exception as e:
                             self.progress.emit(f"{t}: ошибка переноса категории: {e}")
                     # Если правки по Фазе 1 не было, а Фаза 2 включена — добавляем в backlog
@@ -2041,7 +2049,7 @@ class RenameWorker(QThread):
                     scanned_phase1_count += 1
                     if scanned_phase1_count % 10 == 0:
                         try:
-                            self.progress.emit(f"🔹 Проверено {scanned_phase1_count}, прямых замен {moved_direct}")
+                            self.progress.emit(f"🔹 Проверено {scanned_phase1_count}, выполнено замен: {moved_direct}")
                         except Exception:
                             pass
             if 'continue' in data:
@@ -2066,6 +2074,7 @@ class RenameWorker(QThread):
                 txt = page.text
                 visited = set()
                 made_change = False
+                auto_applied_title = 0
                 # 1) Сначала пытаемся найти прямые указания полной категории в шаблонах
                 while not self._stop:
                     candidates = self._find_template_param_category(txt, old_full)
@@ -2102,12 +2111,14 @@ class RenameWorker(QThread):
                                 txt = new_txt
                                 moved_via_template += 1
                                 made_change = True
+                                auto_applied_title += 1
                                 try:
                                     nsid = page.namespace().id
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                                auto_note = 'автоматически' if auto_applied_title == 1 else f'автоматически ({auto_applied_title} ' + ('вхождение' if (auto_applied_title % 10 == 1 and auto_applied_title % 100 != 11) else ('вхождения' if (2 <= auto_applied_title % 10 <= 4 and not 11 <= auto_applied_title % 100 <= 14) else 'вхождений')) + ')'
+                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена {auto_note}')
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
                         # Переходим к следующему кандидату
@@ -2156,7 +2167,7 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена")
+                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
                     # skip => продолжаем к следующему кандидату
@@ -2222,7 +2233,7 @@ class RenameWorker(QThread):
                                             typ = 'категория' if nsid == 14 else 'статья'
                                         except Exception:
                                             typ = 'страница'
-                                        self.progress.emit(f"→ {new_full} → {title}: {typ} перенесена (частичная замена)")
+                                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена (частичная замена)')
                             except Exception as e:
                                 self.progress.emit(f"{title}: ошибка правки шаблона (частично): {e}")
             except Exception as e:
@@ -3175,8 +3186,29 @@ class MainWindow(QMainWindow):
         self.minor_checkbox = QCheckBox('Малая правка (minor edit)')
         sum_layout.addWidget(self.minor_checkbox)
 
-        self.replace_btn = QPushButton('Начать запись')
-        self.replace_btn.clicked.connect(self.start_replace)
+        # Предпросмотр/старт
+        self.rep_preview_titles = QTextEdit(); self.rep_preview_titles.setReadOnly(True)
+        try:
+            self.rep_preview_titles.setLineWrapMode(QTextEdit.NoWrap)
+            self.rep_preview_titles.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        except Exception:
+            pass
+        self.rep_preview_rest = QTextEdit(); self.rep_preview_rest.setReadOnly(True)
+        try:
+            self.rep_preview_rest.setLineWrapMode(QTextEdit.NoWrap)
+            self.rep_preview_rest.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        except Exception:
+            pass
+        # синхронизация вертикального скролла
+        try:
+            a = self.rep_preview_titles.verticalScrollBar(); b = self.rep_preview_rest.verticalScrollBar()
+            a.valueChanged.connect(lambda v: (b.setValue(v) if b.value()!=v else None))
+            b.valueChanged.connect(lambda v: (a.setValue(v) if a.value()!=v else None))
+        except Exception:
+            pass
+
+        self.replace_btn = QPushButton('Предпросмотр')
+        self.replace_btn.clicked.connect(self.preview_replace)
         self.replace_stop_btn = QPushButton('Остановить')
         self.replace_stop_btn.setEnabled(False)
         self.replace_stop_btn.clicked.connect(self.stop_replace)
@@ -3197,11 +3229,49 @@ class MainWindow(QMainWindow):
             btn_clear_rep.setCursor(Qt.PointingHandCursor)
         except Exception:
             pass
-        btn_clear_rep.clicked.connect(lambda: self.rep_log.clear())
+        def _clear_rep_all():
+            try:
+                self.rep_log.clear()
+            except Exception:
+                pass
+            try:
+                self.rep_preview_titles.clear(); self.rep_preview_rest.clear()
+            except Exception:
+                pass
+            try:
+                self.replace_btn.clicked.disconnect()
+            except Exception:
+                pass
+            try:
+                self.replace_btn.setText('Предпросмотр')
+                self.replace_btn.clicked.connect(self.preview_replace)
+            except Exception:
+                pass
+        btn_clear_rep.clicked.connect(_clear_rep_all)
         rep_grid.addWidget(btn_clear_rep, 1, 0, Qt.AlignBottom | Qt.AlignRight)
+        # Левая половина: предпросмотр (две синхронные области); правая половина: лог
+        content_row = QHBoxLayout()
+        preview_wrap = QWidget(); preview_layout = QVBoxLayout(preview_wrap)
+        try:
+            preview_layout.setContentsMargins(0,0,6,0)
+        except Exception:
+            pass
+        preview_layout.addWidget(QLabel('<b>Предпросмотр:</b>'))
+        pv_split = QHBoxLayout(); pv_split.addWidget(self.rep_preview_titles, 1); pv_split.addWidget(self.rep_preview_rest, 2)
+        preview_layout.addLayout(pv_split)
+        content_row.addWidget(preview_wrap, 3)
+        # лог справа
+        log_wrap = QWidget(); log_layout = QVBoxLayout(log_wrap)
+        try:
+            log_layout.setContentsMargins(6,0,0,0)
+        except Exception:
+            pass
+        log_layout.addWidget(rep_wrap, 1)
+        content_row.addWidget(log_wrap, 2)
+
         # Перемещаем кнопки вправо вниз под лог
         row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.replace_btn); row_run.addWidget(self.replace_stop_btn)
-        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(rep_wrap, 1); v.addLayout(row_run)
+        v.addLayout(h); v.addLayout(sum_layout); v.addLayout(content_row, 1); v.addLayout(row_run)
         self._set_start_stop_ratio(self.replace_btn, self.replace_stop_btn, 3)
         self.tabs.addTab(tab, 'Перезаписать')
 
@@ -3241,8 +3311,28 @@ class MainWindow(QMainWindow):
         sum_layout.addWidget(self.summary_edit_create)
         self.summary_edit_create.setText(default_create_summary('ru'))
 
-        self.create_btn = QPushButton('Начать создание')
-        self.create_btn.clicked.connect(self.start_create)
+        # Предпросмотр/старт
+        self.create_preview_titles = QTextEdit(); self.create_preview_titles.setReadOnly(True)
+        try:
+            self.create_preview_titles.setLineWrapMode(QTextEdit.NoWrap)
+            self.create_preview_titles.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        except Exception:
+            pass
+        self.create_preview_rest = QTextEdit(); self.create_preview_rest.setReadOnly(True)
+        try:
+            self.create_preview_rest.setLineWrapMode(QTextEdit.NoWrap)
+            self.create_preview_rest.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        except Exception:
+            pass
+        try:
+            a = self.create_preview_titles.verticalScrollBar(); b = self.create_preview_rest.verticalScrollBar()
+            a.valueChanged.connect(lambda v: (b.setValue(v) if b.value()!=v else None))
+            b.valueChanged.connect(lambda v: (a.setValue(v) if a.value()!=v else None))
+        except Exception:
+            pass
+
+        self.create_btn = QPushButton('Предпросмотр')
+        self.create_btn.clicked.connect(self.preview_create)
         self.create_stop_btn = QPushButton('Остановить')
         self.create_stop_btn.setEnabled(False)
         self.create_stop_btn.clicked.connect(self.stop_create)
@@ -3263,11 +3353,48 @@ class MainWindow(QMainWindow):
             btn_clear_create.setCursor(Qt.PointingHandCursor)
         except Exception:
             pass
-        btn_clear_create.clicked.connect(lambda: self.create_log.clear())
+        def _clear_create_all():
+            try:
+                self.create_log.clear()
+            except Exception:
+                pass
+            try:
+                self.create_preview_titles.clear(); self.create_preview_rest.clear()
+            except Exception:
+                pass
+            try:
+                self.create_btn.clicked.disconnect()
+            except Exception:
+                pass
+            try:
+                self.create_btn.setText('Предпросмотр')
+                self.create_btn.clicked.connect(self.preview_create)
+            except Exception:
+                pass
+        btn_clear_create.clicked.connect(_clear_create_all)
         create_grid.addWidget(btn_clear_create, 1, 0, Qt.AlignBottom | Qt.AlignRight)
+        # Левая половина: предпросмотр; правая: лог
+        content_row = QHBoxLayout()
+        preview_wrap = QWidget(); preview_layout = QVBoxLayout(preview_wrap)
+        try:
+            preview_layout.setContentsMargins(0,0,6,0)
+        except Exception:
+            pass
+        preview_layout.addWidget(QLabel('<b>Предпросмотр:</b>'))
+        pv_split = QHBoxLayout(); pv_split.addWidget(self.create_preview_titles, 1); pv_split.addWidget(self.create_preview_rest, 2)
+        preview_layout.addLayout(pv_split)
+        content_row.addWidget(preview_wrap, 3)
+        log_wrap = QWidget(); log_layout = QVBoxLayout(log_wrap)
+        try:
+            log_layout.setContentsMargins(6,0,0,0)
+        except Exception:
+            pass
+        log_layout.addWidget(create_wrap, 1)
+        content_row.addWidget(log_wrap, 2)
+
         # кнопки справа внизу
         row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.create_btn); row_run.addWidget(self.create_stop_btn)
-        v.addLayout(h); v.addLayout(sum_layout); v.addWidget(create_wrap, 1); v.addLayout(row_run)
+        v.addLayout(h); v.addLayout(sum_layout); v.addLayout(content_row, 1); v.addLayout(row_run)
         self._set_start_stop_ratio(self.create_btn, self.create_stop_btn, 3)
         self.tabs.addTab(tab, 'Создать')
 
@@ -3332,7 +3459,7 @@ class MainWindow(QMainWindow):
         )
         # Первая опция: прямые ссылки
         row_p1 = QHBoxLayout()
-        self.chk_phase1 = QCheckBox('Переносить содержимое категории по прямым ссылкам')
+        self.chk_phase1 = QCheckBox('Обычное перемещение содержимого (категории прямо указаны на странице)')
         self.chk_phase1.setChecked(True)
         try:
             self.chk_phase1.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -3370,7 +3497,7 @@ class MainWindow(QMainWindow):
         # Заголовок блока перенаправлений скрыт по требованию
         # Вторая опция: параметры шаблонов
         row_p2 = QHBoxLayout()
-        self.chk_find_in_templates = QCheckBox('Искать и исправлять категоризацию через параметры шаблонов')
+        self.chk_find_in_templates = QCheckBox('Поиск и исправление категоризации через параметры шаблонов')
         self.chk_find_in_templates.setChecked(True)
         try:
             self.chk_find_in_templates.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -3581,8 +3708,8 @@ class MainWindow(QMainWindow):
                         pass
                     lay.addWidget(QLabel('<b>Сообщение:</b>'))
                     msg_top = QLabel(
-                        ("Категория в статье не найдена напрямую. Обнаружено совпадение в параметрах шаблона." if is_direct
-                         else "Категория не найдена напрямую. Обнаружены совпадения по частям в параметрах шаблона. Проверьте и при необходимости подредактируйте.")
+                        ("Категория на странице не найдена напрямую. Обнаружено совпадение в параметрах шаблона." if is_direct
+                         else "Категория на странице не найдена напрямую. Обнаружены совпадения по частям в параметрах шаблона. Проверьте и при необходимости подредактируйте.")
                     )
                     msg_top.setWordWrap(True)
                     lay.addWidget(msg_top)
@@ -3593,7 +3720,7 @@ class MainWindow(QMainWindow):
                         lay.addSpacing(6)
                     except Exception:
                         pass
-                    lbl_old = QLabel(f"<b>Исходный вызов:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:8px;margin:0'>{highlighted_old}</div>")
+                    lbl_old = QLabel(f"<b>Исходный вызов:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>{highlighted_old}</div>")
                     lbl_old.setTextFormat(Qt.RichText)
                     lay.addWidget(lbl_old)
 
@@ -3602,10 +3729,15 @@ class MainWindow(QMainWindow):
                         lay.addSpacing(6)
                     except Exception:
                         pass
-                    lbl_new = QLabel(f"<b>Предлагаемая замена:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:8px;margin:0'>{highlighted_new}</div>")
+                    lbl_new = QLabel(f"<b>Предлагаемая замена:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>{highlighted_new}</div>")
                     lbl_new.setTextFormat(Qt.RichText)
                     lay.addWidget(lbl_new)
 
+                    try:
+                        lay.addSpacing(6)
+                    except Exception:
+                        pass
+                    lay.addWidget(QLabel('<b>Ручное редактирование:</b>'))
                     edit = QPlainTextEdit()
                     if is_direct:
                         edit.setPlainText(template_str.replace(str(data.get('old_direct') or old_full), str(data.get('new_direct') or new_full), 1))
@@ -3621,12 +3753,15 @@ class MainWindow(QMainWindow):
                         pass
                     lay.addWidget(edit)
 
-                    auto_cb = QCheckBox('Автоматически подтверждать, если в параметре указано полное название категории')
-                    try:
-                        auto_cb.setChecked(bool(self._auto_confirm_direct_all_ui))
-                    except Exception:
-                        pass
-                    lay.addWidget(auto_cb)
+                    auto_cb = None
+                    # Чекбокс автоподтверждения имеет смысл только для прямых совпадений
+                    if is_direct:
+                        auto_cb = QCheckBox('Автоматически подтверждать, если в параметре указано полное название категории')
+                        try:
+                            auto_cb.setChecked(bool(self._auto_confirm_direct_all_ui))
+                        except Exception:
+                            pass
+                        lay.addWidget(auto_cb)
 
                     row = QHBoxLayout()
                     btn_confirm = QPushButton('Подтвердить и сохранить')
@@ -3640,7 +3775,8 @@ class MainWindow(QMainWindow):
                         nonlocal action
                         action = act
                         try:
-                            self._auto_confirm_direct_all_ui = bool(auto_cb.isChecked())
+                            if auto_cb is not None:
+                                self._auto_confirm_direct_all_ui = bool(auto_cb.isChecked())
                         except Exception:
                             pass
                         dlg.accept()
@@ -3672,6 +3808,12 @@ class MainWindow(QMainWindow):
                                 payload['edited_template'] = edit.toPlainText()
                             if is_direct and action == 'confirm':
                                 payload['auto_confirm_all'] = bool(self._auto_confirm_direct_all_ui)
+                                # Немедленно включим флаг на воркере, чтобы следующие прямые совпадения шли без диалога
+                                if bool(self._auto_confirm_direct_all_ui):
+                                    try:
+                                        w.auto_confirm_direct_all = True
+                                    except Exception:
+                                        pass
                             w.review_response.emit(payload)
                         except Exception:
                             pass
@@ -3804,10 +3946,16 @@ class MainWindow(QMainWindow):
                 return s.replace('\n', '<br/>')
             except Exception:
                 return s
+        # Префикс времени [YYYY-MM-DD HH:MM:SS]
+        try:
+            ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            prefix = f"[{ts}] "
+        except Exception:
+            prefix = ''
         if color:
-            widget.append(f"<span style='color:{color}'>{_html_lines(msg)}</span>")
+            widget.append(f"<span style='color:{color}'>{_html_lines(prefix + msg)}</span>")
         else:
-            widget.append(_html_lines(msg))
+            widget.append(_html_lines(prefix + msg))
 
     def _set_start_stop_ratio(self, start_btn: QPushButton, stop_btn: QPushButton, ratio: int = 3):
         try:
@@ -3956,6 +4104,37 @@ class MainWindow(QMainWindow):
         self.rworker.finished.connect(self._on_replace_finished)
         self.rworker.start()
 
+    def preview_replace(self):
+        # Загружает TSV, показывает две колонки: первая — заголовок, остальные — склеенные через \t
+        path = (self.tsv_path.text() or '').strip()
+        if not path:
+            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
+            return
+        try:
+            with open(path, newline='', encoding='utf-8-sig') as f:
+                rows = list(csv.reader(f, delimiter='\t'))
+        except Exception as e:
+            QMessageBox.critical(self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+            return
+        left = []
+        right = []
+        for r in rows:
+            if not r:
+                continue
+            title = (r[0] or '').lstrip('\ufeff')
+            tail = '\t'.join((c or '') for c in r[1:])
+            left.append(title)
+            right.append(tail)
+        self.rep_preview_titles.setPlainText('\n'.join(left))
+        self.rep_preview_rest.setPlainText('\n'.join(right))
+        # Меняем кнопку на «Начать запись» и перепривязываем обработчик
+        try:
+            self.replace_btn.clicked.disconnect()
+        except Exception:
+            pass
+        self.replace_btn.setText('Начать запись')
+        self.replace_btn.clicked.connect(self.start_replace)
+
     def stop_replace(self):
         w = getattr(self, 'rworker', None)
         if w and w.isRunning():
@@ -3994,6 +4173,37 @@ class MainWindow(QMainWindow):
         self.cworker.progress.connect(lambda m: self.log(self.create_log, m))
         self.cworker.finished.connect(self._on_create_finished)
         self.cworker.start()
+
+    def preview_create(self):
+        # Загружает TSV для создания, показывает две колонки: первая — заголовок, остальные — склеенные через \t
+        path = (self.tsv_path_create.text() or '').strip()
+        if not path:
+            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
+            return
+        try:
+            with open(path, newline='', encoding='utf-8-sig') as f:
+                rows = list(csv.reader(f, delimiter='\t'))
+        except Exception as e:
+            QMessageBox.critical(self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+            return
+        left = []
+        right = []
+        for r in rows:
+            if not r:
+                continue
+            title = (r[0] or '').lstrip('\ufeff')
+            tail = '\t'.join((c or '') for c in r[1:])
+            left.append(title)
+            right.append(tail)
+        self.create_preview_titles.setPlainText('\n'.join(left))
+        self.create_preview_rest.setPlainText('\n'.join(right))
+        # Меняем кнопку на «Начать создание» и перепривязываем обработчик
+        try:
+            self.create_btn.clicked.disconnect()
+        except Exception:
+            pass
+        self.create_btn.setText('Начать создание')
+        self.create_btn.clicked.connect(self.start_create)
 
     def stop_create(self):
         w = getattr(self, 'cworker', None)
