@@ -1180,6 +1180,11 @@ class RenameWorker(QThread):
                     file_data[scope] = self.template_auto_cache
                     with open(self._rules_file_path, 'w', encoding='utf-8') as f:
                         _json.dump(file_data, f, ensure_ascii=False, indent=2)
+                        try:
+                            f.flush()
+                            _os.fsync(f.fileno())
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             self._save_rules_file = _save_rules
@@ -2061,6 +2066,7 @@ class RenameWorker(QThread):
         def _process_title_templates(title: str):
             nonlocal moved_via_template, write_min_interval, last_write_ts
             user_decision_made = False
+            any_template_candidates_seen = False
             if self._stop:
                 return
             try:
@@ -2160,6 +2166,10 @@ class RenameWorker(QThread):
                     eq_list = [t for t in eq_list if t[0] not in visited]
                     if not eq_list:
                         break
+                    try:
+                        any_template_candidates_seen = True
+                    except Exception:
+                        pass
                     direct_seen = True
                     tmpl, old_token, new_token = eq_list[0]
                     visited.add(tmpl)
@@ -2238,6 +2248,13 @@ class RenameWorker(QThread):
                             key = self._norm_tmpl_key(name, family, lang)
                             self._ensure_cache_bucket(key)['auto'] = True
                             self._save_rules_file()
+                            # Логируем автоподтверждение с кратким правилом
+                            try:
+                                changed = f"{old_token} → {new_token}" if 'old_token' in locals() and 'new_token' in locals() else ''
+                                msg = f"🟦 Автоподтверждение сохранено: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                self.progress.emit(msg)
+                            except Exception:
+                                pass
                         elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
                             self.auto_skip_direct_all = True
                             # Запомним автопропуск и на уровне конкретного шаблона
@@ -2248,6 +2265,14 @@ class RenameWorker(QThread):
                                     self.auto_skip_templates.add(key)
                                     self._ensure_cache_bucket(key)['skip'] = True
                                     self._save_rules_file()
+                                    # Логируем с форматированием и кратким описанием правила (старое → новое)
+                                    try:
+                                        # Сформируем краткую сводку по прямому совпадению
+                                        changed = f"{old_token} → {new_token}" if 'old_token' in locals() and 'new_token' in locals() else ''
+                                        msg = f"🟪 Автопропуск сохранён: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                        self.progress.emit(msg)
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
                     except Exception:
@@ -2310,9 +2335,6 @@ class RenameWorker(QThread):
                         cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
                         cand_list = [c for c in cand_list if c.get('template') not in partial_seen]
                         if not cand_list:
-                            # Не логируем «не найдено», если пользователь уже что-то выбрал в прямых совпадениях
-                            if not made_change and not user_decision_made:
-                                self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
                             break
                         c0 = cand_list[0]
                         partial_seen.add(str(c0.get('template')))
@@ -2346,6 +2368,14 @@ class RenameWorker(QThread):
                                 key = self._norm_tmpl_key(name, family, lang)
                                 self._ensure_cache_bucket(key)['auto'] = True
                                 self._save_rules_file()
+                                try:
+                                    old_frag = str(c0.get('old_sub') or '')
+                                    new_frag = str(c0.get('new_sub') or '')
+                                    changed = f"{old_frag} → {new_frag}" if old_frag or new_frag else ''
+                                    msg = f"🟦 Автоподтверждение сохранено: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                    self.progress.emit(msg)
+                                except Exception:
+                                    pass
                             elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
                                 name, _ = self._parse_template_tokens(str(c0.get('template') or ''))
                                 key = self._norm_tmpl_key(name, family, lang)
@@ -2354,6 +2384,15 @@ class RenameWorker(QThread):
                                     try:
                                         self._ensure_cache_bucket(key)['skip'] = True
                                         self._save_rules_file()
+                                        try:
+                                            # Для частичных замен покажем старый/новый фрагмент, если доступны
+                                            old_frag = str(c0.get('old_sub') or '')
+                                            new_frag = str(c0.get('new_sub') or '')
+                                            changed = f"{old_frag} → {new_frag}" if old_frag or new_frag else ''
+                                            msg = f"🟪 Автопропуск сохранён: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                            self.progress.emit(msg)
+                                        except Exception:
+                                            pass
                                     except Exception:
                                         pass
                         except Exception:
@@ -2550,6 +2589,10 @@ class RenameWorker(QThread):
 
         if backlog and self.find_in_templates:
             self.progress.emit(f"Не удалось перенести автоматически: {len(backlog)} страниц(ы). Требуются ручные действия.")
+            try:
+                self.progress.emit("Начинаем ручную фазу (параметры шаблонов)…")
+            except Exception:
+                pass
 
         # Фаза 2: поиск в параметрах шаблонов с подтверждением пользователя
         for title in (backlog if self.find_in_templates else []):
@@ -2596,15 +2639,60 @@ class RenameWorker(QThread):
                 visited = set()
                 made_change = False
                 auto_applied_title = 0
-                # 1) Сначала пытаемся найти прямые указания полной категории в шаблонах
+                # 1) Прямые указания полной категории в шаблонах (равенство значения параметра)
+                def _find_equal_template_candidates(text_src: str, old_full_cat: str) -> list[tuple[str, str, str]]:
+                    results: list[tuple[str, str, str]] = []
+                    try:
+                        if not old_full_cat:
+                            return results
+                        old_bare = old_full_cat.split(':', 1)[1] if ':' in old_full_cat else old_full_cat
+                        new_bare = new_full.split(':', 1)[1] if ':' in new_full else new_full
+                        try:
+                            import html as _html
+                        except Exception:
+                            _html = None
+                        def _alts(tok: str) -> list[str]:
+                            arr = [tok]
+                            try:
+                                esc = _html.escape(tok, quote=True) if _html else tok
+                                if esc and esc != tok:
+                                    arr.append(esc)
+                            except Exception:
+                                pass
+                            return arr
+                        patterns: list[tuple[str, str]] = []
+                        for o, n in [(old_full_cat, new_full), (old_bare, new_bare)]:
+                            for o_alt in _alts(o):
+                                patterns.append((o_alt, n))
+                        for old_tok, new_tok in patterns:
+                            start = 0
+                            rx = re.compile(r"\|\s*(?:[^|{}=\n]+\s*=\s*)?" + re.escape(old_tok) + r"\s*(?=\||}})", re.S)
+                            while True:
+                                m = rx.search(text_src, start)
+                                if not m:
+                                    break
+                                idx = m.start()
+                                l = text_src.rfind('{{', 0, idx)
+                                r = text_src.find('}}', idx)
+                                if l != -1 and r != -1 and r > l:
+                                    chunk = text_src[l:r+2]
+                                    if '|' in chunk and (chunk, old_tok, new_tok) not in results:
+                                        results.append((chunk, old_tok, new_tok))
+                                start = m.end()
+                    except Exception:
+                        pass
+                    return results
+
                 while not self._stop:
-                    candidates = self._find_template_param_category(txt, old_full)
-                    candidates = [c for c in candidates if c not in visited]
-                    if not candidates:
-                        if not made_change and not user_decision_made:
-                            self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
+                    eq_list = _find_equal_template_candidates(txt, old_full)
+                    eq_list = [t for t in eq_list if t[0] not in visited]
+                    if not eq_list:
                         break
-                    tmpl = candidates[0]
+                    try:
+                        any_template_candidates_seen = True
+                    except Exception:
+                        pass
+                    tmpl, old_token, new_token = eq_list[0]
                     visited.add(tmpl)
                     # Автопропуск по конкретному шаблону
                     try:
@@ -2618,13 +2706,12 @@ class RenameWorker(QThread):
                             continue
                     except Exception:
                         pass
-                    # Если включено автоподтверждение для прямых совпадений — применяем без диалога
+                    # Автоподтверждение без диалога
                     if getattr(self, 'auto_confirm_direct_all', False):
                         try:
-                            new_tmpl = tmpl.replace(old_full, new_full)
+                            new_tmpl = tmpl.replace(old_token, new_token, 1)
                             new_txt = txt.replace(tmpl, new_tmpl, 1)
                             if new_txt != txt:
-                                # сохранение с адаптивным бэкоффом
                                 for attempt in range(1, 6):
                                     try:
                                         now2 = time.time()
@@ -2644,6 +2731,10 @@ class RenameWorker(QThread):
                                             continue
                                         raise
                                 txt = new_txt
+                                try:
+                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                except Exception:
+                                    pass
                                 moved_via_template += 1
                                 made_change = True
                                 auto_applied_title += 1
@@ -2656,27 +2747,39 @@ class RenameWorker(QThread):
                                 self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена {auto_note}')
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
-                        # Переходим к следующему кандидату
                         continue
-                    # Если включён глобальный автопропуск — пропускаем без диалога
+                    # Глобальный автопропуск
                     if getattr(self, 'auto_skip_direct_all', False):
                         try:
                             self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
                         except Exception:
                             pass
                         continue
-                    result = self._prompt_user_template_replace(title, tmpl, old_full, new_full)
+                    # Диалог
+                    result = self._prompt_user_template_replace(title, tmpl, old_full, new_full, old_direct=old_token, new_direct=new_token)
                     action = result.get('action') if isinstance(result, dict) else str(result)
                     if action == 'cancel':
                         self._stop = True
                         break
-                    # Включаем авто-подтверждение для всех последующих прямых совпадений, если пользователь так решил
                     try:
                         if action == 'confirm' and isinstance(result, dict) and bool(result.get('auto_confirm_all')):
                             self.auto_confirm_direct_all = True
+                            # Включаем auto и в кэше
+                            try:
+                                name, _ = self._parse_template_tokens(tmpl)
+                                key = self._norm_tmpl_key(name, family, lang)
+                                self._ensure_cache_bucket(key)['auto'] = True
+                                self._save_rules_file()
+                                # Лог
+                                try:
+                                    changed = f"{old_token} → {new_token}"
+                                    self.progress.emit(f"🟦 Автоподтверждение сохранено: шаблон «{name}» — правило: {changed}")
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
                         elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
                             self.auto_skip_direct_all = True
-                            # Запомним автопропуск и на уровне конкретного шаблона
                             try:
                                 name, _ = self._parse_template_tokens(tmpl)
                                 key = self._norm_tmpl_key(name, family, lang)
@@ -2684,6 +2787,11 @@ class RenameWorker(QThread):
                                     self.auto_skip_templates.add(key)
                                     self._ensure_cache_bucket(key)['skip'] = True
                                     self._save_rules_file()
+                                    try:
+                                        changed = f"{old_token} → {new_token}"
+                                        self.progress.emit(f"🟪 Автопропуск сохранён: шаблон «{name}» — правило: {changed}")
+                                    except Exception:
+                                        pass
                             except Exception:
                                 pass
                     except Exception:
@@ -2691,10 +2799,10 @@ class RenameWorker(QThread):
                     if action == 'confirm':
                         try:
                             edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
-                            new_tmpl = edited if edited.strip() else tmpl.replace(old_full, new_full)
+                            repl = edited if edited.strip() else tmpl.replace(old_token, new_token, 1)
+                            new_tmpl = repl
                             new_txt = txt.replace(tmpl, new_tmpl, 1)
                             if new_txt != txt:
-                                # сохранение с адаптивным бэкоффом
                                 for attempt in range(1, 6):
                                     try:
                                         now2 = time.time()
@@ -2714,6 +2822,10 @@ class RenameWorker(QThread):
                                             continue
                                         raise
                                 txt = new_txt
+                                try:
+                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                except Exception:
+                                    pass
                                 moved_via_template += 1
                                 made_change = True
                                 try:
@@ -2730,21 +2842,37 @@ class RenameWorker(QThread):
                             self.progress.emit(f'→ {new_full} : "{title}" — пропущено пользователем')
                         except Exception:
                             pass
-                        # продолжаем к следующему кандидату
 
                 # 2) Если прямых указаний нет или пользователь всё пропустил — пробуем «по частям»
                 if not self._stop and not made_change:
                     partial_seen: set[str] = set()
                     while not self._stop:
                         cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
-                        # уберём уже показанные кандидаты
-                        cand_list = [c for c in cand_list if c.get('template') not in partial_seen]
+                        # уберём уже показанные кандидаты и те, что уже шли как прямые равенства
+                        cand_list = [c for c in cand_list if c.get('template') not in partial_seen and c.get('template') not in visited]
                         if not cand_list:
-                            # прямых и частичных совпадений не найдено
-                            self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
+                            # прямых и частичных совпадений не найдено — не логируем, если уже было решение или отсутствовали кандидаты
+                            if not bool(locals().get('user_decision_made', False)) and not bool(locals().get('any_template_candidates_seen', False)):
+                                self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
                             break
+                        try:
+                            any_template_candidates_seen = True
+                        except Exception:
+                            pass
                         c0 = cand_list[0]
                         partial_seen.add(str(c0.get('template')))
+                        # Если этот шаблон отмечен на автопропуск — пропускаем без диалога (частичная замена)
+                        try:
+                            name_tmp, _ = self._parse_template_tokens(str(c0.get('template') or ''))
+                            key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
+                            if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
+                                try:
+                                    self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически (частичная замена)')
+                                except Exception:
+                                    pass
+                                continue
+                        except Exception:
+                            pass
                         result = self._prompt_user_template_replace(
                             title,
                             str(c0.get('template') or ''),
