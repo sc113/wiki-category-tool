@@ -1099,6 +1099,71 @@ class RenameWorker(QThread):
         self._stop = False
         # Автоподтверждение прямых совпадений категории в параметрах шаблонов (фаза 2)
         self.auto_confirm_direct_all: bool = False
+        # Автопропуск аналогичных случаев
+        self.auto_skip_direct_all: bool = False
+        self.auto_skip_templates: set[str] = set()
+        # Структура кэша: для каждого шаблона храним правила и флажки автоприменения
+        # {
+        #   tmpl_key: {
+        #       'named': { name_cf: { old_val: new_val } },
+        #       'unnamed_single': { old_val: new_val },
+        #       'unnamed_sequence': [ [(idx, old, new), ...], ... ],
+        #       'auto': True|False   # признак автоприменения для этого набора правил
+        #   }
+        # }
+        self.template_auto_cache: dict = {}
+        # Путь к файлу с правилами замен (JSON)
+        try:
+            import os as _os
+            # Единый путь к файлу правил рядом с configs дистрибутива
+            try:
+                base_cfg = _dist_configs_dir()
+            except Exception:
+                base_cfg = _os.path.join(_os.path.dirname(__file__), 'configs')
+            self._rules_file_path = _os.path.join(base_cfg, 'template_rules.json')
+            # Загрузим существующие правила из файла, если есть
+            def _load_rules():
+                try:
+                    if _os.path.exists(self._rules_file_path):
+                        import json as _json
+                        with open(self._rules_file_path, 'r', encoding='utf-8') as f:
+                            data = _json.load(f)
+                        scope = f"{self.family}:{self.lang}"
+                        if isinstance(data, dict):
+                            # Поддержка старого формата (правила сразу на верхнем уровне)
+                            if any(k in data for k in ('named', 'unnamed_single', 'unnamed_sequence')):
+                                self.template_auto_cache.update(data)
+                            else:
+                                self.template_auto_cache.update(data.get(scope, {}) or {})
+                except Exception:
+                    pass
+            _load_rules()
+            def _save_rules():
+                try:
+                    _os.makedirs(_os.path.dirname(self._rules_file_path), exist_ok=True)
+                    import json as _json
+                    file_data = {}
+                    try:
+                        if _os.path.exists(self._rules_file_path):
+                            with open(self._rules_file_path, 'r', encoding='utf-8') as fr:
+                                loaded = _json.load(fr)
+                                if isinstance(loaded, dict):
+                                    file_data = loaded
+                    except Exception:
+                        file_data = {}
+                    scope = f"{self.family}:{self.lang}"
+                    # Если файл был в старом формате — оборачиваем
+                    if any(k in file_data for k in ('named', 'unnamed_single', 'unnamed_sequence')):
+                        file_data = {scope: file_data}
+                    file_data[scope] = self.template_auto_cache
+                    with open(self._rules_file_path, 'w', encoding='utf-8') as f:
+                        _json.dump(file_data, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+            self._save_rules_file = _save_rules
+        except Exception:
+            self._rules_file_path = None
+            self._save_rules_file = lambda: None
 
         self._prompt_events: dict[int, Event] = {}
         self._prompt_results: dict[int, str] = {}
@@ -1251,6 +1316,260 @@ class RenameWorker(QThread):
         prefs |= set(EN_PREFIX_ALIASES.get(14, set()))
         return {(p if str(p).endswith(':') else str(p) + ':').lower() for p in prefs}
 
+    def _tmpl_prefixes(self, family: str, lang: str) -> set[str]:
+        try:
+            info = _load_ns_info(family, lang)
+            prefs = set(info.get(10, {}).get('all') or set())
+        except Exception:
+            prefs = set()
+        # Базовые английское/русское обозначения подстрахуем вручную
+        prefs |= {'Template:', 'Шаблон:'}
+        return {(p if str(p).endswith(':') else str(p) + ':').lower() for p in prefs}
+
+    def _strip_tmpl_prefix(self, title: str, family: str, lang: str) -> str:
+        t = (title or '').strip()
+        lower = t.casefold()
+        for p in sorted(self._tmpl_prefixes(family, lang), key=len, reverse=True):
+            if lower.startswith(p):
+                return t[len(p):].lstrip()
+        return t
+
+    def _norm_tmpl_key(self, name: str, family: str, lang: str) -> str:
+        base = self._strip_tmpl_prefix(name, family, lang)
+        try:
+            base = re.sub(r"[_\s]+", " ", base.strip())
+        except Exception:
+            base = (base or '').strip()
+        return base.casefold()
+
+    def _parse_template_tokens(self, template_chunk: str) -> tuple[str, list[str]]:
+        """Грубо парсит шаблон {{...}} на имя и список параметров (как есть).
+        Возвращает (имя_шаблона, список_параметров_как_строки).
+        """
+        if not (template_chunk.startswith('{{') and template_chunk.endswith('}}')):
+            return '', []
+        inner = template_chunk[2:-2]
+        parts = inner.split('|')
+        if not parts:
+            return '', []
+        head = parts[0]
+        params = parts[1:]
+        return head, params
+
+    def _split_params(self, params: list[str]) -> tuple[list[str], list[tuple[str, str, str]]]:
+        """Разделяет список параметров на безымянные и именованные.
+        Возвращает (unnamed_tokens, named_triplets) где named_triplets = (left, eq, val).
+        """
+        unnamed: list[str] = []
+        named: list[tuple[str, str, str]] = []
+        for raw in params:
+            if '=' in raw:
+                m = re.match(r"^(?P<left>\s*[^=]+?)(?P<eq>\s*=\s*)(?P<val>.*)$", raw, flags=re.S)
+                if m:
+                    named.append((m.group('left'), m.group('eq'), m.group('val')))
+                else:
+                    unnamed.append(raw)
+            else:
+                unnamed.append(raw)
+        return unnamed, named
+
+    def _diff_template_params(self, before_chunk: str, after_chunk: str) -> dict:
+        """Счётчик изменений параметров шаблона между двумя версиями вызова.
+        Возвращает {
+          'name': str,
+          'named': { name_cf: (old_val_stripped, new_val_stripped) },
+          'unnamed': [ (idx1_based, old_val_stripped, new_val_stripped), ... ]
+        }
+        """
+        name_b, params_b = self._parse_template_tokens(before_chunk)
+        name_a, params_a = self._parse_template_tokens(after_chunk)
+        result = {'name': name_a or name_b, 'named': {}, 'unnamed': []}
+        if not params_b or not params_a:
+            return result
+        un_b, nm_b = self._split_params(params_b)
+        un_a, nm_a = self._split_params(params_a)
+        # Сопоставим именованные по имени (без учёта регистра, пробелы/подчёркивания нормализуем)
+        def _norm_name(s: str) -> str:
+            s2 = (s or '').strip()
+            try:
+                s2 = re.sub(r"[_\s]+", " ", s2)
+            except Exception:
+                pass
+            return s2.casefold()
+        map_b: dict[str, str] = {}
+        for left, eq, val in nm_b:
+            nm = _norm_name(left)
+            map_b[nm] = (val or '').strip()
+        map_a: dict[str, str] = {}
+        for left, eq, val in nm_a:
+            nm = _norm_name(left)
+            map_a[nm] = (val or '').strip()
+        for nm, oldv in map_b.items():
+            newv = map_a.get(nm)
+            if newv is not None and oldv != newv:
+                result['named'][nm] = (oldv, newv)
+        # Безымянные по позициям
+        max_len = max(len(un_b), len(un_a))
+        for i in range(max_len):
+            oldv = (un_b[i] if i < len(un_b) else '').strip()
+            newv = (un_a[i] if i < len(un_a) else '').strip()
+            if oldv != newv:
+                # Индексация 1-базная
+                result['unnamed'].append((i + 1, oldv, newv))
+        return result
+
+    def _ensure_cache_bucket(self, tmpl_key: str) -> dict:
+        b = self.template_auto_cache.get(tmpl_key)
+        if not b:
+            b = {'named': {}, 'unnamed_single': {}, 'unnamed_sequence': [], 'auto': False}
+            self.template_auto_cache[tmpl_key] = b
+        return b
+
+    def _update_template_cache_from_edit(self, family: str, lang: str, before_chunk: str, after_chunk: str) -> None:
+        try:
+            diff = self._diff_template_params(before_chunk, after_chunk)
+            tmpl_key = self._norm_tmpl_key(diff.get('name') or '', family, lang)
+            if not tmpl_key:
+                return
+            bucket = self._ensure_cache_bucket(tmpl_key)
+            # Именованные: отдельно учитываются
+            for name_cf, (oldv, newv) in (diff.get('named') or {}).items():
+                if not name_cf or oldv is None:
+                    continue
+                if name_cf not in bucket['named']:
+                    bucket['named'][name_cf] = {}
+                bucket['named'][name_cf][(oldv or '').strip()] = (newv or '').strip()
+            # Безымянные: если один — считаем равнозначными, если несколько — важна очередность
+            unnamed_changes = diff.get('unnamed') or []
+            if len(unnamed_changes) == 1:
+                _, oldv, newv = unnamed_changes[0]
+                if (oldv or '').strip():
+                    bucket['unnamed_single'][(oldv or '').strip()] = (newv or '').strip()
+            elif len(unnamed_changes) > 1:
+                # Сохраняем как последовательность idx=>значение
+                seq = []
+                for idx1, oldv, newv in unnamed_changes:
+                    seq.append((int(idx1), (oldv or '').strip(), (newv or '').strip()))
+                bucket['unnamed_sequence'].append(seq)
+            # Сохранить на диск
+            try:
+                self._save_rules_file()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _apply_cache_to_chunk(self, family: str, lang: str, chunk: str) -> tuple[str, int]:
+        """Применяет к одному вызову шаблона правила из кэша. Возвращает (новый_chunk, число_замен)."""
+        try:
+            name, params = self._parse_template_tokens(chunk)
+            if not params:
+                return chunk, 0
+            tmpl_key = self._norm_tmpl_key(name, family, lang)
+            if not tmpl_key:
+                return chunk, 0
+            bucket = self.template_auto_cache.get(tmpl_key) or {}
+            if not bucket:
+                return chunk, 0
+            unnamed, named = self._split_params(params)
+            changed = False
+            # Применяем именованные
+            new_named: list[tuple[str, str, str]] = []
+            for left, eq, val in named:
+                nm_cf = re.sub(r"[_\s]+", " ", (left or '').strip()).casefold()
+                v = (val or '').strip()
+                mapped = ((bucket.get('named') or {}).get(nm_cf) or {}).get(v)
+                if mapped is not None:
+                    val = mapped
+                    changed = True
+                new_named.append((left, eq, val))
+            named = new_named
+            # Сначала пробуем последовательности безымянных
+            applied_sequence = False
+            for seq in (bucket.get('unnamed_sequence') or []):
+                ok = True
+                for idx1, oldv, newv in seq:
+                    if idx1 - 1 >= len(unnamed) or (unnamed[idx1 - 1] or '').strip() != (oldv or '').strip():
+                        ok = False
+                        break
+                if ok:
+                    # Применяем все элементы последовательности
+                    tmp = list(unnamed)
+                    for idx1, oldv, newv in seq:
+                        tmp[idx1 - 1] = newv
+                    unnamed = tmp
+                    changed = True
+                    applied_sequence = True
+                    break
+            # Если последовательность не применена — одиночные безымянные
+            if not applied_sequence and (bucket.get('unnamed_single') or {}):
+                mapping = bucket.get('unnamed_single') or {}
+                # Для каждого правила ищем РОВНО одно совпадение
+                tmp = list(unnamed)
+                for oldv, newv in mapping.items():
+                    matches = [i for i, tok in enumerate(tmp) if (tok or '').strip() == (oldv or '').strip()]
+                    if len(matches) == 1:
+                        tmp[matches[0]] = newv
+                        changed = True
+                unnamed = tmp
+            if not changed:
+                return chunk, 0
+            # Сборка обратно
+            parts_new: list[str] = [name]
+            # Сохраняем порядок: сначала безымянные и именованные в исходном порядке params
+            rebuilt_params: list[str] = []
+            it_named = iter(named)
+            it_unnamed = iter(unnamed)
+            for raw in params:
+                if '=' in raw:
+                    left, eq, val = next(it_named)
+                    rebuilt_params.append(f"{left}{eq}{val}")
+                else:
+                    rebuilt_params.append(next(it_unnamed))
+            parts_new.extend(rebuilt_params)
+            new_inner = '|'.join(parts_new)
+            return '{{' + new_inner + '}}', 1
+        except Exception:
+            return chunk, 0
+
+    def _apply_cached_template_rules(self, text: str, family: str, lang: str) -> tuple[str, int]:
+        """Применяет все подходящие правила кэша к тексту страницы."""
+        try:
+            if not self.template_auto_cache:
+                return text, 0
+            total_applied = 0
+            start = 0
+            out_text = text
+            while True:
+                l = out_text.find('{{', start)
+                if l == -1:
+                    break
+                r = out_text.find('}}', l + 2)
+                if r == -1:
+                    break
+                chunk = out_text[l:r+2]
+                if '|' not in chunk:
+                    start = r + 2
+                    continue
+                # Проверяем автофлаг для конкретного шаблона
+                name, _ = self._parse_template_tokens(chunk)
+                tmpl_key = self._norm_tmpl_key(name, family, lang)
+                bucket = self.template_auto_cache.get(tmpl_key) or {}
+                auto_allowed = bool(bucket.get('auto')) or bool(self.auto_confirm_direct_all)
+                if not auto_allowed:
+                    start = r + 2
+                    continue
+                new_chunk, applied = self._apply_cache_to_chunk(family, lang, chunk)
+                if applied and new_chunk != chunk:
+                    out_text = out_text[:l] + new_chunk + out_text[r+2:]
+                    total_applied += applied
+                    start = l + len(new_chunk)
+                else:
+                    start = r + 2
+            return out_text, total_applied
+        except Exception:
+            return text, 0
+
     def _strip_cat_prefix(self, title: str, family: str, lang: str) -> str:
         t = (title or '').lstrip('\ufeff').strip()
         lower = t.casefold()
@@ -1292,21 +1611,35 @@ class RenameWorker(QThread):
         seen: set[str] = set()
         if not old_cat_full:
             return results
-        start_pos = 0
-        while True:
-            idx = text.find(old_cat_full, start_pos)
-            if idx == -1:
-                break
+        # Ищем как по исходной строке, так и по HTML-экранированному варианту (например, &quot;)
+        try:
+            import html as _html
+        except Exception:
+            _html = None
+        tokens: list[str] = [old_cat_full]
+        try:
+            esc = _html.escape(old_cat_full, quote=True) if _html else old_cat_full
+            if esc and esc != old_cat_full:
+                tokens.append(esc)
+        except Exception:
+            pass
 
-            l = text.rfind('{{', 0, idx)
-            r = text.find('}}', idx)
-            if l != -1 and r != -1 and r > l:
-                chunk = text[l:r+2]
-                if '|' in chunk:
-                    if chunk not in seen:
-                        seen.add(chunk)
-                        results.append(chunk)
-            start_pos = idx + len(old_cat_full)
+        for tok in tokens:
+            start_pos = 0
+            while True:
+                idx = text.find(tok, start_pos)
+                if idx == -1:
+                    break
+
+                l = text.rfind('{{', 0, idx)
+                r = text.find('}}', idx)
+                if l != -1 and r != -1 and r > l:
+                    chunk = text[l:r+2]
+                    if '|' in chunk:
+                        if chunk not in seen:
+                            seen.add(chunk)
+                            results.append(chunk)
+                start_pos = idx + len(tok)
         return results
 
     # ====== Поиск и предложения «по частям» для параметров шаблонов ======
@@ -1498,7 +1831,11 @@ class RenameWorker(QThread):
                     params = parts[1:]
                     prefixes = self._cat_prefixes(family, lang)
                     def _norm(s: str) -> str:
-                        return re.sub(r"\s+", " ", (s or '').strip()).replace('_', ' ').casefold()
+                        try:
+                            s2 = html.unescape(s or '')
+                        except Exception:
+                            s2 = (s or '')
+                        return re.sub(r"\s+", " ", s2.strip()).replace('_', ' ').casefold()
                     norm_old_base = _norm(old_base)
                     for i, raw in enumerate(params):
                         if '=' not in raw:
@@ -1708,8 +2045,43 @@ class RenameWorker(QThread):
                 if not page.exists():
                     return
                 txt = page.text
+                # Пробуем сразу применить кэш аналогичных случаев
+                try:
+                    new_txt_cached, cnt_cached = self._apply_cached_template_rules(txt, family, lang)
+                    if cnt_cached > 0 and new_txt_cached != txt:
+                        for attempt in range(1, 6):
+                            try:
+                                now2 = time.time()
+                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                if wait2 > 0:
+                                    time.sleep(wait2)
+                                page.text = new_txt_cached
+                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                last_write_ts = time.time()
+                                break
+                            except Exception as e:
+                                msg = (str(e) or '').lower()
+                                if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                    debug(f"Template cache save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                    continue
+                                raise
+                        txt = new_txt_cached
+                        moved_via_template += cnt_cached
+                        try:
+                            nsid = page.namespace().id
+                            typ = 'категория' if nsid == 14 else 'статья'
+                        except Exception:
+                            typ = 'страница'
+                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
+                        # Учитываем, что на странице уже была правка — чтобы не логировать далее «не найдены»
+                        made_change = True
+                except Exception:
+                    pass
                 visited = set()
-                made_change = False
+                # Если кэш уже внёс изменения — учитываем это
+                made_change = bool('made_change' in locals() and made_change) or False
                 direct_seen = False
                 # Поиск «прямых» совпадений: значение параметра равно категории (полной или «голой»)
                 def _find_equal_template_candidates(text_src: str, old_full_cat: str) -> list[tuple[str, str, str]]:
@@ -1719,10 +2091,24 @@ class RenameWorker(QThread):
                             return results
                         old_bare = old_full_cat.split(':', 1)[1] if ':' in old_full_cat else old_full_cat
                         new_bare = new_full.split(':', 1)[1] if ':' in new_full else new_full
-                        patterns = [
-                            (old_full_cat, new_full),
-                            (old_bare, new_bare)
-                        ]
+                        # Ищем как по исходным токенам, так и по HTML-экранированным вариантам (например, &quot;)
+                        try:
+                            import html as _html
+                        except Exception:
+                            _html = None
+                        def _alts(tok: str) -> list[str]:
+                            arr = [tok]
+                            try:
+                                esc = _html.escape(tok, quote=True) if _html else tok
+                                if esc and esc != tok:
+                                    arr.append(esc)
+                            except Exception:
+                                pass
+                            return arr
+                        patterns: list[tuple[str, str]] = []
+                        for o, n in [(old_full_cat, new_full), (old_bare, new_bare)]:
+                            for o_alt in _alts(o):
+                                patterns.append((o_alt, n))
                         for old_tok, new_tok in patterns:
                             start = 0
                             # Ищем в тексте вхождения значения параметра вида: "| old" или "| name = old"
@@ -1754,7 +2140,7 @@ class RenameWorker(QThread):
                     direct_seen = True
                     tmpl, old_token, new_token = eq_list[0]
                     visited.add(tmpl)
-                    # Автоподтверждение прямых совпадений
+                    # Автоподтверждение/автопропуск прямых совпадений
                     if getattr(self, 'auto_confirm_direct_all', False):
                         try:
                             new_tmpl = tmpl.replace(old_token, new_token, 1)
@@ -1780,6 +2166,10 @@ class RenameWorker(QThread):
                                             continue
                                         raise
                                 txt = new_txt
+                                try:
+                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                except Exception:
+                                    pass
                                 moved_via_template += 1
                                 made_change = True
                                 auto_applied += 1
@@ -1793,6 +2183,12 @@ class RenameWorker(QThread):
                         except Exception as e:
                             self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
                         continue
+                    if getattr(self, 'auto_skip_direct_all', False):
+                        try:
+                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                        except Exception:
+                            pass
+                        continue
                     # Диалог подтверждения (с флажком автоподтверждения для полных совпадений)
                     result = self._prompt_user_template_replace(title, tmpl, old_full, new_full, old_direct=old_token, new_direct=new_token)
                     action = result.get('action') if isinstance(result, dict) else str(result)
@@ -1802,6 +2198,13 @@ class RenameWorker(QThread):
                     try:
                         if action == 'confirm' and isinstance(result, dict) and bool(result.get('auto_confirm_all')):
                             self.auto_confirm_direct_all = True
+                            # Включаем auto для конкретного шаблона
+                            name, _ = self._parse_template_tokens(tmpl)
+                            key = self._norm_tmpl_key(name, family, lang)
+                            self._ensure_cache_bucket(key)['auto'] = True
+                            self._save_rules_file()
+                        elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
+                            self.auto_skip_direct_all = True
                     except Exception:
                         pass
                     if action == 'confirm':
@@ -1818,7 +2221,7 @@ class RenameWorker(QThread):
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
                                         write_min_interval = max(0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
@@ -1830,6 +2233,10 @@ class RenameWorker(QThread):
                                             continue
                                         raise
                                 txt = new_txt
+                                try:
+                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                except Exception:
+                                    pass
                                 moved_via_template += 1
                                 made_change = True
                                 try:
@@ -1856,10 +2263,20 @@ class RenameWorker(QThread):
                         cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
                         cand_list = [c for c in cand_list if c.get('template') not in partial_seen]
                         if not cand_list:
-                            self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
+                            if not made_change:
+                                self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
                             break
                         c0 = cand_list[0]
                         partial_seen.add(str(c0.get('template')))
+                        # Если этот шаблон отмечен на автопропуск — пропускаем без диалога
+                        try:
+                            name_tmp, _ = self._parse_template_tokens(str(c0.get('template') or ''))
+                            key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
+                            if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
+                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически (частичная замена)')
+                                continue
+                        except Exception:
+                            pass
                         result = self._prompt_user_template_replace(
                             title,
                             str(c0.get('template') or ''),
@@ -1873,6 +2290,21 @@ class RenameWorker(QThread):
                         if action == 'cancel':
                             self._stop = True
                             break
+                        try:
+                            if action == 'confirm' and isinstance(result, dict) and bool(result.get('auto_confirm_all')):
+                                self.auto_confirm_direct_all = True
+                                # Включаем auto для конкретного шаблона
+                                name, _ = self._parse_template_tokens(str(c0.get('template') or ''))
+                                key = self._norm_tmpl_key(name, family, lang)
+                                self._ensure_cache_bucket(key)['auto'] = True
+                                self._save_rules_file()
+                            elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
+                                name, _ = self._parse_template_tokens(str(c0.get('template') or ''))
+                                key = self._norm_tmpl_key(name, family, lang)
+                                if key:
+                                    self.auto_skip_templates.add(key)
+                        except Exception:
+                            pass
                         if action == 'confirm':
                             try:
                                 edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
@@ -1888,7 +2320,7 @@ class RenameWorker(QThread):
                                                 if wait2 > 0:
                                                     time.sleep(wait2)
                                                 page.text = new_txt
-                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
                                                 write_min_interval = max(0.2, write_min_interval * 0.9)
                                                 last_write_ts = time.time()
                                                 break
@@ -1900,6 +2332,10 @@ class RenameWorker(QThread):
                                                     continue
                                                 raise
                                         txt = new_txt
+                                        try:
+                                            self._update_template_cache_from_edit(family, lang, tmpl_old, replacement)
+                                        except Exception:
+                                            pass
                                         moved_via_template += 1
                                         made_change = True
                                         try:
@@ -2071,6 +2507,39 @@ class RenameWorker(QThread):
                 if not page.exists():
                     continue
                 txt = page.text
+                # Сразу пытаемся применить сохранённые правила (template_rules.json) перед показом диалогов
+                try:
+                    new_txt_cached, cnt_cached = self._apply_cached_template_rules(txt, family, lang)
+                    if cnt_cached > 0 and new_txt_cached != txt:
+                        for attempt in range(1, 6):
+                            try:
+                                now2 = time.time()
+                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                if wait2 > 0:
+                                    time.sleep(wait2)
+                                page.text = new_txt_cached
+                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                last_write_ts = time.time()
+                                break
+                            except Exception as e:
+                                msg = (str(e) or '').lower()
+                                if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
+                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                    debug(f"Template cache save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                    continue
+                                raise
+                        txt = new_txt_cached
+                        moved_via_template += cnt_cached
+                        try:
+                            nsid = page.namespace().id
+                            typ = 'категория' if nsid == 14 else 'статья'
+                        except Exception:
+                            typ = 'страница'
+                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
+                        made_change = True
+                except Exception:
+                    pass
                 visited = set()
                 made_change = False
                 auto_applied_title = 0
@@ -2079,6 +2548,8 @@ class RenameWorker(QThread):
                     candidates = self._find_template_param_category(txt, old_full)
                     candidates = [c for c in candidates if c not in visited]
                     if not candidates:
+                        if not made_change:
+                            self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
                         break
                     tmpl = candidates[0]
                     visited.add(tmpl)
@@ -2096,7 +2567,7 @@ class RenameWorker(QThread):
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
                                         write_min_interval = max(0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
@@ -2147,7 +2618,7 @@ class RenameWorker(QThread):
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
                                         write_min_interval = max(0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
@@ -2213,7 +2684,7 @@ class RenameWorker(QThread):
                                                 if wait2 > 0:
                                                     time.sleep(wait2)
                                                 page.text = new_txt
-                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] (исправление категоризации через параметр шаблона)", minor=True)
+                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
                                                 write_min_interval = max(0.2, write_min_interval * 0.9)
                                                 last_write_ts = time.time()
                                                 break
@@ -2345,6 +2816,16 @@ class MainWindow(QMainWindow):
         self.init_replace_tab()
         self.init_create_tab()
         self.init_rename_tab()
+
+        # Инициализируем файл правил замен заранее (чтобы первая попытка открытия не падала)
+        try:
+            self._rules_file_path = os.path.join(_dist_configs_dir(), 'template_rules.json')
+            os.makedirs(os.path.dirname(self._rules_file_path), exist_ok=True)
+            if not os.path.exists(self._rules_file_path):
+                with open(self._rules_file_path, 'w', encoding='utf-8') as f:
+                    f.write('{}')
+        except Exception:
+            pass
 
 
     def _add_info_button(self, host_layout, text: str, inline: bool = False):
@@ -3400,21 +3881,29 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         v = QVBoxLayout(tab)
         rename_help = (
-            'Форматирование исходного файла:\n'
-            'TSV: OldTitle<TAB>NewTitle<TAB>Комментарий к правке\n\n'
-            'Одна строка — одно переименование.\n\n'
-            'Как работает перенос:\n'
-            '1) Переименовывается сама категория (с учётом опций «Оставлять перенаправления…»).\n'
-            '2) Перенос содержимого категорий (включите нужные опции слева):\n'
-            '   — Обновлять прямые ссылки у содержимого: [[Категория:Старая|Ключ]] → [[Категория:Новая|Ключ]].\n'
-            '     Ключи сортировки после «|» сохраняются. Для «Шаблон:»/«Модуль:» дополнительно проверяется основная страница и её /doc.\n'
-            '   — Искать и исправлять категоризацию через параметры шаблонов: обрабатываются позиционные и именованные параметры.\n'
-            '     Режимы:\n'
-            '       • Полное имя категории в параметре — можно включить «Автоматически подтверждать все последующие».\n'
-            '       • Поиск по частям названия — всегда с ручным подтверждением в диалоге.\n'
-            '     Префикс «Категория:» в параметрах обычно не указывают — это учитывается.\n\n'
-            'Итог и статистика:\n'
-            '— В конце выводится строка «Готово: Прямые замены: N — Через параметры шаблонов: M — Осталось: K».\n\n'
+            'Входной файл (.tsv):\n'
+            'OldTitle<TAB>NewTitle<TAB>Комментарий\n'
+            '- Одна строка — одно переименование.\n'
+            '- Кодировка UTF‑8 (BOM допускается).\n\n'
+            'Префиксы:\n'
+            '- «Авто» не меняет заголовки из файла.\n'
+            '- Выбор пространства имён нормализует оба столбца (добавит/заменит префикс).\n'
+            '- Английские/локальные префиксы распознаются.\n\n'
+            'Переименование страниц:\n'
+            '- Включается опцией «Переименовывать страницы».\n'
+            '- Для категорий и для остальных страниц редиректы настраиваются отдельно.\n\n'
+            'Перенос содержимого категорий (если включено):\n'
+            '1) Прямые ссылки (Фаза 1): [[Категория:Старая|Ключ]] → [[Категория:Новая|Ключ]].\n'
+            '   Ключ после «|» сохраняется. Для «Шаблон:»/«Модуль:» дополнительно проверяются основная страница и её /doc.\n'
+            '2) Через параметры шаблонов (Фаза 2): исправление значений параметров, где задана категория.\n'
+            '   — Полные совпадения можно применять «Подтверждать все аналогичные» или «Пропускать все аналогичные».\n'
+            '   — Совпадения «по частям» подтверждаются в диалоге с предпросмотром и ручным редактированием.\n'
+            '   — Выбранные правила сохраняются и переиспользуются (кнопки «Открыть/Очистить правила»).\n'
+            '   — Префикс «Категория:» в параметрах обычно опускают — это учитывается.\n\n'
+            'Устойчивость:\n'
+            '- При лимитах API инструмент замедляется и повторяет попытки автоматически.\n\n'
+            'Результат:\n'
+            '- Лог фиксирует все действия. Итоговая строка: «Готово: Прямые замены: N — Через параметры шаблонов: M — Осталось: K».\n'
         )
 
         h = QHBoxLayout()
@@ -3444,16 +3933,17 @@ class MainWindow(QMainWindow):
         col_left.addWidget(lbl_left)
         # Подсказки для опций переноса
         phase1_help = (
-            'Обновление прямых ссылок на категорию в тексте страниц-участников.\n\n'
+            'Прямые ссылки на категорию на страницах-участниках.\n\n'
             'Пример: [[Категория:Старая|Ключ]] → [[Категория:Новая|Ключ]].\n'
-            'Для Шаблон:/Модуль: дополнительно проверяются основная страница и её /doc.\n'
+            'Ключ сортировки после «|» сохраняется. Для «Шаблон:»/«Модуль:» проверяются также основная страница и её /doc.\n'
         )
         phase2_help = (
-            'Поиск и исправление указания категории в параметрах шаблонов\n'
-            '{{Шаблон|Название категории}} или {{Название|категории A|категории Б}}.\n\n'
+            'Категория в параметрах шаблонов (позиционные и именованные).\n\n'
             'Режимы:\n'
-            '1. Нахождение полного имени категории в параметра (позиционный или именованный). Можно включить «Автоматически подтверждать все последующие».\n'
-            '2. Поиск по частям названия категории в параметрах шаблонов. Работает нестабильно, требует ручного подтверждения каждой правки.\n'
+            '— Полные совпадения значения параметра: можно «Подтверждать/Пропускать все аналогичные».\n'
+            '— Поиск по частям названия: каждый случай подтверждается в диалоге с предпросмотром и возможностью ручного правки.\n\n'
+            'Выбранные правила автоприменения сохраняются и доступны через «Открыть/Очистить правила».\n'
+            'Префикс «Категория:» в параметрах обычно опускают — это учитывается.'
         )
         # Первая опция: прямые ссылки
         row_p1 = QHBoxLayout()
@@ -3483,16 +3973,8 @@ class MainWindow(QMainWindow):
             row_move_cat.addStretch(1)
         except Exception:
             pass
-        col_left.addLayout(row_move_cat)
-        # Блок перенаправлений (объединённый виджет, отключается при снятой галке «Переименовывать»)
-        redirect_block = QWidget()
-        redirect_block_layout = QVBoxLayout(redirect_block)
-        try:
-            redirect_block_layout.setContentsMargins(0, 0, 0, 0)
-            redirect_block_layout.setSpacing(4)
-        except Exception:
-            pass
-        # Заголовок блока перенаправлений скрыт по требованию
+        # Ряд «Переименовывать страницы» добавим в общую сетку ниже
+        # Блок перенаправлений заменим двумя строками в сетке
         # Вторая опция: параметры шаблонов
         row_p2 = QHBoxLayout()
         self.chk_find_in_templates = QCheckBox('Поиск и исправление категоризации через параметры шаблонов')
@@ -3510,10 +3992,113 @@ class MainWindow(QMainWindow):
         
 
 
-        col_right = QVBoxLayout()
-        # Заголовок правой колонки
-        lbl_right = QLabel('<b>Перенос содержимого категорий</b>')
-        col_right.addWidget(lbl_right)
+        # Кнопки: открыть/очистить правила замен шаблонов (переместим в сетку)
+        try:
+            btn_rules_row = QHBoxLayout()
+            btn_show_rules = QPushButton('Открыть правила замен')
+            btn_clear_rules = QPushButton('Очистить правила замен')
+            btn_rules_row.addWidget(btn_show_rules)
+            btn_rules_row.addWidget(btn_clear_rules)
+            btn_rules_row.addStretch(1)
+            # Пока не добавляем в контейнер
+
+            def _open_rules_dialog():
+                try:
+                    # Открыть файл правил в системе (папка configs/template_rules.json)
+                    path = None
+                    w = getattr(self, 'mrworker', None)
+                    try:
+                        path = getattr(w, '_rules_file_path', None)
+                    except Exception:
+                        path = None
+                    if not path:
+                        path = getattr(self, '_rules_file_path', None)
+                    # Фолбэк: вычислить путь рядом с configs дистрибутива
+                    if not path:
+                        try:
+                            base = _dist_configs_dir()
+                        except Exception:
+                            base = os.path.join(os.path.dirname(__file__), 'configs')
+                        path = os.path.join(base, 'template_rules.json')
+                    import os
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    if not os.path.exists(path):
+                        with open(path, 'w', encoding='utf-8') as f:
+                            f.write('{}')
+                    url = QUrl.fromLocalFile(os.path.abspath(path))
+                    ok = QDesktopServices.openUrl(url)
+                    if not ok:
+                        # Фолбэк для Windows: прямой запуск
+                        try:
+                            os.startfile(path)
+                            ok = True
+                        except Exception:
+                            ok = False
+                    if not ok:
+                        # Фолбэк: открыть Проводник и выделить файл
+                        try:
+                            import subprocess
+                            subprocess.Popen(['explorer', '/select,', path])
+                            ok = True
+                        except Exception:
+                            ok = False
+                    if not ok:
+                        # Последняя попытка: открыть папку
+                        dir_url = QUrl.fromLocalFile(os.path.dirname(os.path.abspath(path)))
+                        ok = QDesktopServices.openUrl(dir_url)
+                    if not ok:
+                        raise RuntimeError('Не удалось открыть файл или папку с правилами')
+                except Exception:
+                    QMessageBox.warning(self, 'Ошибка', 'Не удалось открыть файл правил замен.')
+
+            def _clear_rules():
+                try:
+                    cleared = False
+                    w = getattr(self, 'mrworker', None)
+                    if w is not None and hasattr(w, 'template_auto_cache'):
+                        try:
+                            w.template_auto_cache.clear()
+                            cleared = True
+                        except Exception:
+                            pass
+                    if hasattr(self, '_template_auto_cache_ui'):
+                        try:
+                            self._template_auto_cache_ui.clear()
+                            cleared = True or cleared
+                        except Exception:
+                            pass
+                    # Очистим и файл на диске
+                    path = None
+                    try:
+                        path = getattr(w, '_rules_file_path', None)
+                    except Exception:
+                        path = None
+                    if not path:
+                        path = getattr(self, '_rules_file_path', None)
+                    if not path:
+                        try:
+                            base = _dist_configs_dir()
+                        except Exception:
+                            base = os.path.join(os.path.dirname(__file__), 'configs')
+                        path = os.path.join(base, 'template_rules.json')
+                    if path:
+                        try:
+                            with open(path, 'w', encoding='utf-8') as f:
+                                f.write('{}')
+                            cleared = True or cleared
+                        except Exception:
+                            pass
+                    if cleared:
+                        QMessageBox.information(self, 'Готово', 'Правила замен очищены.')
+                    else:
+                        QMessageBox.information(self, 'Инфо', 'Кэш правил замен уже пуст.')
+                except Exception:
+                    QMessageBox.warning(self, 'Ошибка', 'Не удалось очистить правила замен.')
+
+            btn_show_rules.clicked.connect(_open_rules_dialog)
+            btn_clear_rules.clicked.connect(_clear_rules)
+        except Exception:
+            pass
 
         self.chk_redirect_cat = QCheckBox('Оставлять перенаправления для категорий')
         try:
@@ -3521,41 +4106,65 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.chk_redirect_cat.setChecked(False)
-        redirect_block_layout.addWidget(self.chk_redirect_cat)
         self.chk_redirect_other = QCheckBox('Оставлять перенаправления для других страниц')
         try:
             self.chk_redirect_other.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         except Exception:
             pass
         self.chk_redirect_other.setChecked(True)
-        redirect_block_layout.addWidget(self.chk_redirect_other)
-        col_left.addWidget(redirect_block)
+        # Управление доступностью перенаправлений по галке «Переименовывать страницы»
         try:
-            redirect_block.setEnabled(self.chk_move_category.isChecked())
-            self.chk_move_category.toggled.connect(redirect_block.setEnabled)
+            self.chk_redirect_cat.setEnabled(self.chk_move_category.isChecked())
+            self.chk_redirect_other.setEnabled(self.chk_move_category.isChecked())
+            self.chk_move_category.toggled.connect(self.chk_redirect_cat.setEnabled)
+            self.chk_move_category.toggled.connect(self.chk_redirect_other.setEnabled)
         except Exception:
             pass
         
-        # Перенос содержимого (как было) — в правой колонке
-        col_right.addLayout(row_p1)
-        col_right.addLayout(row_p2)
+        # Сетка 2x3 — выравнивание строк между колонками
+        grid = QGridLayout()
+        try:
+            grid.setHorizontalSpacing(24)
+            grid.setVerticalSpacing(8)
+            grid.setContentsMargins(0, 0, 0, 0)
+        except Exception:
+            pass
 
-        # Две колонки как отдельные виджеты с равным растяжением — правая начинается от центра
-        row_cols = QHBoxLayout()
+        # Заголовки
+        grid.addWidget(lbl_left, 0, 0)
+        lbl_right = QLabel('<b>Перенос содержимого категорий</b>')
+        grid.addWidget(lbl_right, 0, 1)
+
+        # Утилита-обёртка для QHBoxLayout
+        def _wrap(layout_obj):
+            try:
+                w = QWidget()
+                lay = QHBoxLayout(w)
+                lay.setContentsMargins(0, 0, 0, 0)
+                lay.setSpacing(0)
+                lay.addLayout(layout_obj)
+                return w
+            except Exception:
+                return QWidget()
+
+        # Левая колонка: 3 строки
+        grid.addWidget(_wrap(row_move_cat), 1, 0)
+        row_redirect_cat = QHBoxLayout(); row_redirect_cat.addWidget(self.chk_redirect_cat); row_redirect_cat.addStretch(1)
+        row_redirect_other = QHBoxLayout(); row_redirect_other.addWidget(self.chk_redirect_other); row_redirect_other.addStretch(1)
+        grid.addWidget(_wrap(row_redirect_cat), 2, 0)
+        grid.addWidget(_wrap(row_redirect_other), 3, 0)
+
+        # Правая колонка: 3 строки
+        grid.addWidget(_wrap(row_p1), 1, 1)
+        grid.addWidget(_wrap(row_p2), 2, 1)
+        grid.addLayout(btn_rules_row, 3, 1)
+
         try:
-            row_cols.setSpacing(24)
+            grid.setColumnStretch(0, 1)
+            grid.setColumnStretch(1, 1)
         except Exception:
             pass
-        left_widget = QWidget(); left_widget.setLayout(col_left)
-        right_widget = QWidget(); right_widget.setLayout(col_right)
-        try:
-            left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        except Exception:
-            pass
-        row_cols.addWidget(left_widget, 1)
-        row_cols.addWidget(right_widget, 1)
-        v.addLayout(row_cols)
+        v.addLayout(grid)
 
 
         # Лог выполнения и кнопка очистки в правом нижнем углу
@@ -3751,37 +4360,43 @@ class MainWindow(QMainWindow):
                         pass
                     lay.addWidget(edit)
 
-                    auto_cb = None
-                    # Чекбокс автоподтверждения имеет смысл только для прямых совпадений
-                    if is_direct:
-                        auto_cb = QCheckBox('Автоматически подтверждать, если в параметре указано полное название категории')
-                        try:
-                            auto_cb.setChecked(bool(self._auto_confirm_direct_all_ui))
-                        except Exception:
-                            pass
-                        lay.addWidget(auto_cb)
-
-                    row = QHBoxLayout()
+                    # Нижняя панель управления: слева — массовые действия, справа — обычные кнопки
+                    controls = QHBoxLayout()
+                    btn_confirm_all = QPushButton('Подтверждать все аналогичные')
+                    btn_skip_all = QPushButton('Пропускать все аналогичные')
+                    controls.addWidget(btn_confirm_all)
+                    controls.addWidget(btn_skip_all)
+                    controls.addStretch()
                     btn_confirm = QPushButton('Подтвердить и сохранить')
                     btn_skip = QPushButton('Пропустить')
                     btn_cancel = QPushButton('Отмена')
-                    row.addStretch(); row.addWidget(btn_confirm); row.addWidget(btn_skip); row.addWidget(btn_cancel)
-                    lay.addLayout(row)
+                    controls.addWidget(btn_confirm); controls.addWidget(btn_skip); controls.addWidget(btn_cancel)
+                    lay.addLayout(controls)
 
                     action = 'cancel'
+                    auto_confirm_all = False
+                    auto_skip_all = False
+
                     def _finish(act: str):
                         nonlocal action
                         action = act
-                        try:
-                            if auto_cb is not None:
-                                self._auto_confirm_direct_all_ui = bool(auto_cb.isChecked())
-                        except Exception:
-                            pass
                         dlg.accept()
+
+                    def _finish_confirm_all():
+                        nonlocal auto_confirm_all
+                        auto_confirm_all = True
+                        _finish('confirm')
+
+                    def _finish_skip_all():
+                        nonlocal auto_skip_all
+                        auto_skip_all = True
+                        _finish('skip')
 
                     btn_confirm.clicked.connect(lambda: _finish('confirm'))
                     btn_skip.clicked.connect(lambda: _finish('skip'))
                     btn_cancel.clicked.connect(lambda: _finish('cancel'))
+                    btn_confirm_all.clicked.connect(_finish_confirm_all)
+                    btn_skip_all.clicked.connect(_finish_skip_all)
                     try:
                         dlg.rejected.connect(lambda: _finish('cancel'))
                     except Exception:
@@ -3804,14 +4419,20 @@ class MainWindow(QMainWindow):
                             payload = {'request_id': req_id, 'action': action}
                             if action == 'confirm' and edit.toPlainText().strip() != template_str:
                                 payload['edited_template'] = edit.toPlainText()
-                            if is_direct and action == 'confirm':
-                                payload['auto_confirm_all'] = bool(self._auto_confirm_direct_all_ui)
-                                # Немедленно включим флаг на воркере, чтобы следующие прямые совпадения шли без диалога
-                                if bool(self._auto_confirm_direct_all_ui):
-                                    try:
-                                        w.auto_confirm_direct_all = True
-                                    except Exception:
-                                        pass
+                            if auto_confirm_all:
+                                payload['auto_confirm_all'] = True
+                                # Немедленно включим флаг на воркере для прямых совпадений
+                                try:
+                                    w.auto_confirm_direct_all = True
+                                except Exception:
+                                    pass
+                            if auto_skip_all:
+                                payload['auto_skip_all'] = True
+                                # Немедленно включим флаг автопропуска для прямых совпадений
+                                try:
+                                    w.auto_skip_direct_all = True
+                                except Exception:
+                                    pass
                             w.review_response.emit(payload)
                         except Exception:
                             pass
@@ -3919,6 +4540,68 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, 'Ошибка', f'Не удалось открыть файл: {e}')
 
+    def _pretty_format_msg(self, raw: str) -> tuple[str, bool]:
+        """Преобразует типичные сообщения о переносе в формат с эмодзи и разделителями.
+        Возвращает кортеж (строка, уже_экранировано_HTML).
+        """
+        try:
+            s = (raw or '').strip()
+            # Шаблон: "→ Категория:Имя : "Статья" — тип/статус"
+            m = re.match(r'^(?:→|▪️)\s+(?P<cat>[^:]+:.+?)\s*:\s*"(?P<title>[^"]+)"\s*—\s*(?P<rest>.+)$', s)
+            if m:
+                cat = (m.group('cat') or '').strip()
+                title = (m.group('title') or '').strip()
+                rest = (m.group('rest') or '').strip()
+
+                # Извлечь тип сущности в начале сообщения, если есть
+                typ = None
+                tail = rest
+                m2 = re.match(r'^(?P<typ>статья|страница|шаблон|модуль|файл)\b\s*(?P<tail>.*)$', rest, flags=re.I)
+                if m2:
+                    typ = (m2.group('typ') or '').lower()
+                    tail = (m2.group('tail') or '').strip()
+
+                folder_emoji = '📁'
+                # Эмодзи по типу элемента
+                item_emoji = '📄'
+                if typ in ('шаблон', 'модуль'):
+                    item_emoji = '🧩'
+                elif typ in ('файл', 'изображение'):
+                    item_emoji = '🖼️'
+
+                low_tail = tail.lower()
+                # Эмодзи статуса
+                status_emoji = ''
+                if 'ошибка' in low_tail:
+                    status_emoji = '❌'
+                elif 'пропущено' in low_tail:
+                    status_emoji = '⏭️'
+                elif 'перенес' in low_tail:
+                    status_emoji = '✅'
+                elif 'переименован' in low_tail or 'переименована' in low_tail:
+                    status_emoji = '🔁'
+                elif 'создано' in low_tail:
+                    status_emoji = '🆕'
+                elif 'записано' in low_tail:
+                    status_emoji = '💾'
+                elif 'не существует' in low_tail:
+                    status_emoji = '⚠️'
+                elif 'уже существует' in low_tail:
+                    status_emoji = 'ℹ️'
+                elif 'готово' in low_tail:
+                    status_emoji = '✅'
+
+                sep1 = ' • '
+                sep2 = ' — '
+                pretty = f"{folder_emoji} {cat}{sep1}{item_emoji} {title}{sep2}{status_emoji} {tail}".strip()
+                try:
+                    return html.escape(pretty), True
+                except Exception:
+                    return pretty, False
+        except Exception:
+            pass
+        return raw, False
+
     def log(self, widget: QTextEdit, msg: str):
         debug(msg)
 
@@ -3944,16 +4627,19 @@ class MainWindow(QMainWindow):
                 return s.replace('\n', '<br/>')
             except Exception:
                 return s
-        # Префикс времени [YYYY-MM-DD HH:MM:SS]
+        # Префикс времени [HH:MM:SS] с разделителем
         try:
-            ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ts = datetime.now().strftime('%H:%M:%S')
             prefix = f"[{ts}] "
         except Exception:
             prefix = ''
+        # Попробовать преобразовать в красивый формат
+        formatted, escaped = self._pretty_format_msg(msg)
+        text_to_show = (html.escape(prefix) + formatted) if escaped else (prefix + formatted)
         if color:
-            widget.append(f"<span style='color:{color}'>{_html_lines(prefix + msg)}</span>")
+            widget.append(f"<span style='color:{color}'>" + _html_lines(text_to_show) + "</span>")
         else:
-            widget.append(_html_lines(prefix + msg))
+            widget.append(_html_lines(text_to_show))
 
     def _set_start_stop_ratio(self, start_btn: QPushButton, stop_btn: QPushButton, ratio: int = 3):
         try:
@@ -4251,6 +4937,15 @@ class MainWindow(QMainWindow):
             cb = getattr(self, '_connect_template_review_signal', None)
             if cb:
                 cb()
+        except Exception:
+            pass
+        # Если до старта воркера в UI уже были правила, перенесём их внутрь воркера
+        try:
+            if hasattr(self, '_template_auto_cache_ui') and isinstance(self._template_auto_cache_ui, dict):
+                try:
+                    self.mrworker.template_auto_cache.update(self._template_auto_cache_ui)
+                except Exception:
+                    pass
         except Exception:
             pass
         self.mrworker.start()
