@@ -1,3 +1,15 @@
+from pywikibot.comms import http as pywb_http
+from pywikibot import config as pwb_config
+import pywikibot
+from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut, QIcon
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
+    QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
+    QSizePolicy, QDialog, QPlainTextEdit, QGroupBox, QFrame,
+    QDialogButtonBox, QMenu
+)
+from PySide6.QtCore import Qt, QThread, Signal, QUrl, QEvent, QTimer, QPoint
 import sys
 import os
 import io
@@ -18,7 +30,8 @@ from threading import Lock, Event
 
 
 # Инициализация окружения для Pywikibot
-_startup_base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+_startup_base = os.path.dirname(sys.executable) if getattr(
+    sys, 'frozen', False) else os.path.dirname(__file__)
 _startup_cfg = os.path.join(_startup_base, 'configs')
 try:
     os.makedirs(_startup_cfg, exist_ok=True)
@@ -34,6 +47,8 @@ else:
 os.environ['PYWIKIBOT_DIR'] = _startup_cfg
 
 # Перенаправление вывода для GUI-приложения
+
+
 class _GuiStdWriter(io.TextIOBase):
     def write(self, s: str) -> int:
         try:
@@ -44,31 +59,25 @@ class _GuiStdWriter(io.TextIOBase):
         except Exception:
             pass
         return len(s or '')
+
     def flush(self) -> None:
         pass
+
 
 if getattr(sys, 'stdout', None) is None:
     sys.stdout = _GuiStdWriter()
 if getattr(sys, 'stderr', None) is None:
     sys.stderr = _GuiStdWriter()
 
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QEvent, QTimer, QPoint
-
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
-    QFileDialog, QTextEdit, QTabWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QProgressBar, QMessageBox, QToolButton, QComboBox, QCheckBox,
-    QSizePolicy, QDialog, QPlainTextEdit, QGroupBox, QFrame,
-    QDialogButtonBox, QMenu
-)
-from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut, QIcon
 
 # Настройка базовой директории и доступ к ресурсам (для PyInstaller onefile)
+
 def tool_base_dir() -> str:
     try:
         return os.path.dirname(__file__)
     except NameError:
         return os.getcwd()
+
 
 def _resource_path(relative: str) -> str:
     """Return absolute path to resource, works for dev and PyInstaller onefile."""
@@ -84,17 +93,17 @@ def _resource_path(relative: str) -> str:
         base = os.getcwd()
     return os.path.join(base, relative)
 
+
 if 'PYWIKIBOT_DIR' not in os.environ:
     os.environ['PYWIKIBOT_DIR'] = tool_base_dir()
 
-import pywikibot
-from pywikibot import config as pwb_config
-
-from pywikibot.comms import http as pywb_http
 
 # Перехват вывода pywikibot
+
 def _pywb_log(msg, *_args, **_kwargs):
     debug('PYWIKIBOT: ' + str(msg))
+
+
 pywikibot.output = _pywb_log
 pywikibot.warning = _pywb_log
 pywikibot.error = _pywb_log
@@ -115,6 +124,7 @@ _RATE_LOCK = Lock()
 _LAST_REQ_TS = 0.0
 _MIN_INTERVAL = 0.12
 
+
 def _rate_wait():
     global _LAST_REQ_TS
     with _RATE_LOCK:
@@ -124,13 +134,16 @@ def _rate_wait():
             time.sleep(wait)
         _LAST_REQ_TS = time.time()
 
+
 def _rate_backoff(seconds: float | None = None):
     global _MIN_INTERVAL
     with _RATE_LOCK:
         add = float(seconds) if seconds is not None else 0.0
 
-        _MIN_INTERVAL = min(2.5, max(_MIN_INTERVAL * 1.5, add if add > 0 else _MIN_INTERVAL))
+        _MIN_INTERVAL = min(2.5, max(_MIN_INTERVAL * 1.5,
+                            add if add > 0 else _MIN_INTERVAL))
         debug(f"Rate backoff: MIN_INTERVAL={_MIN_INTERVAL:.2f}s")
+
 
 # ===== Debug Buffer =====
 DEBUG_BUFFER = []
@@ -141,13 +154,16 @@ BYPASS_AWB = False
 BYPASS_TOKEN: str | None = None
 AWB_CHECKS_DISABLED = True  # TEMP: отключение проверок AWB
 
+
 def set_bypass_awb(flag: bool) -> None:
     global BYPASS_AWB
     BYPASS_AWB = bool(flag)
     debug(f"Bypass AWB set to {BYPASS_AWB}")
 
+
 def is_bypass_awb() -> bool:
     return True if AWB_CHECKS_DISABLED else bool(BYPASS_AWB)
+
 
 def try_load_bypass_awb_from_embedded() -> bool:
     """Пытается загрузить токен обхода AWB только из модуля `_embedded_secrets`.
@@ -159,7 +175,8 @@ def try_load_bypass_awb_from_embedded() -> bool:
         # Сначала пробуем модуль рядом со скриптом: _embedded_secrets.py
         try:
             import _embedded_secrets as _sec
-            token = (getattr(_sec, 'BYPASS_AWB_TOKEN', '') or '').strip().lower()
+            token = (getattr(_sec, 'BYPASS_AWB_TOKEN', '')
+                     or '').strip().lower()
         except Exception:
             token = ''
         if token:
@@ -169,6 +186,7 @@ def try_load_bypass_awb_from_embedded() -> bool:
     except Exception:
         pass
     return False
+
 
 def maybe_auto_activate_bypass(ui: 'MainWindow') -> None:
     """Если в модуле `_embedded_secrets` установлен флаг `AUTO_ACTIVATE=True`, включает обход сразу."""
@@ -189,6 +207,7 @@ def maybe_auto_activate_bypass(ui: 'MainWindow') -> None:
     except Exception:
         pass
 
+
 def debug(msg: str):
     ts = datetime.now().strftime('%H:%M:%S')
     DEBUG_BUFFER.append(f"[{ts}] {msg}")
@@ -196,6 +215,7 @@ def debug(msg: str):
         DEBUG_VIEW.appendPlainText(DEBUG_BUFFER[-1])
 
 # ===== Default Edit Summary =====
+
 
 def default_summary(lang: str) -> str:
     mapping = {
@@ -210,6 +230,8 @@ def default_summary(lang: str) -> str:
     return mapping.get(lang, 'Consistency content replacement')
 
 # ===== Default Creation Summary =====
+
+
 def default_create_summary(lang: str) -> str:
     mapping = {
         'ru': 'Создание новой категории с заготовленным содержимым',
@@ -223,6 +245,8 @@ def default_create_summary(lang: str) -> str:
     return mapping.get(lang, 'Category creation with prepared content')
 
 # ===== Project Helpers =====
+
+
 def build_host(family: str, lang: str) -> str:
     fam = (family or 'wikipedia').strip()
     lng = (lang or 'ru').strip()
@@ -242,17 +266,21 @@ def build_host(family: str, lang: str) -> str:
         return 'www.wikifunctions.org'
     return f"{lng}.{fam}.org"
 
+
 def build_api_url(family: str, lang: str) -> str:
     return f"https://{build_host(family, lang)}/w/api.php"
 
+
 def build_project_awb_url(family: str, lang: str) -> str:
     return f"https://{build_host(family, lang)}/wiki/Project:AutoWikiBrowser/CheckPageJSON"
+
 
 # ===== Namespace Helpers =====
 NS_CACHE: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
 
 # Предзаданные локальные префиксы для популярных языков/проектов
-DEFAULT_NS_PREFIXES: dict[tuple[str, str], dict[int, dict[str, set[str] | str]]] = {}
+DEFAULT_NS_PREFIXES: dict[tuple[str, str],
+                          dict[int, dict[str, set[str] | str]]] = {}
 
 # Общая справка о префиксах для tooltip
 PREFIX_TOOLTIP = (
@@ -264,6 +292,7 @@ PREFIX_TOOLTIP = (
     "• Английские префиксы в исходных данных распознаются.\n\n"
 )
 
+
 def _ns_cache_dir() -> str:
     base = _dist_configs_dir()
     path = os.path.join(base, 'apicache')
@@ -273,12 +302,12 @@ def _ns_cache_dir() -> str:
         pass
     return path
 
+
 def _ns_cache_file(family: str, lang: str) -> str:
     safe_f = re.sub(r"[^a-z0-9_-]+", "_", (family or '').lower())
     safe_l = re.sub(r"[^a-z0-9_-]+", "_", (lang or '').lower())
     return os.path.join(_ns_cache_dir(), f"ns_{safe_f}_{safe_l}.json")
 
- 
 
 def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]]:
     key = (family, lang)
@@ -302,11 +331,13 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
                     prim = str(meta.get('primary') or '')
                     all_list = meta.get('all') or []
                     if isinstance(all_list, list):
-                        restored[ns_id] = {'primary': prim, 'all': {str(x).lower() for x in all_list}}
+                        restored[ns_id] = {'primary': prim, 'all': {
+                            str(x).lower() for x in all_list}}
                 if restored:
                     NS_CACHE[key] = restored
                     try:
-                        debug(f"NS cache hit: {family}/{lang} → {len(restored)} namespaces from {cache_path}")
+                        debug(
+                            f"NS cache hit: {family}/{lang} → {len(restored)} namespaces from {cache_path}")
                     except Exception:
                         pass
                     return restored
@@ -321,7 +352,8 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
     try:
         debug(f"NS API fetch: {family}/{lang}")
         _rate_wait()
-        r = REQUEST_SESSION.get(url, params=params, timeout=10, headers=REQUEST_HEADERS)
+        r = REQUEST_SESSION.get(
+            url, params=params, timeout=10, headers=REQUEST_HEADERS)
         data = r.json() if r.status_code == 200 else {}
         ns_map = data.get('query', {}).get('namespaces', {}) or {}
         aliases = data.get('query', {}).get('namespacealiases', []) or []
@@ -352,7 +384,8 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
                 name = (a.get('*') or '').strip()
                 if not name:
                     continue
-                d = prefixes_by_id.setdefault(ns_id, {'primary': '', 'all': set()})
+                d = prefixes_by_id.setdefault(
+                    ns_id, {'primary': '', 'all': set()})
                 d['all'] = set(d.get('all') or set())
                 d['all'].add((name + ':').lower())
             except Exception:
@@ -368,7 +401,8 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(to_dump, f, ensure_ascii=False)
             try:
-                debug(f"NS cached: {family}/{lang} → {len(prefixes_by_id)} namespaces → {cache_path}")
+                debug(
+                    f"NS cached: {family}/{lang} → {len(prefixes_by_id)} namespaces → {cache_path}")
             except Exception:
                 pass
         except Exception:
@@ -384,7 +418,8 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(to_dump, f, ensure_ascii=False)
             try:
-                debug(f"NS fallback preset used: {family}/{lang} → {len(preset)} namespaces")
+                debug(
+                    f"NS fallback preset used: {family}/{lang} → {len(preset)} namespaces")
             except Exception:
                 pass
         except Exception:
@@ -392,11 +427,14 @@ def _load_ns_info(family: str, lang: str) -> dict[int, dict[str, set[str] | str]
         return preset
     return {}
 
+
 def get_primary_ns_prefix(family: str, lang: str, ns_id: int, default_en: str) -> str:
     info = _load_ns_info(family, lang)
-    prim = (info.get(ns_id, {}).get('primary') or '') if isinstance(info.get(ns_id, {}), dict) else ''
+    prim = (info.get(ns_id, {}).get('primary') or '') if isinstance(
+        info.get(ns_id, {}), dict) else ''
     prim = str(prim)
     return prim if prim else (default_en if default_en.endswith(':') else default_en + ':')
+
 
 def title_has_ns_prefix(family: str, lang: str, title: str, ns_ids: set[int]) -> bool:
     info = _load_ns_info(family, lang)
@@ -410,15 +448,18 @@ def title_has_ns_prefix(family: str, lang: str, title: str, ns_ids: set[int]) ->
     lower = t.casefold()
     return any(lower.startswith(p) for p in prefixes)
 
+
 def _has_en_prefix(title: str, ns_id: int) -> bool:
     lower = (title or '').lstrip('\ufeff').casefold()
 
     base = (DEFAULT_EN_NS.get(ns_id) or '').strip()
     candidates: set[str] = set()
     if base:
-        candidates.add(base.casefold() if base.endswith(':') else (base + ':').casefold())
+        candidates.add(base.casefold() if base.endswith(':')
+                       else (base + ':').casefold())
     candidates |= set(EN_PREFIX_ALIASES.get(ns_id, set()))
     return any(lower.startswith(p) for p in candidates) if candidates else False
+
 
 def has_prefix_by_policy(family: str, lang: str, title: str, ns_ids: set[int]) -> bool:
     # Сначала проверяем локальные префиксы
@@ -426,6 +467,7 @@ def has_prefix_by_policy(family: str, lang: str, title: str, ns_ids: set[int]) -
         return True
     # Затем английские
     return any(_has_en_prefix(title, ns) for ns in ns_ids)
+
 
 def get_policy_prefix(family: str, lang: str, ns_id: int, default_en: str) -> str:
     # Если локальный основной известен — используем его
@@ -435,6 +477,7 @@ def get_policy_prefix(family: str, lang: str, ns_id: int, default_en: str) -> st
     # Резервный вариант — английский
     return default_en if default_en.endswith(':') else default_en + ':'
 
+
 def _ensure_title_with_ns(title: str, family: str, lang: str, ns_id: int, default_en: str) -> str:
     t = (title or '').lstrip('\ufeff').strip()
     if not t:
@@ -443,6 +486,7 @@ def _ensure_title_with_ns(title: str, family: str, lang: str, ns_id: int, defaul
         return t
     prefix = get_policy_prefix(family, lang, ns_id, default_en)
     return f"{prefix}{t}"
+
 
 def normalize_title_by_selection(title: str, family: str, lang: str, selection: str | int) -> str:
     """Нормализует заголовок по выбранному пространству имён.
@@ -457,7 +501,8 @@ def normalize_title_by_selection(title: str, family: str, lang: str, selection: 
             sel = selection.strip().lower()
             if sel in {'', 'auto'}:
                 return base_title
-            alias_to_ns = {'cat': 14, 'category': 14, 'tpl': 10, 'template': 10, 'art': 0, 'article': 0}
+            alias_to_ns = {'cat': 14, 'category': 14, 'tpl': 10,
+                           'template': 10, 'art': 0, 'article': 0}
             ns_id = alias_to_ns.get(sel, int(sel))
         else:
             ns_id = int(selection)
@@ -471,6 +516,8 @@ def normalize_title_by_selection(title: str, family: str, lang: str, selection: 
     return _ensure_title_with_ns(base_title, family, lang, ns_id, default_en)
 
 # ===== UI Helpers =====
+
+
 def _common_ns_ids() -> list[int]:
     # Подсчитываем в скольких языках встречается каждый NS-ID
     counts: dict[int, int] = {}
@@ -482,14 +529,17 @@ def _common_ns_ids() -> list[int]:
     common = sorted([ns for ns, cnt in counts.items() if cnt >= 3])
     return common
 
+
 def _primary_label_for_ns(family: str, lang: str, ns_id: int) -> str:
     # Пытаемся взять локальный основной префикс, иначе английский
     try:
-        prim = get_primary_ns_prefix(family, lang, ns_id, DEFAULT_EN_NS.get(ns_id, ''))
+        prim = get_primary_ns_prefix(
+            family, lang, ns_id, DEFAULT_EN_NS.get(ns_id, ''))
         return prim[:-1] if prim.endswith(':') else prim
     except Exception:
         base = DEFAULT_EN_NS.get(ns_id, '')
         return base[:-1] if base.endswith(':') else base
+
 
 def _adjust_combo_popup_width(combo) -> None:
     try:
@@ -510,6 +560,7 @@ def _adjust_combo_popup_width(combo) -> None:
     except Exception:
         pass
 
+
 def _populate_ns_combo(combo, family: str, lang: str) -> None:
     try:
         combo.clear()
@@ -518,7 +569,6 @@ def _populate_ns_combo(combo, family: str, lang: str) -> None:
 
     combo.addItem('Авто', 'auto')
     combo.addItem('(нет) [0]', 0)
-
 
     info = _load_ns_info(family or 'wikipedia', lang or 'ru')
     if info:
@@ -535,19 +585,20 @@ def _populate_ns_combo(combo, family: str, lang: str) -> None:
     _adjust_combo_popup_width(combo)
 
 
- 
-
 # ===== Pywikibot Config Helpers =====
 def _dist_configs_dir() -> str:
     """Фактическая папка configs рядом с exe/скриптом (для записи файлов)."""
-    base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else tool_base_dir()
+    base = os.path.dirname(sys.executable) if getattr(
+        sys, 'frozen', False) else tool_base_dir()
     return os.path.join(base, 'configs')
+
 
 def config_base_dir() -> str:
     cfg = os.environ.get('PYWIKIBOT_DIR')
     if cfg and os.path.isabs(cfg):
         return cfg
     return _dist_configs_dir()
+
 
 def write_pwb_credentials(lang: str, username: str, password: str, family: str = 'wikipedia') -> None:
     cfg_dir = _dist_configs_dir()
@@ -573,7 +624,8 @@ def write_pwb_credentials(lang: str, username: str, password: str, family: str =
         "password_file = 'user-password.py'",
     ]
     for code in sorted(usernames_map.keys()):
-        lines.append(f"usernames['{family}']['{code}'] = '{usernames_map[code]}'")
+        lines.append(
+            f"usernames['{family}']['{code}'] = '{usernames_map[code]}'")
     debug(f"Write user-config.py → {uc_path}")
     with open(uc_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines) + "\n")
@@ -582,6 +634,7 @@ def write_pwb_credentials(lang: str, username: str, password: str, family: str =
     debug(f"Write user-password.py → {up_path}")
     with open(up_path, 'w', encoding='utf-8') as f:
         f.write(repr((username, password)))
+
 
 def apply_pwb_config(lang: str, family: str = 'wikipedia') -> str:
     cfg_dir = _dist_configs_dir()
@@ -609,16 +662,19 @@ def apply_pwb_config(lang: str, family: str = 'wikipedia') -> str:
         pass
     return cfg_dir
 
+
 def cookies_exist(cfg_dir: str, username: str) -> bool:
     for cookie_name in (f'pywikibot-{username}.lwp', 'pywikibot.lwp'):
         if os.path.isfile(os.path.join(cfg_dir, cookie_name)):
             return True
     return False
 
+
 def _normalize_username(name: str | None) -> str:
     if not name:
         return ''
     return name.strip().replace('_', ' ').casefold()
+
 
 def _delete_all_cookies(cfg_dir: str, username: str | None = None) -> None:
     try:
@@ -632,7 +688,6 @@ def _delete_all_cookies(cfg_dir: str, username: str | None = None) -> None:
     except Exception:
         pass
 
- 
 
 def fetch_awb_lists(lang: str, timeout: int = 15, family: str = 'wikipedia') -> tuple[str, dict | None]:
     """Загружает JSON со страницы Wikipedia:AutoWikiBrowser/CheckPageJSON для данного языка.
@@ -645,7 +700,8 @@ def fetch_awb_lists(lang: str, timeout: int = 15, family: str = 'wikipedia') -> 
     params = {'action': 'raw'}
     try:
         _rate_wait()
-        r = REQUEST_SESSION.get(url, params=params, timeout=timeout, headers=REQUEST_HEADERS)
+        r = REQUEST_SESSION.get(
+            url, params=params, timeout=timeout, headers=REQUEST_HEADERS)
         if r.status_code == 404:
             debug(f"AWB CheckPage missing lang={lang}")
             return 'missing', None
@@ -666,11 +722,13 @@ def fetch_awb_lists(lang: str, timeout: int = 15, family: str = 'wikipedia') -> 
         if not isinstance(users, list) or not isinstance(bots, list):
             debug("AWB CheckPage lists have unexpected types")
             return 'error', None
-        debug(f"AWB lists loaded: users={len(users)} bots={len(bots)} lang={lang}")
+        debug(
+            f"AWB lists loaded: users={len(users)} bots={len(bots)} lang={lang}")
         return 'ok', {'enabledusers': users, 'enabledbots': bots}
     except Exception as e:
         debug(f"AWB CheckPage fetch error: {e}")
         return 'error', None
+
 
 def is_user_awb_enabled(lang: str, username: str, family: str = 'wikipedia') -> tuple[bool, str]:
     """Проверяет, есть ли пользователь в списках AWB (люди или боты) на локальной вики.
@@ -686,12 +744,15 @@ def is_user_awb_enabled(lang: str, username: str, family: str = 'wikipedia') -> 
         return False, ("Не удалось загрузить список доступа AWB. Проверьте подключение или откройте страницу: "
                        f"{page_url}")
     target = _normalize_username((username or '').replace('_', ' '))
-    enabled_users = { _normalize_username(n) for n in lists.get('enabledusers', []) if isinstance(n, str) }
-    enabled_bots  = { _normalize_username(n) for n in lists.get('enabledbots', []) if isinstance(n, str) }
+    enabled_users = {_normalize_username(n) for n in lists.get(
+        'enabledusers', []) if isinstance(n, str)}
+    enabled_bots = {_normalize_username(n) for n in lists.get(
+        'enabledbots', []) if isinstance(n, str)}
     if target in enabled_users or target in enabled_bots:
         return True, 'OK'
     return False, ("Учётная запись не включена в списки AWB (enabledusers/enabledbots) на этой вики. "
                    f"Проверьте страницу: {page_url}")
+
 
 def reset_pywikibot_session(lang: str | None = None) -> None:
     try:
@@ -718,6 +779,7 @@ def reset_pywikibot_session(lang: str | None = None) -> None:
         pass
 
 # ===== Backend Helpers =====
+
 
 DEFAULT_EN_NS: dict[int, str] = {
     # Основные пространства имён
@@ -760,6 +822,7 @@ EN_PREFIX_ALIASES: dict[int, set[str]] = {
     1728: {'event:'},
 }
 
+
 def fetch_content(title: str, ns_selection: str | int, lang: str = 'ru', family: str = 'wikipedia', retries: int = 5, timeout: int = 6):
     debug(f"API GET content lang={lang} title={title}")
     url = build_api_url(family, lang)
@@ -772,17 +835,21 @@ def fetch_content(title: str, ns_selection: str | int, lang: str = 'ru', family:
             ns_id = int(ns_selection)
             if ns_id != 0:
                 default_en = DEFAULT_EN_NS.get(ns_id, '')
-                full = _ensure_title_with_ns(full, family, lang, ns_id, default_en)
+                full = _ensure_title_with_ns(
+                    full, family, lang, ns_id, default_en)
     except Exception:
         pass
-    params = {"action": "query", "prop": "revisions", "rvprop": "content", "titles": full, "format": "json"}
+    params = {"action": "query", "prop": "revisions",
+              "rvprop": "content", "titles": full, "format": "json"}
     for attempt in range(1, retries+1):
         try:
             _rate_wait()
-            r = REQUEST_SESSION.get(url, params=params, timeout=timeout, headers=REQUEST_HEADERS)
+            r = REQUEST_SESSION.get(
+                url, params=params, timeout=timeout, headers=REQUEST_HEADERS)
             r.encoding = 'utf-8'
             if r.status_code == 429:
-                debug(f"API ERR 429 (rate limit) for {title}; attempt {attempt}/{retries}")
+                debug(
+                    f"API ERR 429 (rate limit) for {title}; attempt {attempt}/{retries}")
                 if attempt < retries:
                     _rate_backoff(0.6 * attempt)
                     continue
@@ -801,6 +868,7 @@ def fetch_content(title: str, ns_selection: str | int, lang: str = 'ru', family:
                 time.sleep(2 ** attempt)
     return []
 
+
 def write_row(title, lines, writer):
     if not lines:
         return
@@ -808,6 +876,7 @@ def write_row(title, lines, writer):
         writer.writerow([title, *lines])
 
 # ===== Worker Threads =====
+
 
 class ParseWorker(QThread):
     progress = Signal(str)
@@ -836,7 +905,8 @@ class ParseWorker(QThread):
 
                     # Ограничиваем количество одновременных задач
                     while len(in_flight) >= max_workers:
-                        done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+                        done, in_flight = wait(
+                            in_flight, return_when=FIRST_COMPLETED)
                         for fut in done:
                             try:
                                 fut.result()
@@ -855,11 +925,11 @@ class ParseWorker(QThread):
                     except Exception:
                         pass
 
-
     def process(self, title, writer):
         if self._stop:
             return
-        lines = fetch_content(title, self.ns_sel, lang=self.lang, family=self.family)
+        lines = fetch_content(title, self.ns_sel,
+                              lang=self.lang, family=self.family)
         if self._stop:
             return
         write_row(title, lines, writer)
@@ -869,6 +939,7 @@ class ParseWorker(QThread):
             self.progress.emit(f"{title}: {len(lines)} строк")
         else:
             self.progress.emit(f"{title}: не найдено")
+
 
 class ReplaceWorker(QThread):
     progress = Signal(str)
@@ -896,7 +967,8 @@ class ReplaceWorker(QThread):
 
     def _wait_before_save(self):
         now = time.time()
-        to_wait = max(0.0, (self._last_save_ts + self._save_min_interval) - now)
+        to_wait = max(0.0, (self._last_save_ts +
+                      self._save_min_interval) - now)
         if to_wait > 0:
             time.sleep(to_wait)
         self._last_save_ts = time.time()
@@ -929,12 +1001,14 @@ class ReplaceWorker(QThread):
                 if self._is_rate_error(e) and attempt < retries:
                     self._increase_save_interval(attempt)
                     try:
-                        self.progress.emit(f"Лимит запросов: пауза {self._save_min_interval:.2f}s · попытка {attempt}/{retries}")
+                        self.progress.emit(
+                            f"Лимит запросов: пауза {self._save_min_interval:.2f}s · попытка {attempt}/{retries}")
                     except Exception:
                         pass
                     continue
                 try:
-                    self.progress.emit(f"Ошибка сохранения: {type(e).__name__}: {e}")
+                    self.progress.emit(
+                        f"Ошибка сохранения: {type(e).__name__}: {e}")
                 except Exception:
                     pass
                 return False
@@ -946,14 +1020,17 @@ class ReplaceWorker(QThread):
         if self.username and self.password:
             try:
                 if not is_bypass_awb():
-                    ok_awb, msg_awb = is_user_awb_enabled(self.lang, self.username, self.family)
+                    ok_awb, msg_awb = is_user_awb_enabled(
+                        self.lang, self.username, self.family)
                     if not ok_awb:
-                        self.progress.emit(f"AWB доступ отсутствует: {msg_awb}")
+                        self.progress.emit(
+                            f"AWB доступ отсутствует: {msg_awb}")
                         return
 
                 site.login(user=self.username)
             except Exception as e:
-                self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
+                self.progress.emit(
+                    f"Ошибка авторизации: {type(e).__name__}: {e}")
                 return
         # Инициализируем адаптивный интервал между сохранениями
         self._init_save_ratelimit()
@@ -972,14 +1049,18 @@ class ReplaceWorker(QThread):
                 title = raw_title.strip().lstrip('\ufeff')
                 lines = [(s or '').lstrip('\ufeff') for s in row[1:]]
                 # Нормализуем по выбору пользователя (Авто/Категория/Шаблон/Статья)
-                norm_title = normalize_title_by_selection(title, self.family, self.lang, self.ns_sel)
+                norm_title = normalize_title_by_selection(
+                    title, self.family, self.lang, self.ns_sel)
                 page = pywikibot.Page(site, norm_title)
                 if page.exists():
-                    ok = self._save_with_retry(page, "\n".join(lines), self.summary, self.minor)
+                    ok = self._save_with_retry(
+                        page, "\n".join(lines), self.summary, self.minor)
                     if ok:
-                        self.progress.emit(f"{title}: записано {len(lines)} строк")
+                        self.progress.emit(
+                            f"{title}: записано {len(lines)} строк")
                     else:
-                        self.progress.emit(f"{title}: не удалось сохранить после повторных попыток")
+                        self.progress.emit(
+                            f"{title}: не удалось сохранить после повторных попыток")
                 else:
                     self.progress.emit(f"{title}: страница отсутствует")
 
@@ -1008,13 +1089,16 @@ class CreateWorker(QThread):
         if self.username and self.password:
             try:
                 if not is_bypass_awb():
-                    ok_awb, msg_awb = is_user_awb_enabled(self.lang, self.username, self.family)
+                    ok_awb, msg_awb = is_user_awb_enabled(
+                        self.lang, self.username, self.family)
                     if not ok_awb:
-                        self.progress.emit(f"AWB доступ отсутствует: {msg_awb}")
+                        self.progress.emit(
+                            f"AWB доступ отсутствует: {msg_awb}")
                         return
                 site.login(user=self.username)
             except Exception as e:
-                self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
+                self.progress.emit(
+                    f"Ошибка авторизации: {type(e).__name__}: {e}")
                 return
         # Локальный адаптивный троттлинг сохранений
         save_min_interval = 0.25
@@ -1030,7 +1114,8 @@ class CreateWorker(QThread):
 
         def increase_interval(attempt: int):
             nonlocal save_min_interval
-            save_min_interval = min(max(save_min_interval * 1.5, 0.6 * attempt), 2.5)
+            save_min_interval = min(
+                max(save_min_interval * 1.5, 0.6 * attempt), 2.5)
 
         def decay_interval():
             nonlocal save_min_interval
@@ -1052,12 +1137,14 @@ class CreateWorker(QThread):
                     if is_rate_error(e) and attempt < retries:
                         increase_interval(attempt)
                         try:
-                            self.progress.emit(f"Лимит запросов: пауза {save_min_interval:.2f}s · попытка {attempt}/{retries}")
+                            self.progress.emit(
+                                f"Лимит запросов: пауза {save_min_interval:.2f}s · попытка {attempt}/{retries}")
                         except Exception:
                             pass
                         continue
                     try:
-                        self.progress.emit(f"Ошибка сохранения: {type(e).__name__}: {e}")
+                        self.progress.emit(
+                            f"Ошибка сохранения: {type(e).__name__}: {e}")
                     except Exception:
                         pass
                     return False
@@ -1075,14 +1162,17 @@ class CreateWorker(QThread):
                     title = raw_title.strip().lstrip('\ufeff')
                     lines = [((s or '').lstrip('\ufeff')) for s in row[1:]]
 
-                    norm_title = normalize_title_by_selection(title, self.family, self.lang, self.ns_sel)
+                    norm_title = normalize_title_by_selection(
+                        title, self.family, self.lang, self.ns_sel)
                     page = pywikibot.Page(site, norm_title)
                     if not page.exists():
                         ok = save_with_retry(page, "\n".join(lines))
                         if ok:
-                            self.progress.emit(f"{title}: создано ({len(lines)} строк)")
+                            self.progress.emit(
+                                f"{title}: создано ({len(lines)} строк)")
                         else:
-                            self.progress.emit(f"{title}: не удалось создать после повторных попыток")
+                            self.progress.emit(
+                                f"{title}: не удалось создать после повторных попыток")
                     else:
                         self.progress.emit(f"{title}: уже существует")
         except Exception as e:
@@ -1135,8 +1225,10 @@ class RenameWorker(QThread):
                 base_cfg = _dist_configs_dir()
             except Exception:
                 base_cfg = _os.path.join(_os.path.dirname(__file__), 'configs')
-            self._rules_file_path = _os.path.join(base_cfg, 'template_rules.json')
+            self._rules_file_path = _os.path.join(
+                base_cfg, 'template_rules.json')
             # Загрузим существующие правила из файла, если есть
+
             def _load_rules():
                 try:
                     if _os.path.exists(self._rules_file_path):
@@ -1149,7 +1241,8 @@ class RenameWorker(QThread):
                             if any(k in data for k in ('named', 'unnamed_single', 'unnamed_sequence')):
                                 self.template_auto_cache.update(data)
                             else:
-                                self.template_auto_cache.update(data.get(scope, {}) or {})
+                                self.template_auto_cache.update(
+                                    data.get(scope, {}) or {})
                 except Exception:
                     pass
             _load_rules()
@@ -1160,9 +1253,11 @@ class RenameWorker(QThread):
                         self.auto_skip_templates.add(_k)
             except Exception:
                 pass
+
             def _save_rules():
                 try:
-                    _os.makedirs(_os.path.dirname(self._rules_file_path), exist_ok=True)
+                    _os.makedirs(_os.path.dirname(
+                        self._rules_file_path), exist_ok=True)
                     import json as _json
                     file_data = {}
                     try:
@@ -1210,13 +1305,16 @@ class RenameWorker(QThread):
         if self.username and self.password:
             try:
                 if not is_bypass_awb():
-                    ok_awb, msg_awb = is_user_awb_enabled(self.lang, self.username, self.family)
+                    ok_awb, msg_awb = is_user_awb_enabled(
+                        self.lang, self.username, self.family)
                     if not ok_awb:
-                        self.progress.emit(f"AWB доступ отсутствует: {msg_awb}")
+                        self.progress.emit(
+                            f"AWB доступ отсутствует: {msg_awb}")
                         return
                 site.login(user=self.username)
             except Exception as e:
-                self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
+                self.progress.emit(
+                    f"Ошибка авторизации: {type(e).__name__}: {e}")
                 return
         try:
             import csv
@@ -1227,9 +1325,11 @@ class RenameWorker(QThread):
                     if self._stop:
                         break
                     if len(row) < 3:
-                        self.progress.emit(f"Некорректная строка (требуется 3 столбца): {row}")
+                        self.progress.emit(
+                            f"Некорректная строка (требуется 3 столбца): {row}")
                         continue
-                    old_name_raw, new_name_raw, reason = [((c or '').strip().lstrip('\ufeff')) for c in row[:3]]
+                    old_name_raw, new_name_raw, reason = [
+                        ((c or '').strip().lstrip('\ufeff')) for c in row[:3]]
 
                     # Нормализация имён по выбору пользователя
                     sel = self.ns_sel
@@ -1239,28 +1339,35 @@ class RenameWorker(QThread):
                             old_name = old_name_raw
                             new_name = new_name_raw
                             # Определяем категорию по фактическому префиксу
-                            is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
+                            is_category = title_has_ns_prefix(
+                                self.family, self.lang, old_name, {14})
                         else:
                             ns_id = int(sel)
-                            old_name = normalize_title_by_selection(old_name_raw, self.family, self.lang, ns_id)
-                            new_name = normalize_title_by_selection(new_name_raw, self.family, self.lang, ns_id)
+                            old_name = normalize_title_by_selection(
+                                old_name_raw, self.family, self.lang, ns_id)
+                            new_name = normalize_title_by_selection(
+                                new_name_raw, self.family, self.lang, ns_id)
                             is_category = (ns_id == 14)
                     except Exception:
                         # На случай некорректного выбора — ведём себя как 'Авто'
                         old_name = old_name_raw
                         new_name = new_name_raw
-                        is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
+                        is_category = title_has_ns_prefix(
+                            self.family, self.lang, old_name, {14})
 
                     # Если переименовываем категорию и перенос содержимого (обе фазы) выключен —
                     # при отсутствии самой категории просто сообщаем и переходим к следующей строке
                     if is_category and not (self.move_members and (self.phase1_enabled or self.find_in_templates)):
                         try:
-                            old_full_check = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
+                            old_full_check = _ensure_title_with_ns(
+                                old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
                             if not pywikibot.Page(site, old_full_check).exists():
                                 try:
-                                    self.progress.emit(f"Категория <b>{html.escape(old_full_check)}</b> не существует. Перенос содержимого отключён.")
+                                    self.progress.emit(
+                                        f"Категория <b>{html.escape(old_full_check)}</b> не существует. Перенос содержимого отключён.")
                                 except Exception:
-                                    self.progress.emit(f"Категория {old_full_check} не существует. Перенос содержимого отключён.")
+                                    self.progress.emit(
+                                        f"Категория {old_full_check} не существует. Перенос содержимого отключён.")
                                 continue
                         except Exception:
                             pass
@@ -1269,21 +1376,25 @@ class RenameWorker(QThread):
                     # Если отключено переименование категории — пропускаем сам move для категорий
                     if is_category and not self.move_category:
                         try:
-                            self.progress.emit(f"Пропущено переименование категории <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>. Переносим содержимое…")
+                            self.progress.emit(
+                                f"Пропущено переименование категории <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>. Переносим содержимое…")
                         except Exception:
                             pass
                     else:
-                        self._move_page(site, old_name, new_name, reason, leave_redirect)
+                        self._move_page(site, old_name, new_name,
+                                        reason, leave_redirect)
                     # Если это категория и хотя бы одна фаза переноса включена — переносим участников
                     if is_category and self.move_members and (self.phase1_enabled or self.find_in_templates) and not self._stop:
                         try:
-                            self._move_category_members(site, old_name, new_name)
+                            self._move_category_members(
+                                site, old_name, new_name)
                         except Exception as e:
-                            self.progress.emit(f"Ошибка переноса содержимого категории '{old_name}': {e}")
+                            self.progress.emit(
+                                f"Ошибка переноса содержимого категории '{old_name}': {e}")
         except Exception as e:
             self.progress.emit(f"Ошибка работы с файлом TSV: {e}")
         finally:
-    
+
             pass
 
     def _move_page(self, site: pywikibot.Site, old_name: str, new_name: str, reason: str, leave_redirect: bool):
@@ -1291,10 +1402,12 @@ class RenameWorker(QThread):
             page = pywikibot.Page(site, old_name)
             new_page = pywikibot.Page(site, new_name)
             if not page.exists():
-                self.progress.emit(f"Страница <b>{html.escape(old_name)}</b> не найдена.")
+                self.progress.emit(
+                    f"Страница <b>{html.escape(old_name)}</b> не найдена.")
                 return
             if new_page.exists():
-                self.progress.emit(f"Страница назначения <b>{html.escape(new_name)}</b> уже существует.")
+                self.progress.emit(
+                    f"Страница назначения <b>{html.escape(new_name)}</b> уже существует.")
                 return
 
             # Адаптивный бэкофф для move
@@ -1311,7 +1424,8 @@ class RenameWorker(QThread):
 
             def increase_interval(attempt: int):
                 nonlocal move_min_interval
-                move_min_interval = min(max(move_min_interval * 1.5, 0.6 * attempt), 2.5)
+                move_min_interval = min(
+                    max(move_min_interval * 1.5, 0.6 * attempt), 2.5)
 
             def is_rate_error(err: Exception) -> bool:
                 msg = (str(err) or '').lower()
@@ -1321,21 +1435,25 @@ class RenameWorker(QThread):
                 try:
                     wait_before_move()
                     # noredirect=True означает НЕ оставлять редирект
-                    page.move(new_name, reason=reason, movetalk=True, noredirect=not leave_redirect)
+                    page.move(new_name, reason=reason, movetalk=True,
+                              noredirect=not leave_redirect)
                     redir_status = "с редиректом" if leave_redirect else "без редиректа"
-                    self.progress.emit(f"Переименована <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b> {redir_status}.")
+                    self.progress.emit(
+                        f"Переименована <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b> {redir_status}.")
                     break
                 except Exception as e:
                     if is_rate_error(e) and attempt < 6:
                         increase_interval(attempt)
                         try:
-                            self.progress.emit(f"Лимит при переименовании: пауза {move_min_interval:.2f}s · попытка {attempt}/5")
+                            self.progress.emit(
+                                f"Лимит при переименовании: пауза {move_min_interval:.2f}s · попытка {attempt}/5")
                         except Exception:
                             pass
                         continue
                     raise
         except Exception as e:
-            self.progress.emit(f"Ошибка при переименовании <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>: {html.escape(str(e))}")
+            self.progress.emit(
+                f"Ошибка при переименовании <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>: {html.escape(str(e))}")
 
     def _cat_prefixes(self, family: str, lang: str) -> set[str]:
         info = _load_ns_info(family, lang)
@@ -1391,9 +1509,11 @@ class RenameWorker(QThread):
         named: list[tuple[str, str, str]] = []
         for raw in params:
             if '=' in raw:
-                m = re.match(r"^(?P<left>\s*[^=]+?)(?P<eq>\s*=\s*)(?P<val>.*)$", raw, flags=re.S)
+                m = re.match(
+                    r"^(?P<left>\s*[^=]+?)(?P<eq>\s*=\s*)(?P<val>.*)$", raw, flags=re.S)
                 if m:
-                    named.append((m.group('left'), m.group('eq'), m.group('val')))
+                    named.append(
+                        (m.group('left'), m.group('eq'), m.group('val')))
                 else:
                     unnamed.append(raw)
             else:
@@ -1416,6 +1536,7 @@ class RenameWorker(QThread):
         un_b, nm_b = self._split_params(params_b)
         un_a, nm_a = self._split_params(params_a)
         # Сопоставим именованные по имени (без учёта регистра, пробелы/подчёркивания нормализуем)
+
         def _norm_name(s: str) -> str:
             s2 = (s or '').strip()
             try:
@@ -1448,14 +1569,16 @@ class RenameWorker(QThread):
     def _ensure_cache_bucket(self, tmpl_key: str) -> dict:
         b = self.template_auto_cache.get(tmpl_key)
         if not b:
-            b = {'named': {}, 'unnamed_single': {}, 'unnamed_sequence': [], 'auto': False}
+            b = {'named': {}, 'unnamed_single': {},
+                 'unnamed_sequence': [], 'auto': False}
             self.template_auto_cache[tmpl_key] = b
         return b
 
     def _update_template_cache_from_edit(self, family: str, lang: str, before_chunk: str, after_chunk: str) -> None:
         try:
             diff = self._diff_template_params(before_chunk, after_chunk)
-            tmpl_key = self._norm_tmpl_key(diff.get('name') or '', family, lang)
+            tmpl_key = self._norm_tmpl_key(
+                diff.get('name') or '', family, lang)
             if not tmpl_key:
                 return
             bucket = self._ensure_cache_bucket(tmpl_key)
@@ -1465,18 +1588,21 @@ class RenameWorker(QThread):
                     continue
                 if name_cf not in bucket['named']:
                     bucket['named'][name_cf] = {}
-                bucket['named'][name_cf][(oldv or '').strip()] = (newv or '').strip()
+                bucket['named'][name_cf][(oldv or '').strip()] = (
+                    newv or '').strip()
             # Безымянные: если один — считаем равнозначными, если несколько — важна очередность
             unnamed_changes = diff.get('unnamed') or []
             if len(unnamed_changes) == 1:
                 _, oldv, newv = unnamed_changes[0]
                 if (oldv or '').strip():
-                    bucket['unnamed_single'][(oldv or '').strip()] = (newv or '').strip()
+                    bucket['unnamed_single'][(oldv or '').strip()] = (
+                        newv or '').strip()
             elif len(unnamed_changes) > 1:
                 # Сохраняем как последовательность idx=>значение
                 seq = []
                 for idx1, oldv, newv in unnamed_changes:
-                    seq.append((int(idx1), (oldv or '').strip(), (newv or '').strip()))
+                    seq.append(
+                        (int(idx1), (oldv or '').strip(), (newv or '').strip()))
                 bucket['unnamed_sequence'].append(seq)
             # Сохранить на диск
             try:
@@ -1534,7 +1660,8 @@ class RenameWorker(QThread):
                 # Для каждого правила ищем РОВНО одно совпадение
                 tmp = list(unnamed)
                 for oldv, newv in mapping.items():
-                    matches = [i for i, tok in enumerate(tmp) if (tok or '').strip() == (oldv or '').strip()]
+                    matches = [i for i, tok in enumerate(tmp) if (
+                        tok or '').strip() == (oldv or '').strip()]
                     if len(matches) == 1:
                         tmp[matches[0]] = newv
                         changed = True
@@ -1582,11 +1709,13 @@ class RenameWorker(QThread):
                 name, _ = self._parse_template_tokens(chunk)
                 tmpl_key = self._norm_tmpl_key(name, family, lang)
                 bucket = self.template_auto_cache.get(tmpl_key) or {}
-                auto_allowed = bool(bucket.get('auto')) or bool(self.auto_confirm_direct_all)
+                auto_allowed = bool(bucket.get('auto')) or bool(
+                    self.auto_confirm_direct_all)
                 if not auto_allowed:
                     start = r + 2
                     continue
-                new_chunk, applied = self._apply_cache_to_chunk(family, lang, chunk)
+                new_chunk, applied = self._apply_cache_to_chunk(
+                    family, lang, chunk)
                 if applied and new_chunk != chunk:
                     out_text = out_text[:l] + new_chunk + out_text[r+2:]
                     total_applied += applied
@@ -1609,7 +1738,8 @@ class RenameWorker(QThread):
         old_base = self._strip_cat_prefix(old_cat_full, family, lang)
         new_base = self._strip_cat_prefix(new_cat_full, family, lang)
         prefixes = self._cat_prefixes(family, lang)
-        name_group = '(?:' + '|'.join(re.escape(p[:-1]) for p in prefixes) + ')'
+        name_group = '(?:' + \
+            '|'.join(re.escape(p[:-1]) for p in prefixes) + ')'
 
         def esc_title_pat(t: str) -> str:
             pat = re.escape(t)
@@ -1617,9 +1747,11 @@ class RenameWorker(QThread):
             return pat
 
         pat_old = esc_title_pat(old_base)
-        rx = re.compile(r'\[\[\s*(' + name_group + r')\s*:\s*' + pat_old + r'\s*(\|[^]]*)?\]\]', re.IGNORECASE)
+        rx = re.compile(r'\[\[\s*(' + name_group + r')\s*:\s*' +
+                        pat_old + r'\s*(\|[^]]*)?\]\]', re.IGNORECASE)
 
         count = 0
+
         def repl(m):
             nonlocal count
             count += 1
@@ -1645,7 +1777,8 @@ class RenameWorker(QThread):
             _html = None
         tokens: list[str] = [old_cat_full]
         try:
-            esc = _html.escape(old_cat_full, quote=True) if _html else old_cat_full
+            esc = _html.escape(
+                old_cat_full, quote=True) if _html else old_cat_full
             if esc and esc != old_cat_full:
                 tokens.append(esc)
         except Exception:
@@ -1706,15 +1839,18 @@ class RenameWorker(QThread):
                         left_old = _token_at(old_base, i1, -1)
                         left_new = _token_at(new_base, j1, -1)
                         if left_old and len(left_old) <= 3 and left_new and len(left_new) <= 3:
-                            pairs.append((f"{left_old} {base_old}", f"{left_new} {base_new}"))
+                            pairs.append(
+                                (f"{left_old} {base_old}", f"{left_new} {base_new}"))
                         # Попробуем расширить вправо на одно слово (напр. «левом районе»)
                         right_old = _token_at(old_base, i2, +1)
                         right_new = _token_at(new_base, j2, +1)
                         if right_old and right_new:
-                            pairs.append((f"{base_old} {right_old}", f"{base_new} {right_new}"))
+                            pairs.append(
+                                (f"{base_old} {right_old}", f"{base_new} {right_new}"))
                         # Попробуем расширить и слева и справа (предлог + слово + следующее слово)
                         if left_old and len(left_old) <= 3 and left_new and len(left_new) <= 3 and right_old and right_new:
-                            pairs.append((f"{left_old} {base_old} {right_old}", f"{left_new} {base_new} {right_new}"))
+                            pairs.append(
+                                (f"{left_old} {base_old} {right_old}", f"{left_new} {base_new} {right_new}"))
                 elif tag == 'delete':
                     base_old = old_base[i1:i2]
                     if base_old:
@@ -1733,13 +1869,15 @@ class RenameWorker(QThread):
                     seen_pairs.add(p)
                     uniq.append(p)
             # Дополнительно: дифф по словам, чтобы получать целые словоформы
+
             def _words(s: str) -> list[str]:
                 # Делим на слова (буквы/числа/подчёркивания) и прочие токены
                 return re.findall(r"[^\W_\d]+|\d+|_+|[^\s]", s, flags=re.UNICODE)
             ow = _words(old_base)
             nw = _words(new_base)
             if ow and nw:
-                smw = difflib.SequenceMatcher(a=[w.casefold() for w in ow], b=[w.casefold() for w in nw])
+                smw = difflib.SequenceMatcher(a=[w.casefold() for w in ow], b=[
+                                              w.casefold() for w in nw])
                 for tag, i1, i2, j1, j2 in smw.get_opcodes():
                     if tag in ('replace',):
                         so = ''.join(ow[i1:i2]).strip()
@@ -1795,7 +1933,8 @@ class RenameWorker(QThread):
                 return bool(re.match(r'^([^\W\d_]{1,3})\s', t, flags=re.UNICODE))
 
             # Сортируем: сначала параметры, начинающиеся с короткого слова (обычно предлоги), затем остальные
-            indices.sort(key=lambda i: (0 if _starts_with_short_word(tail[i]) else 1, i))
+            indices.sort(key=lambda i: (
+                0 if _starts_with_short_word(tail[i]) else 1, i))
 
             for idx in indices:
                 token = tail[idx]
@@ -1805,7 +1944,8 @@ class RenameWorker(QThread):
                     if not new_sub or len(old_sub.strip()) < 2:
                         pass
                     else:
-                        norm = lambda s: re.sub(r"\s+", " ", (s or '').strip()).casefold()
+                        def norm(s): return re.sub(
+                            r"\s+", " ", (s or '').strip()).casefold()
                         if norm(token) == norm(old_sub):
                             tail[idx] = new_sub
                             changed = True
@@ -1831,7 +1971,8 @@ class RenameWorker(QThread):
         try:
             old_base = self._strip_cat_prefix(old_full, family, lang)
             new_base = self._strip_cat_prefix(new_full, family, lang)
-            pairs = self._compute_partial_pairs(old_full, new_full, family, lang)
+            pairs = self._compute_partial_pairs(
+                old_full, new_full, family, lang)
             if not pairs:
                 return results
             seen_templates: set[str] = set()
@@ -1857,6 +1998,7 @@ class RenameWorker(QThread):
                     head = parts[0]
                     params = parts[1:]
                     prefixes = self._cat_prefixes(family, lang)
+
                     def _norm(s: str) -> str:
                         try:
                             s2 = html.unescape(s or '')
@@ -1867,7 +2009,8 @@ class RenameWorker(QThread):
                     for i, raw in enumerate(params):
                         if '=' not in raw:
                             continue
-                        m = re.match(r"^(?P<left>\s*[^=]+?)(?P<eq>\s*=\s*)(?P<val>.*)$", raw)
+                        m = re.match(
+                            r"^(?P<left>\s*[^=]+?)(?P<eq>\s*=\s*)(?P<val>.*)$", raw)
                         if not m:
                             continue
                         val = m.group('val').strip()
@@ -1878,7 +2021,8 @@ class RenameWorker(QThread):
                             p_no_colon = p[:-1]
                             if val_lower.startswith(p_no_colon):
                                 # допускаем варианты без двоеточия/со пробелами
-                                m2 = re.match(rf"^{re.escape(p_no_colon)}\s*:\s*(.+)$", val, flags=re.IGNORECASE)
+                                m2 = re.match(
+                                    rf"^{re.escape(p_no_colon)}\s*:\s*(.+)$", val, flags=re.IGNORECASE)
                                 if m2:
                                     val_no_pref = m2.group(1).strip()
                                 break
@@ -1887,11 +2031,13 @@ class RenameWorker(QThread):
                             new_val = val
                             # если было с префиксом, заменим только хвост
                             if val_no_pref != val:
-                                new_val = re.sub(r"(:\s*)(.+)$", lambda mm: f"{mm.group(1)}{new_base}", val, count=1)
+                                new_val = re.sub(
+                                    r"(:\s*)(.+)$", lambda mm: f"{mm.group(1)}{new_base}", val, count=1)
                             else:
                                 new_val = new_base
                             new_param = f"{m.group('left')}{m.group('eq')}{new_val}"
-                            new_inner = '|'.join([head] + params[:i] + [new_param] + params[i+1:])
+                            new_inner = '|'.join(
+                                [head] + params[:i] + [new_param] + params[i+1:])
                             proposed = '{{' + new_inner + '}}'
                             seen_templates.add(chunk)
                             results.append({
@@ -1909,10 +2055,12 @@ class RenameWorker(QThread):
                     pat = self._compile_wordish(old_sub)
                     if pat.search(chunk) or (self._norm_space_fold(old_sub) in self._norm_space_fold(chunk)):
                         # Сначала пробуем заменить целиком совпадающий параметр, если весь токен равен old_sub
-                        new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub or '', replace_entire_token=True)
+                        new_chunk, changed = self._replace_in_unnamed_params_once(
+                            chunk, old_sub, new_sub or '', replace_entire_token=True)
                         if not changed:
                             # Если не вышло — fallback на точечную подстановку внутри параметра
-                            new_chunk, changed = self._replace_in_unnamed_params_once(chunk, old_sub, new_sub or '', replace_entire_token=False)
+                            new_chunk, changed = self._replace_in_unnamed_params_once(
+                                chunk, old_sub, new_sub or '', replace_entire_token=False)
                         if changed:
                             seen_templates.add(chunk)
                             results.append({
@@ -1930,7 +2078,8 @@ class RenameWorker(QThread):
                     unnamed = [p for p in parts[1:] if '=' not in p]
                     # соберём все предлоговые фразы длиной 2 токена минимум
                     for tok in unnamed:
-                        m = re.search(r"(^|\s)([^\W\d_]{1,3})\s+([^|]+)$", tok.strip(), flags=re.UNICODE)
+                        m = re.search(
+                            r"(^|\s)([^\W\d_]{1,3})\s+([^|]+)$", tok.strip(), flags=re.UNICODE)
                         if m:
                             short = m.group(2)
                             rest = m.group(3).strip()
@@ -1939,15 +2088,18 @@ class RenameWorker(QThread):
                                 if not old_sub or not new_sub:
                                     continue
                                 # старое/новое должно начинаться с короткого слова
-                                mo = re.match(rf"^([^\W\d_]{{1,3}})\s+(.+)$", old_sub.strip(), flags=re.UNICODE)
-                                mn = re.match(rf"^([^\W\d_]{{1,3}})\s+(.+)$", new_sub.strip(), flags=re.UNICODE)
+                                mo = re.match(
+                                    rf"^([^\W\d_]{{1,3}})\s+(.+)$", old_sub.strip(), flags=re.UNICODE)
+                                mn = re.match(
+                                    rf"^([^\W\d_]{{1,3}})\s+(.+)$", new_sub.strip(), flags=re.UNICODE)
                                 if not mo or not mn:
                                     continue
                                 if mo.group(1).casefold() == short.casefold():
                                     # если хвосты совпадают по началу/слову — предлагаем замену целиком
                                     if self._norm_space_fold(rest).startswith(self._norm_space_fold(mo.group(2))[:1]):
                                         new_tail = f"{short} {mn.group(2)}"
-                                        new_chunk, changed = self._replace_in_unnamed_params_once(chunk, tok, new_tail, replace_entire_token=True)
+                                        new_chunk, changed = self._replace_in_unnamed_params_once(
+                                            chunk, tok, new_tail, replace_entire_token=True)
                                         if changed:
                                             seen_templates.add(chunk)
                                             results.append({
@@ -2016,8 +2168,10 @@ class RenameWorker(QThread):
 
     def _move_category_members(self, site: pywikibot.Site, old_name: str, new_name: str):
         family, lang = self.family, self.lang
-        old_full = _ensure_title_with_ns(old_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
-        new_full = _ensure_title_with_ns(new_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
+        old_full = _ensure_title_with_ns(
+            old_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
+        new_full = _ensure_title_with_ns(
+            new_name, family, lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
 
         # Если страница категории отсутствует, но есть участники — сообщаем и всё равно начнём перенос
         try:
@@ -2036,15 +2190,19 @@ class RenameWorker(QThread):
                     'format': 'json'
                 }
                 _rate_wait()
-                r_check = REQUEST_SESSION.get(api_check, params=params_check, timeout=20, headers=REQUEST_HEADERS)
+                r_check = REQUEST_SESSION.get(
+                    api_check, params=params_check, timeout=20, headers=REQUEST_HEADERS)
                 if r_check.status_code == 200:
                     data_check = r_check.json()
-                    has_any = bool(data_check.get('query', {}).get('categorymembers') or [])
+                    has_any = bool(data_check.get(
+                        'query', {}).get('categorymembers') or [])
                     if has_any:
                         try:
-                            self.progress.emit(f"Категория <b>{html.escape(old_full)}</b> не существует, но в ней есть содержимое — пытаемся перенести в <b>{html.escape(new_full)}</b>.")
+                            self.progress.emit(
+                                f"Категория <b>{html.escape(old_full)}</b> не существует, но в ней есть содержимое — пытаемся перенести в <b>{html.escape(new_full)}</b>.")
                         except Exception:
-                            self.progress.emit(f"Категория {old_full} не существует, но в ней есть содержимое — пытаемся перенести в {new_full}.")
+                            self.progress.emit(
+                                f"Категория {old_full} не существует, но в ней есть содержимое — пытаемся перенести в {new_full}.")
         except Exception:
             pass
 
@@ -2076,24 +2234,30 @@ class RenameWorker(QThread):
                 txt = page.text
                 # Пробуем сразу применить кэш аналогичных случаев
                 try:
-                    new_txt_cached, cnt_cached = self._apply_cached_template_rules(txt, family, lang)
+                    new_txt_cached, cnt_cached = self._apply_cached_template_rules(
+                        txt, family, lang)
                     if cnt_cached > 0 and new_txt_cached != txt:
                         for attempt in range(1, 6):
                             try:
                                 now2 = time.time()
-                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                wait2 = max(
+                                    0.0, (last_write_ts + write_min_interval) - now2)
                                 if wait2 > 0:
                                     time.sleep(wait2)
                                 page.text = new_txt_cached
-                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                page.save(
+                                    summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                write_min_interval = max(
+                                    0.2, write_min_interval * 0.9)
                                 last_write_ts = time.time()
                                 break
                             except Exception as e:
                                 msg = (str(e) or '').lower()
                                 if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                    debug(f"Template cache save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                    write_min_interval = min(
+                                        max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                    debug(
+                                        f"Template cache save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                     continue
                                 raise
                         txt = new_txt_cached
@@ -2103,32 +2267,39 @@ class RenameWorker(QThread):
                             typ = 'категория' if nsid == 14 else 'статья'
                         except Exception:
                             typ = 'страница'
-                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
+                        self.progress.emit(
+                            f'→ {new_full} : "{title}" — {typ} перенесена')
                         # Учитываем, что на странице уже была правка — чтобы не логировать далее «не найдены»
                         made_change = True
                 except Exception:
                     pass
                 visited = set()
                 # Если кэш уже внёс изменения — учитываем это
-                made_change = bool('made_change' in locals() and made_change) or False
+                made_change = bool('made_change' in locals()
+                                   and made_change) or False
                 direct_seen = False
                 # Поиск «прямых» совпадений: значение параметра равно категории (полной или «голой»)
+
                 def _find_equal_template_candidates(text_src: str, old_full_cat: str) -> list[tuple[str, str, str]]:
                     results: list[tuple[str, str, str]] = []
                     try:
                         if not old_full_cat:
                             return results
-                        old_bare = old_full_cat.split(':', 1)[1] if ':' in old_full_cat else old_full_cat
-                        new_bare = new_full.split(':', 1)[1] if ':' in new_full else new_full
+                        old_bare = old_full_cat.split(
+                            ':', 1)[1] if ':' in old_full_cat else old_full_cat
+                        new_bare = new_full.split(
+                            ':', 1)[1] if ':' in new_full else new_full
                         # Ищем как по исходным токенам, так и по HTML-экранированным вариантам (например, &quot;)
                         try:
                             import html as _html
                         except Exception:
                             _html = None
+
                         def _alts(tok: str) -> list[str]:
                             arr = [tok]
                             try:
-                                esc = _html.escape(tok, quote=True) if _html else tok
+                                esc = _html.escape(
+                                    tok, quote=True) if _html else tok
                                 if esc and esc != tok:
                                     arr.append(esc)
                             except Exception:
@@ -2141,7 +2312,8 @@ class RenameWorker(QThread):
                         for old_tok, new_tok in patterns:
                             start = 0
                             # Ищем в тексте вхождения значения параметра вида: "| old" или "| name = old"
-                            rx = re.compile(r"\|\s*(?:[^|{}=\n]+\s*=\s*)?" + re.escape(old_tok) + r"\s*(?=\||}})", re.S)
+                            rx = re.compile(
+                                r"\|\s*(?:[^|{}=\n]+\s*=\s*)?" + re.escape(old_tok) + r"\s*(?=\||}})", re.S)
                             while True:
                                 m = rx.search(text_src, start)
                                 if not m:
@@ -2152,7 +2324,8 @@ class RenameWorker(QThread):
                                 if l != -1 and r != -1 and r > l:
                                     chunk = text_src[l:r+2]
                                     if '|' in chunk and (chunk, old_tok, new_tok) not in results:
-                                        results.append((chunk, old_tok, new_tok))
+                                        results.append(
+                                            (chunk, old_tok, new_tok))
                                 start = m.end()
                     except Exception:
                         pass
@@ -2180,7 +2353,8 @@ class RenameWorker(QThread):
                         key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
                         if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
                             try:
-                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — пропущено автоматически')
                             except Exception:
                                 pass
                             continue
@@ -2195,24 +2369,30 @@ class RenameWorker(QThread):
                                 for attempt in range(1, 6):
                                     try:
                                         now2 = time.time()
-                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        wait2 = max(
+                                            0.0, (last_write_ts + write_min_interval) - now2)
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        page.save(
+                                            summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                        write_min_interval = max(
+                                            0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
                                     except Exception as e:
                                         msg = (str(e) or '').lower()
                                         if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            write_min_interval = min(
+                                                max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(
+                                                f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                             continue
                                         raise
                                 txt = new_txt
                                 try:
-                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                    self._update_template_cache_from_edit(
+                                        family, lang, tmpl, new_tmpl)
                                 except Exception:
                                     pass
                                 moved_via_template += 1
@@ -2223,20 +2403,26 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                auto_note = 'автоматически' if auto_applied == 1 else f'автоматически ({auto_applied} ' + ('вхождение' if (auto_applied % 10 == 1 and auto_applied % 100 != 11) else ('вхождения' if (2 <= auto_applied % 10 <= 4 and not 11 <= auto_applied % 100 <= 14) else 'вхождений')) + ')'
-                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена {auto_note}')
+                                auto_note = 'автоматически' if auto_applied == 1 else f'автоматически ({auto_applied} ' + ('вхождение' if (auto_applied % 10 == 1 and auto_applied % 100 != 11) else (
+                                    'вхождения' if (2 <= auto_applied % 10 <= 4 and not 11 <= auto_applied % 100 <= 14) else 'вхождений')) + ')'
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — {typ} перенесена {auto_note}')
                         except Exception as e:
-                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                            self.progress.emit(
+                                f"{title}: ошибка правки шаблона: {e}")
                         continue
                     if getattr(self, 'auto_skip_direct_all', False):
                         try:
-                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                            self.progress.emit(
+                                f'→ {new_full} : "{title}" — пропущено автоматически')
                         except Exception:
                             pass
                         continue
                     # Диалог подтверждения (с флажком автоподтверждения для полных совпадений)
-                    result = self._prompt_user_template_replace(title, tmpl, old_full, new_full, old_direct=old_token, new_direct=new_token)
-                    action = result.get('action') if isinstance(result, dict) else str(result)
+                    result = self._prompt_user_template_replace(
+                        title, tmpl, old_full, new_full, old_direct=old_token, new_direct=new_token)
+                    action = result.get('action') if isinstance(
+                        result, dict) else str(result)
                     if action == 'cancel':
                         self._stop = True
                         break
@@ -2250,8 +2436,10 @@ class RenameWorker(QThread):
                             self._save_rules_file()
                             # Логируем автоподтверждение с кратким правилом
                             try:
-                                changed = f"{old_token} → {new_token}" if 'old_token' in locals() and 'new_token' in locals() else ''
-                                msg = f"🟦 Автоподтверждение сохранено: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                changed = f"{old_token} → {new_token}" if 'old_token' in locals(
+                                ) and 'new_token' in locals() else ''
+                                msg = f"🟦 Автоподтверждение сохранено: шаблон «{name}»" + (
+                                    f" — правило: {changed}" if changed else '')
                                 self.progress.emit(msg)
                             except Exception:
                                 pass
@@ -2263,13 +2451,16 @@ class RenameWorker(QThread):
                                 key = self._norm_tmpl_key(name, family, lang)
                                 if key:
                                     self.auto_skip_templates.add(key)
-                                    self._ensure_cache_bucket(key)['skip'] = True
+                                    self._ensure_cache_bucket(
+                                        key)['skip'] = True
                                     self._save_rules_file()
                                     # Логируем с форматированием и кратким описанием правила (старое → новое)
                                     try:
                                         # Сформируем краткую сводку по прямому совпадению
-                                        changed = f"{old_token} → {new_token}" if 'old_token' in locals() and 'new_token' in locals() else ''
-                                        msg = f"🟪 Автопропуск сохранён: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                        changed = f"{old_token} → {new_token}" if 'old_token' in locals(
+                                        ) and 'new_token' in locals() else ''
+                                        msg = f"🟪 Автопропуск сохранён: шаблон «{name}»" + (
+                                            f" — правило: {changed}" if changed else '')
                                         self.progress.emit(msg)
                                     except Exception:
                                         pass
@@ -2281,7 +2472,8 @@ class RenameWorker(QThread):
                         user_decision_made = True
                     if action == 'confirm':
                         try:
-                            edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
+                            edited = str(result.get('edited_template') or '') if isinstance(
+                                result, dict) else ''
                             repl = edited if edited.strip() else tmpl.replace(old_token, new_token, 1)
                             new_tmpl = repl
                             new_txt = txt.replace(tmpl, new_tmpl, 1)
@@ -2289,24 +2481,30 @@ class RenameWorker(QThread):
                                 for attempt in range(1, 6):
                                     try:
                                         now2 = time.time()
-                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        wait2 = max(
+                                            0.0, (last_write_ts + write_min_interval) - now2)
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        page.save(
+                                            summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                        write_min_interval = max(
+                                            0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
                                     except Exception as e:
                                         msg = (str(e) or '').lower()
                                         if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            write_min_interval = min(
+                                                max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(
+                                                f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                             continue
                                         raise
                                 txt = new_txt
                                 try:
-                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                    self._update_template_cache_from_edit(
+                                        family, lang, tmpl, new_tmpl)
                                 except Exception:
                                     pass
                                 moved_via_template += 1
@@ -2316,12 +2514,15 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — {typ} перенесена')
                         except Exception as e:
-                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                            self.progress.emit(
+                                f"{title}: ошибка правки шаблона: {e}")
                     elif action == 'skip':
                         try:
-                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено пользователем')
+                            self.progress.emit(
+                                f'→ {new_full} : "{title}" — пропущено пользователем')
                         except Exception:
                             pass
 
@@ -2332,18 +2533,23 @@ class RenameWorker(QThread):
                 if not self._stop and not made_change and not direct_seen:
                     partial_seen: set[str] = set()
                     while not self._stop:
-                        cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
-                        cand_list = [c for c in cand_list if c.get('template') not in partial_seen]
+                        cand_list = self._find_template_param_partial(
+                            txt, old_full, new_full, family, lang)
+                        cand_list = [c for c in cand_list if c.get(
+                            'template') not in partial_seen]
                         if not cand_list:
                             break
                         c0 = cand_list[0]
                         partial_seen.add(str(c0.get('template')))
                         # Если этот шаблон отмечен на автопропуск — пропускаем без диалога
                         try:
-                            name_tmp, _ = self._parse_template_tokens(str(c0.get('template') or ''))
-                            key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
+                            name_tmp, _ = self._parse_template_tokens(
+                                str(c0.get('template') or ''))
+                            key_tmp = self._norm_tmpl_key(
+                                name_tmp, family, lang)
                             if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
-                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически (частичная замена)')
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — пропущено автоматически (частичная замена)')
                                 continue
                         except Exception:
                             pass
@@ -2352,11 +2558,13 @@ class RenameWorker(QThread):
                             str(c0.get('template') or ''),
                             old_full,
                             new_full,
-                            proposed_template=str(c0.get('proposed_template') or ''),
+                            proposed_template=str(
+                                c0.get('proposed_template') or ''),
                             old_sub=str(c0.get('old_sub') or ''),
                             new_sub=str(c0.get('new_sub') or ''),
                         )
-                        action = result.get('action') if isinstance(result, dict) else str(result)
+                        action = result.get('action') if isinstance(
+                            result, dict) else str(result)
                         if action == 'cancel':
                             self._stop = True
                             break
@@ -2364,7 +2572,8 @@ class RenameWorker(QThread):
                             if action == 'confirm' and isinstance(result, dict) and bool(result.get('auto_confirm_all')):
                                 self.auto_confirm_direct_all = True
                                 # Включаем auto для конкретного шаблона
-                                name, _ = self._parse_template_tokens(str(c0.get('template') or ''))
+                                name, _ = self._parse_template_tokens(
+                                    str(c0.get('template') or ''))
                                 key = self._norm_tmpl_key(name, family, lang)
                                 self._ensure_cache_bucket(key)['auto'] = True
                                 self._save_rules_file()
@@ -2372,24 +2581,30 @@ class RenameWorker(QThread):
                                     old_frag = str(c0.get('old_sub') or '')
                                     new_frag = str(c0.get('new_sub') or '')
                                     changed = f"{old_frag} → {new_frag}" if old_frag or new_frag else ''
-                                    msg = f"🟦 Автоподтверждение сохранено: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                    msg = f"🟦 Автоподтверждение сохранено: шаблон «{name}»" + (
+                                        f" — правило: {changed}" if changed else '')
                                     self.progress.emit(msg)
                                 except Exception:
                                     pass
                             elif action == 'skip' and isinstance(result, dict) and bool(result.get('auto_skip_all')):
-                                name, _ = self._parse_template_tokens(str(c0.get('template') or ''))
+                                name, _ = self._parse_template_tokens(
+                                    str(c0.get('template') or ''))
                                 key = self._norm_tmpl_key(name, family, lang)
                                 if key:
                                     self.auto_skip_templates.add(key)
                                     try:
-                                        self._ensure_cache_bucket(key)['skip'] = True
+                                        self._ensure_cache_bucket(
+                                            key)['skip'] = True
                                         self._save_rules_file()
                                         try:
                                             # Для частичных замен покажем старый/новый фрагмент, если доступны
-                                            old_frag = str(c0.get('old_sub') or '')
-                                            new_frag = str(c0.get('new_sub') or '')
+                                            old_frag = str(
+                                                c0.get('old_sub') or '')
+                                            new_frag = str(
+                                                c0.get('new_sub') or '')
                                             changed = f"{old_frag} → {new_frag}" if old_frag or new_frag else ''
-                                            msg = f"🟪 Автопропуск сохранён: шаблон «{name}»" + (f" — правило: {changed}" if changed else '')
+                                            msg = f"🟪 Автопропуск сохранён: шаблон «{name}»" + (
+                                                f" — правило: {changed}" if changed else '')
                                             self.progress.emit(msg)
                                         except Exception:
                                             pass
@@ -2399,33 +2614,42 @@ class RenameWorker(QThread):
                             pass
                         if action == 'confirm':
                             try:
-                                edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
-                                replacement = edited if edited.strip() else str(c0.get('proposed_template') or '')
+                                edited = str(result.get('edited_template') or '') if isinstance(
+                                    result, dict) else ''
+                                replacement = edited if edited.strip() else str(
+                                    c0.get('proposed_template') or '')
                                 tmpl_old = str(c0.get('template') or '')
                                 if replacement and tmpl_old and replacement != tmpl_old:
-                                    new_txt = txt.replace(tmpl_old, replacement, 1)
+                                    new_txt = txt.replace(
+                                        tmpl_old, replacement, 1)
                                     if new_txt != txt:
                                         for attempt in range(1, 6):
                                             try:
                                                 now2 = time.time()
-                                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                                wait2 = max(
+                                                    0.0, (last_write_ts + write_min_interval) - now2)
                                                 if wait2 > 0:
                                                     time.sleep(wait2)
                                                 page.text = new_txt
-                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                                page.save(
+                                                    summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                                write_min_interval = max(
+                                                    0.2, write_min_interval * 0.9)
                                                 last_write_ts = time.time()
                                                 break
                                             except Exception as e:
                                                 msg = (str(e) or '').lower()
                                                 if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                                    debug(f"Template partial save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                                    write_min_interval = min(
+                                                        max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                                    debug(
+                                                        f"Template partial save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                                     continue
                                                 raise
                                         txt = new_txt
                                         try:
-                                            self._update_template_cache_from_edit(family, lang, tmpl_old, replacement)
+                                            self._update_template_cache_from_edit(
+                                                family, lang, tmpl_old, replacement)
                                         except Exception:
                                             pass
                                         moved_via_template += 1
@@ -2435,16 +2659,20 @@ class RenameWorker(QThread):
                                             typ = 'категория' if nsid == 14 else 'статья'
                                         except Exception:
                                             typ = 'страница'
-                                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена (частичная замена)')
+                                        self.progress.emit(
+                                            f'→ {new_full} : "{title}" — {typ} перенесена (частичная замена)')
                             except Exception as e:
-                                self.progress.emit(f"{title}: ошибка правки шаблона (частично): {e}")
+                                self.progress.emit(
+                                    f"{title}: ошибка правки шаблона (частично): {e}")
                         elif action == 'skip':
                             try:
-                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено пользователем (частичная замена)')
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — пропущено пользователем (частичная замена)')
                             except Exception:
                                 pass
             except Exception as e:
-                self.progress.emit(f"{title}: ошибка обработки на ручной фазе: {e}")
+                self.progress.emit(
+                    f"{title}: ошибка обработки на ручной фазе: {e}")
 
         # Адаптивные интервалы для чтения и записи
         read_min_interval = 0.15
@@ -2471,19 +2699,23 @@ class RenameWorker(QThread):
                     pass
                 phase1_progress_logged = True
 
-            r = REQUEST_SESSION.get(api, params=params, timeout=20, headers=REQUEST_HEADERS)
+            r = REQUEST_SESSION.get(
+                api, params=params, timeout=20, headers=REQUEST_HEADERS)
             if r.status_code == 429:
                 read_min_interval = min(max(read_min_interval * 1.7, 0.6), 2.0)
                 debug(f"Read members backoff: {read_min_interval:.2f}s")
                 continue
             if r.status_code != 200:
                 try:
-                    self.progress.emit(f"Ошибка API при получении участников категории <b>{html.escape(old_full)}</b>: HTTP {r.status_code}")
+                    self.progress.emit(
+                        f"Ошибка API при получении участников категории <b>{html.escape(old_full)}</b>: HTTP {r.status_code}")
                 except Exception:
-                    self.progress.emit(f"Ошибка API при получении участников категории {old_full}: HTTP {r.status_code}")
+                    self.progress.emit(
+                        f"Ошибка API при получении участников категории {old_full}: HTTP {r.status_code}")
                 break
             data = r.json()
-            members = [m.get('title') for m in data.get('query', {}).get('categorymembers', []) if m.get('title')]
+            members = [m.get('title') for m in data.get('query', {}).get(
+                'categorymembers', []) if m.get('title')]
 
             # Режим «только по шаблонам»: начинаем обрабатывать сразу, без лишнего чтения страниц в Фазе 1
             if self.find_in_templates and not self.phase1_enabled:
@@ -2508,7 +2740,8 @@ class RenameWorker(QThread):
                     except Exception:
                         ns_id = None
 
-                    if isinstance(ns_id, int) and ns_id in (10, 828):  # Template:, Module:
+                    # Template:, Module:
+                    if isinstance(ns_id, int) and ns_id in (10, 828):
                         if title.endswith('/doc'):
                             base = title[:-4]
                             targets.add(base)
@@ -2525,27 +2758,33 @@ class RenameWorker(QThread):
                             txt = page.text
                             new_txt, cnt = (txt, 0)
                             if self.phase1_enabled:
-                                new_txt, cnt = self._replace_category_links_in_text(txt, family, lang, old_full, new_full)
+                                new_txt, cnt = self._replace_category_links_in_text(
+                                    txt, family, lang, old_full, new_full)
                             if cnt > 0 and new_txt != txt:
                                 # сохранение с адаптивным бэкоффом
                                 saved = False
                                 for attempt in range(1, 6):
                                     try:
                                         now2 = time.time()
-                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        wait2 = max(
+                                            0.0, (last_write_ts + write_min_interval) - now2)
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]]", minor=True)
-                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        page.save(
+                                            summary=f"[[{old_full}]] → [[{new_full}]]", minor=True)
+                                        write_min_interval = max(
+                                            0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         saved = True
                                         break
                                     except Exception as e:
                                         msg = (str(e) or '').lower()
                                         if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                            debug(f"Move member save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            write_min_interval = min(
+                                                max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(
+                                                f"Move member save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                             continue
                                         raise
                                 if not saved:
@@ -2559,11 +2798,14 @@ class RenameWorker(QThread):
                                 except Exception:
                                     typ = 'страница'
                                 try:
-                                    self.progress.emit(f'▪️ {html.escape(new_full)} : "{html.escape(t)}" — {typ} перенесена')
+                                    self.progress.emit(
+                                        f'▪️ {html.escape(new_full)} : "{html.escape(t)}" — {typ} перенесена')
                                 except Exception:
-                                    self.progress.emit(f'▪️ {new_full} : "{t}" — {typ} перенесена')
+                                    self.progress.emit(
+                                        f'▪️ {new_full} : "{t}" — {typ} перенесена')
                         except Exception as e:
-                            self.progress.emit(f"{t}: ошибка переноса категории: {e}")
+                            self.progress.emit(
+                                f"{t}: ошибка переноса категории: {e}")
                     # Если правки по Фазе 1 не было, а Фаза 2 включена — добавляем в backlog
                     if not any_changed and self.find_in_templates and title not in backlog_seen:
                         backlog.append(title)
@@ -2576,7 +2818,8 @@ class RenameWorker(QThread):
                     scanned_phase1_count += 1
                     if scanned_phase1_count % 10 == 0:
                         try:
-                            self.progress.emit(f"🔹 Проверено {scanned_phase1_count}, выполнено замен: {moved_direct}")
+                            self.progress.emit(
+                                f"🔹 Проверено {scanned_phase1_count}, выполнено замен: {moved_direct}")
                         except Exception:
                             pass
             if 'continue' in data:
@@ -2588,9 +2831,11 @@ class RenameWorker(QThread):
             return
 
         if backlog and self.find_in_templates:
-            self.progress.emit(f"Не удалось перенести автоматически: {len(backlog)} страниц(ы). Требуются ручные действия.")
+            self.progress.emit(
+                f"Не удалось перенести автоматически: {len(backlog)} страниц(ы). Требуются ручные действия.")
             try:
-                self.progress.emit("Начинаем ручную фазу (параметры шаблонов)…")
+                self.progress.emit(
+                    "Начинаем ручную фазу (параметры шаблонов)…")
             except Exception:
                 pass
 
@@ -2605,24 +2850,30 @@ class RenameWorker(QThread):
                 txt = page.text
                 # Сразу пытаемся применить сохранённые правила (template_rules.json) перед показом диалогов
                 try:
-                    new_txt_cached, cnt_cached = self._apply_cached_template_rules(txt, family, lang)
+                    new_txt_cached, cnt_cached = self._apply_cached_template_rules(
+                        txt, family, lang)
                     if cnt_cached > 0 and new_txt_cached != txt:
                         for attempt in range(1, 6):
                             try:
                                 now2 = time.time()
-                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                wait2 = max(
+                                    0.0, (last_write_ts + write_min_interval) - now2)
                                 if wait2 > 0:
                                     time.sleep(wait2)
                                 page.text = new_txt_cached
-                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                page.save(
+                                    summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                write_min_interval = max(
+                                    0.2, write_min_interval * 0.9)
                                 last_write_ts = time.time()
                                 break
                             except Exception as e:
                                 msg = (str(e) or '').lower()
                                 if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                    debug(f"Template cache save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                    write_min_interval = min(
+                                        max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                    debug(
+                                        f"Template cache save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                     continue
                                 raise
                         txt = new_txt_cached
@@ -2632,7 +2883,8 @@ class RenameWorker(QThread):
                             typ = 'категория' if nsid == 14 else 'статья'
                         except Exception:
                             typ = 'страница'
-                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
+                        self.progress.emit(
+                            f'→ {new_full} : "{title}" — {typ} перенесена')
                         made_change = True
                 except Exception:
                     pass
@@ -2640,21 +2892,26 @@ class RenameWorker(QThread):
                 made_change = False
                 auto_applied_title = 0
                 # 1) Прямые указания полной категории в шаблонах (равенство значения параметра)
+
                 def _find_equal_template_candidates(text_src: str, old_full_cat: str) -> list[tuple[str, str, str]]:
                     results: list[tuple[str, str, str]] = []
                     try:
                         if not old_full_cat:
                             return results
-                        old_bare = old_full_cat.split(':', 1)[1] if ':' in old_full_cat else old_full_cat
-                        new_bare = new_full.split(':', 1)[1] if ':' in new_full else new_full
+                        old_bare = old_full_cat.split(
+                            ':', 1)[1] if ':' in old_full_cat else old_full_cat
+                        new_bare = new_full.split(
+                            ':', 1)[1] if ':' in new_full else new_full
                         try:
                             import html as _html
                         except Exception:
                             _html = None
+
                         def _alts(tok: str) -> list[str]:
                             arr = [tok]
                             try:
-                                esc = _html.escape(tok, quote=True) if _html else tok
+                                esc = _html.escape(
+                                    tok, quote=True) if _html else tok
                                 if esc and esc != tok:
                                     arr.append(esc)
                             except Exception:
@@ -2666,7 +2923,8 @@ class RenameWorker(QThread):
                                 patterns.append((o_alt, n))
                         for old_tok, new_tok in patterns:
                             start = 0
-                            rx = re.compile(r"\|\s*(?:[^|{}=\n]+\s*=\s*)?" + re.escape(old_tok) + r"\s*(?=\||}})", re.S)
+                            rx = re.compile(
+                                r"\|\s*(?:[^|{}=\n]+\s*=\s*)?" + re.escape(old_tok) + r"\s*(?=\||}})", re.S)
                             while True:
                                 m = rx.search(text_src, start)
                                 if not m:
@@ -2677,7 +2935,8 @@ class RenameWorker(QThread):
                                 if l != -1 and r != -1 and r > l:
                                     chunk = text_src[l:r+2]
                                     if '|' in chunk and (chunk, old_tok, new_tok) not in results:
-                                        results.append((chunk, old_tok, new_tok))
+                                        results.append(
+                                            (chunk, old_tok, new_tok))
                                 start = m.end()
                     except Exception:
                         pass
@@ -2700,7 +2959,8 @@ class RenameWorker(QThread):
                         key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
                         if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
                             try:
-                                self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — пропущено автоматически')
                             except Exception:
                                 pass
                             continue
@@ -2715,24 +2975,30 @@ class RenameWorker(QThread):
                                 for attempt in range(1, 6):
                                     try:
                                         now2 = time.time()
-                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        wait2 = max(
+                                            0.0, (last_write_ts + write_min_interval) - now2)
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        page.save(
+                                            summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                        write_min_interval = max(
+                                            0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
                                     except Exception as e:
                                         msg = (str(e) or '').lower()
                                         if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            write_min_interval = min(
+                                                max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(
+                                                f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                             continue
                                         raise
                                 txt = new_txt
                                 try:
-                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                    self._update_template_cache_from_edit(
+                                        family, lang, tmpl, new_tmpl)
                                 except Exception:
                                     pass
                                 moved_via_template += 1
@@ -2743,21 +3009,27 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                auto_note = 'автоматически' if auto_applied_title == 1 else f'автоматически ({auto_applied_title} ' + ('вхождение' if (auto_applied_title % 10 == 1 and auto_applied_title % 100 != 11) else ('вхождения' if (2 <= auto_applied_title % 10 <= 4 and not 11 <= auto_applied_title % 100 <= 14) else 'вхождений')) + ')'
-                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена {auto_note}')
+                                auto_note = 'автоматически' if auto_applied_title == 1 else f'автоматически ({auto_applied_title} ' + ('вхождение' if (auto_applied_title % 10 == 1 and auto_applied_title % 100 != 11) else (
+                                    'вхождения' if (2 <= auto_applied_title % 10 <= 4 and not 11 <= auto_applied_title % 100 <= 14) else 'вхождений')) + ')'
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — {typ} перенесена {auto_note}')
                         except Exception as e:
-                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                            self.progress.emit(
+                                f"{title}: ошибка правки шаблона: {e}")
                         continue
                     # Глобальный автопропуск
                     if getattr(self, 'auto_skip_direct_all', False):
                         try:
-                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически')
+                            self.progress.emit(
+                                f'→ {new_full} : "{title}" — пропущено автоматически')
                         except Exception:
                             pass
                         continue
                     # Диалог
-                    result = self._prompt_user_template_replace(title, tmpl, old_full, new_full, old_direct=old_token, new_direct=new_token)
-                    action = result.get('action') if isinstance(result, dict) else str(result)
+                    result = self._prompt_user_template_replace(
+                        title, tmpl, old_full, new_full, old_direct=old_token, new_direct=new_token)
+                    action = result.get('action') if isinstance(
+                        result, dict) else str(result)
                     if action == 'cancel':
                         self._stop = True
                         break
@@ -2773,7 +3045,8 @@ class RenameWorker(QThread):
                                 # Лог
                                 try:
                                     changed = f"{old_token} → {new_token}"
-                                    self.progress.emit(f"🟦 Автоподтверждение сохранено: шаблон «{name}» — правило: {changed}")
+                                    self.progress.emit(
+                                        f"🟦 Автоподтверждение сохранено: шаблон «{name}» — правило: {changed}")
                                 except Exception:
                                     pass
                             except Exception:
@@ -2785,11 +3058,13 @@ class RenameWorker(QThread):
                                 key = self._norm_tmpl_key(name, family, lang)
                                 if key:
                                     self.auto_skip_templates.add(key)
-                                    self._ensure_cache_bucket(key)['skip'] = True
+                                    self._ensure_cache_bucket(
+                                        key)['skip'] = True
                                     self._save_rules_file()
                                     try:
                                         changed = f"{old_token} → {new_token}"
-                                        self.progress.emit(f"🟪 Автопропуск сохранён: шаблон «{name}» — правило: {changed}")
+                                        self.progress.emit(
+                                            f"🟪 Автопропуск сохранён: шаблон «{name}» — правило: {changed}")
                                     except Exception:
                                         pass
                             except Exception:
@@ -2798,7 +3073,8 @@ class RenameWorker(QThread):
                         pass
                     if action == 'confirm':
                         try:
-                            edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
+                            edited = str(result.get('edited_template') or '') if isinstance(
+                                result, dict) else ''
                             repl = edited if edited.strip() else tmpl.replace(old_token, new_token, 1)
                             new_tmpl = repl
                             new_txt = txt.replace(tmpl, new_tmpl, 1)
@@ -2806,24 +3082,30 @@ class RenameWorker(QThread):
                                 for attempt in range(1, 6):
                                     try:
                                         now2 = time.time()
-                                        wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                        wait2 = max(
+                                            0.0, (last_write_ts + write_min_interval) - now2)
                                         if wait2 > 0:
                                             time.sleep(wait2)
                                         page.text = new_txt
-                                        page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                        write_min_interval = max(0.2, write_min_interval * 0.9)
+                                        page.save(
+                                            summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                        write_min_interval = max(
+                                            0.2, write_min_interval * 0.9)
                                         last_write_ts = time.time()
                                         break
                                     except Exception as e:
                                         msg = (str(e) or '').lower()
                                         if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                            write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                            debug(f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                            write_min_interval = min(
+                                                max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                            debug(
+                                                f"Template save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                             continue
                                         raise
                                 txt = new_txt
                                 try:
-                                    self._update_template_cache_from_edit(family, lang, tmpl, new_tmpl)
+                                    self._update_template_cache_from_edit(
+                                        family, lang, tmpl, new_tmpl)
                                 except Exception:
                                     pass
                                 moved_via_template += 1
@@ -2833,13 +3115,16 @@ class RenameWorker(QThread):
                                     typ = 'категория' if nsid == 14 else 'статья'
                                 except Exception:
                                     typ = 'страница'
-                                self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена')
+                                self.progress.emit(
+                                    f'→ {new_full} : "{title}" — {typ} перенесена')
                         except Exception as e:
-                            self.progress.emit(f"{title}: ошибка правки шаблона: {e}")
+                            self.progress.emit(
+                                f"{title}: ошибка правки шаблона: {e}")
                     elif action == 'skip':
                         user_decision_made = True
                         try:
-                            self.progress.emit(f'→ {new_full} : "{title}" — пропущено пользователем')
+                            self.progress.emit(
+                                f'→ {new_full} : "{title}" — пропущено пользователем')
                         except Exception:
                             pass
 
@@ -2847,13 +3132,16 @@ class RenameWorker(QThread):
                 if not self._stop and not made_change:
                     partial_seen: set[str] = set()
                     while not self._stop:
-                        cand_list = self._find_template_param_partial(txt, old_full, new_full, family, lang)
+                        cand_list = self._find_template_param_partial(
+                            txt, old_full, new_full, family, lang)
                         # уберём уже показанные кандидаты и те, что уже шли как прямые равенства
-                        cand_list = [c for c in cand_list if c.get('template') not in partial_seen and c.get('template') not in visited]
+                        cand_list = [c for c in cand_list if c.get(
+                            'template') not in partial_seen and c.get('template') not in visited]
                         if not cand_list:
                             # прямых и частичных совпадений не найдено — не логируем, если уже было решение или отсутствовали кандидаты
                             if not bool(locals().get('user_decision_made', False)) and not bool(locals().get('any_template_candidates_seen', False)):
-                                self.progress.emit(f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
+                                self.progress.emit(
+                                    f"{title}: прямое указание категории в параметрах и совпадения по частям не найдены")
                             break
                         try:
                             any_template_candidates_seen = True
@@ -2863,11 +3151,14 @@ class RenameWorker(QThread):
                         partial_seen.add(str(c0.get('template')))
                         # Если этот шаблон отмечен на автопропуск — пропускаем без диалога (частичная замена)
                         try:
-                            name_tmp, _ = self._parse_template_tokens(str(c0.get('template') or ''))
-                            key_tmp = self._norm_tmpl_key(name_tmp, family, lang)
+                            name_tmp, _ = self._parse_template_tokens(
+                                str(c0.get('template') or ''))
+                            key_tmp = self._norm_tmpl_key(
+                                name_tmp, family, lang)
                             if key_tmp and key_tmp in getattr(self, 'auto_skip_templates', set()):
                                 try:
-                                    self.progress.emit(f'→ {new_full} : "{title}" — пропущено автоматически (частичная замена)')
+                                    self.progress.emit(
+                                        f'→ {new_full} : "{title}" — пропущено автоматически (частичная замена)')
                                 except Exception:
                                     pass
                                 continue
@@ -2878,39 +3169,49 @@ class RenameWorker(QThread):
                             str(c0.get('template') or ''),
                             old_full,
                             new_full,
-                            proposed_template=str(c0.get('proposed_template') or ''),
+                            proposed_template=str(
+                                c0.get('proposed_template') or ''),
                             old_sub=str(c0.get('old_sub') or ''),
                             new_sub=str(c0.get('new_sub') or ''),
                         )
-                        action = result.get('action') if isinstance(result, dict) else str(result)
+                        action = result.get('action') if isinstance(
+                            result, dict) else str(result)
                         if action == 'cancel':
                             self._stop = True
                             break
                         if action == 'confirm':
                             try:
-                                edited = str(result.get('edited_template') or '') if isinstance(result, dict) else ''
-                                replacement = edited if edited.strip() else str(c0.get('proposed_template') or '')
+                                edited = str(result.get('edited_template') or '') if isinstance(
+                                    result, dict) else ''
+                                replacement = edited if edited.strip() else str(
+                                    c0.get('proposed_template') or '')
                                 tmpl_old = str(c0.get('template') or '')
                                 if replacement and tmpl_old and replacement != tmpl_old:
-                                    new_txt = txt.replace(tmpl_old, replacement, 1)
+                                    new_txt = txt.replace(
+                                        tmpl_old, replacement, 1)
                                     if new_txt != txt:
                                         # сохранение с адаптивным бэкоффом
                                         for attempt in range(1, 6):
                                             try:
                                                 now2 = time.time()
-                                                wait2 = max(0.0, (last_write_ts + write_min_interval) - now2)
+                                                wait2 = max(
+                                                    0.0, (last_write_ts + write_min_interval) - now2)
                                                 if wait2 > 0:
                                                     time.sleep(wait2)
                                                 page.text = new_txt
-                                                page.save(summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
-                                                write_min_interval = max(0.2, write_min_interval * 0.9)
+                                                page.save(
+                                                    summary=f"[[{old_full}]] → [[{new_full}]] — исправление категоризации через параметр шаблона", minor=True)
+                                                write_min_interval = max(
+                                                    0.2, write_min_interval * 0.9)
                                                 last_write_ts = time.time()
                                                 break
                                             except Exception as e:
                                                 msg = (str(e) or '').lower()
                                                 if any(x in msg for x in ('429', 'too many requests', 'ratelimit', 'rate limit', 'maxlag', 'readonly')) and attempt < 5:
-                                                    write_min_interval = min(max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
-                                                    debug(f"Template partial save backoff: {write_min_interval:.2f}s · attempt {attempt}")
+                                                    write_min_interval = min(
+                                                        max(write_min_interval * 1.5, 0.6 * attempt), 2.5)
+                                                    debug(
+                                                        f"Template partial save backoff: {write_min_interval:.2f}s · attempt {attempt}")
                                                     continue
                                                 raise
                                         txt = new_txt
@@ -2921,11 +3222,14 @@ class RenameWorker(QThread):
                                             typ = 'категория' if nsid == 14 else 'статья'
                                         except Exception:
                                             typ = 'страница'
-                                        self.progress.emit(f'→ {new_full} : "{title}" — {typ} перенесена (частичная замена)')
+                                        self.progress.emit(
+                                            f'→ {new_full} : "{title}" — {typ} перенесена (частичная замена)')
                             except Exception as e:
-                                self.progress.emit(f"{title}: ошибка правки шаблона (частично): {e}")
+                                self.progress.emit(
+                                    f"{title}: ошибка правки шаблона (частично): {e}")
             except Exception as e:
-                self.progress.emit(f"{title}: ошибка обработки на ручной фазе: {e}")
+                self.progress.emit(
+                    f"{title}: ошибка обработки на ручной фазе: {e}")
 
         if self._stop:
             return
@@ -2943,11 +3247,13 @@ class RenameWorker(QThread):
             }
             while True:
                 _rate_wait()
-                r2 = REQUEST_SESSION.get(api, params=params2, timeout=20, headers=REQUEST_HEADERS)
+                r2 = REQUEST_SESSION.get(
+                    api, params=params2, timeout=20, headers=REQUEST_HEADERS)
                 if r2.status_code != 200:
                     break
                 data2 = r2.json()
-                remaining += len(data2.get('query', {}).get('categorymembers', []) or [])
+                remaining += len(data2.get('query', {}
+                                           ).get('categorymembers', []) or [])
                 if 'continue' in data2:
                     params2.update(data2['continue'])
                 else:
@@ -2960,10 +3266,12 @@ class RenameWorker(QThread):
             "✅ Готово:\n"
             f"— прямые замены: <b>{moved_direct}</b>,\n"
             f"— через параметры шаблонов: <b>{moved_via_template}</b>,\n"
-            f"— осталось: <b>{remaining if remaining>=0 else 'неизвестно'}</b>."
+            f"— осталось: <b>{remaining if remaining >= 0 else 'неизвестно'}</b>."
         )
 
 # ===== Login Worker =====
+
+
 class LoginWorker(QThread):
     success = Signal(str, str, str)
     failure = Signal(str)
@@ -2977,7 +3285,8 @@ class LoginWorker(QThread):
 
     def run(self):
         try:
-            write_pwb_credentials(self.lang, self.username, self.password, self.family)
+            write_pwb_credentials(self.lang, self.username,
+                                  self.password, self.family)
             cfg_dir = apply_pwb_config(self.lang, self.family)
             _delete_all_cookies(cfg_dir)
             reset_pywikibot_session(self.lang)
@@ -3002,12 +3311,14 @@ class LoginWorker(QThread):
             except Exception:
                 usr = None
             if not usr:
-                raise Exception('Сервер не вернул имя авторизованного пользователя')
+                raise Exception(
+                    'Сервер не вернул имя авторизованного пользователя')
             self.success.emit(self.username, self.lang, self.family)
         except Exception as e:
             self.failure.emit(f"{type(e).__name__}: {e}")
 
 # ===== Main Window =====
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -3043,14 +3354,14 @@ class MainWindow(QMainWindow):
 
         # Инициализируем файл правил замен заранее (чтобы первая попытка открытия не падала)
         try:
-            self._rules_file_path = os.path.join(_dist_configs_dir(), 'template_rules.json')
+            self._rules_file_path = os.path.join(
+                _dist_configs_dir(), 'template_rules.json')
             os.makedirs(os.path.dirname(self._rules_file_path), exist_ok=True)
             if not os.path.exists(self._rules_file_path):
                 with open(self._rules_file_path, 'w', encoding='utf-8') as f:
                     f.write('{}')
         except Exception:
             pass
-
 
     def _add_info_button(self, host_layout, text: str, inline: bool = False):
         """Insert an ℹ button.
@@ -3065,7 +3376,8 @@ class MainWindow(QMainWindow):
         btn.setText('❔')
         btn.setAutoRaise(True)
         btn.setToolTip(text)
-        btn.clicked.connect(lambda _=None, t=text: QMessageBox.information(self, 'Справка', t))
+        btn.clicked.connect(
+            lambda _=None, t=text: QMessageBox.information(self, 'Справка', t))
 
         if isinstance(host_layout, QHBoxLayout):
             if inline:
@@ -3085,16 +3397,19 @@ class MainWindow(QMainWindow):
             host_layout.insertLayout(0, row)
         return btn
 
-
     def init_auth_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         try:
-            tab.setStyleSheet("QWidget { font-size: 13px; } QLineEdit, QComboBox, QPushButton { min-height: 30px; }")
+            tab.setStyleSheet(
+                "QWidget { font-size: 13px; } QLineEdit, QComboBox, QPushButton { min-height: 30px; }")
         except Exception:
             pass
-        self.user_edit = QLineEdit(); self.user_edit.setPlaceholderText('Имя пользователя')
-        self.pass_edit = QLineEdit(); self.pass_edit.setPlaceholderText('Пароль'); self.pass_edit.setEchoMode(QLineEdit.Password)
+        self.user_edit = QLineEdit()
+        self.user_edit.setPlaceholderText('Имя пользователя')
+        self.pass_edit = QLineEdit()
+        self.pass_edit.setPlaceholderText('Пароль')
+        self.pass_edit.setEchoMode(QLineEdit.Password)
 
         layout_form = QVBoxLayout()
         layout_form.setAlignment(Qt.AlignHCenter)
@@ -3105,7 +3420,6 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(2)
         layout.setContentsMargins(0, 14, 0, 14)
-
 
         lang_help = (
             'Можно вручную ввести любой код языка.\n'
@@ -3119,7 +3433,8 @@ class MainWindow(QMainWindow):
             pass
         lang_label = QLabel('Язык вики:')
         row_lang.addWidget(lang_label)
-        self.lang_combo = QComboBox(); self.lang_combo.setEditable(True)
+        self.lang_combo = QComboBox()
+        self.lang_combo.setEditable(True)
         self.lang_combo.addItems(['ru', 'uk', 'be', 'en', 'fr', 'es', 'de'])
         self.lang_combo.setCurrentText('ru')
         self.lang_combo.setMaximumWidth(250)
@@ -3127,13 +3442,15 @@ class MainWindow(QMainWindow):
         self.lang_combo.currentTextChanged.connect(self._on_lang_change)
         row_lang.addWidget(self.lang_combo)
 
-        info_btn = QToolButton(); info_btn.setText('❔'); info_btn.setAutoRaise(True)
+        info_btn = QToolButton()
+        info_btn.setText('❔')
+        info_btn.setAutoRaise(True)
         info_btn.setToolTip(lang_help)
-        info_btn.clicked.connect(lambda _=None: QMessageBox.information(self, 'Справка', lang_help))
+        info_btn.clicked.connect(
+            lambda _=None: QMessageBox.information(self, 'Справка', lang_help))
         row_lang.addWidget(info_btn)
         layout_form.addLayout(row_lang)
         layout_form.setAlignment(row_lang, Qt.AlignHCenter)
-
 
         fam_help = (
             'Выберите проект: Wikipedia, Commons или иной (Wikibooks, Wiktionary, Wikiquote, Wikisource, '
@@ -3149,7 +3466,8 @@ class MainWindow(QMainWindow):
             pass
         fam_label = QLabel('Проект:')
         row_fam.addWidget(fam_label)
-        self.family_combo = QComboBox(); self.family_combo.setEditable(False)
+        self.family_combo = QComboBox()
+        self.family_combo.setEditable(False)
 
         primary = ['wikipedia', 'commons']
         others = sorted([
@@ -3166,19 +3484,26 @@ class MainWindow(QMainWindow):
         self.family_combo.setCurrentText('wikipedia')
         self.family_combo.setMaximumWidth(250)
         row_fam.addWidget(self.family_combo)
-        fam_btn = QToolButton(); fam_btn.setText('❔'); fam_btn.setAutoRaise(True)
+        fam_btn = QToolButton()
+        fam_btn.setText('❔')
+        fam_btn.setAutoRaise(True)
         fam_btn.setToolTip(fam_help)
-        fam_btn.clicked.connect(lambda _=None: QMessageBox.information(self, 'Справка', fam_help))
+        fam_btn.clicked.connect(
+            lambda _=None: QMessageBox.information(self, 'Справка', fam_help))
         row_fam.addWidget(fam_btn)
         layout_form.addLayout(row_fam)
         layout_form.setAlignment(row_fam, Qt.AlignHCenter)
 
         try:
             self.family_combo.currentTextChanged.connect(lambda fam: [
-                _populate_ns_combo(self.ns_combo_parse, fam, (self.lang_combo.currentText() or 'ru')),
-                _populate_ns_combo(self.ns_combo_replace, fam, (self.lang_combo.currentText() or 'ru')),
-                _populate_ns_combo(self.ns_combo_create, fam, (self.lang_combo.currentText() or 'ru')),
-                _populate_ns_combo(self.ns_combo_rename, fam, (self.lang_combo.currentText() or 'ru')),
+                _populate_ns_combo(self.ns_combo_parse, fam,
+                                   (self.lang_combo.currentText() or 'ru')),
+                _populate_ns_combo(self.ns_combo_replace, fam,
+                                   (self.lang_combo.currentText() or 'ru')),
+                _populate_ns_combo(self.ns_combo_create, fam,
+                                   (self.lang_combo.currentText() or 'ru')),
+                _populate_ns_combo(self.ns_combo_rename, fam,
+                                   (self.lang_combo.currentText() or 'ru')),
                 _adjust_combo_popup_width(self.ns_combo_parse),
                 _adjust_combo_popup_width(self.ns_combo_replace),
                 _adjust_combo_popup_width(self.ns_combo_create),
@@ -3186,7 +3511,6 @@ class MainWindow(QMainWindow):
             ])
         except Exception:
             pass
-
 
         self.user_edit.setMinimumWidth(280)
         self.pass_edit.setMinimumWidth(280)
@@ -3209,7 +3533,8 @@ class MainWindow(QMainWindow):
 
         try:
             self.status_label.setTextFormat(Qt.RichText)
-            self.status_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            self.status_label.setTextInteractionFlags(
+                Qt.TextBrowserInteraction)
             self.status_label.setOpenExternalLinks(True)
         except Exception:
             pass
@@ -3225,7 +3550,8 @@ class MainWindow(QMainWindow):
 
         row_debug = QHBoxLayout()
         row_debug.addStretch()
-        dbg_btn = QPushButton('Debug'); dbg_btn.setFixedWidth(60)
+        dbg_btn = QPushButton('Debug')
+        dbg_btn.setFixedWidth(60)
         dbg_btn.clicked.connect(self.show_debug)
         row_debug.addWidget(dbg_btn)
         upd_btn = QPushButton('Проверить обновления')
@@ -3233,10 +3559,6 @@ class MainWindow(QMainWindow):
         row_debug.addWidget(upd_btn)
         layout.addLayout(row_debug)
         self.tabs.addTab(tab, 'Авторизация')
-
-
-
- 
 
     def _apply_cred_style(self, ok: bool):
         css_ok = 'background-color:#d4edda'
@@ -3248,7 +3570,8 @@ class MainWindow(QMainWindow):
         self.lang_combo.setEnabled(not ok)
         self.login_btn.setVisible(not ok)
         self.switch_btn.setVisible(ok)
-        self.status_label.setText('Авторизовано' if ok else 'Авторизация (pywikibot)')
+        self.status_label.setText(
+            'Авторизовано' if ok else 'Авторизация (pywikibot)')
         if ok:
             self.current_user = self.user_edit.text().strip()
             self.current_lang = (self.lang_combo.currentText() or 'ru').strip()
@@ -3257,15 +3580,18 @@ class MainWindow(QMainWindow):
         try:
             debug('Проверка обновлений...')
             _rate_wait()
-            r = REQUEST_SESSION.get(GITHUB_API_RELEASES, headers=REQUEST_HEADERS, timeout=10)
+            r = REQUEST_SESSION.get(
+                GITHUB_API_RELEASES, headers=REQUEST_HEADERS, timeout=10)
             if r.status_code != 200:
                 debug(f'GitHub API status {r.status_code}')
-                QMessageBox.information(self, 'Проверка обновлений', f'Не удалось проверить обновления. Текущая версия: {APP_VERSION}. Откроем страницу релизов.')
+                QMessageBox.information(
+                    self, 'Проверка обновлений', f'Не удалось проверить обновления. Текущая версия: {APP_VERSION}. Откроем страницу релизов.')
                 QDesktopServices.openUrl(QUrl(RELEASES_URL))
                 return
             data = r.json() or []
             if not isinstance(data, list) or not data:
-                QMessageBox.information(self, 'Проверка обновлений', f'Пока нет опубликованных релизов. Текущая версия: {APP_VERSION}. Откроем страницу.')
+                QMessageBox.information(
+                    self, 'Проверка обновлений', f'Пока нет опубликованных релизов. Текущая версия: {APP_VERSION}. Откроем страницу.')
                 QDesktopServices.openUrl(QUrl(RELEASES_URL))
                 return
             latest = None
@@ -3276,13 +3602,15 @@ class MainWindow(QMainWindow):
                 latest = rel
                 break
             if not latest:
-                QMessageBox.information(self, 'Проверка обновлений', f'Подходящих релизов не найдено. Текущая версия: {APP_VERSION}.')
+                QMessageBox.information(
+                    self, 'Проверка обновлений', f'Подходящих релизов не найдено. Текущая версия: {APP_VERSION}.')
                 return
             tag = (latest.get('tag_name') or '').strip()
             name = (latest.get('name') or tag or 'Новый релиз')
             html_url = (latest.get('html_url') or RELEASES_URL)
             # Форматируем дату публикации
-            published = (latest.get('published_at') or latest.get('created_at') or '').strip()
+            published = (latest.get('published_at')
+                         or latest.get('created_at') or '').strip()
             date_str = ''
             if published:
                 try:
@@ -3291,9 +3619,11 @@ class MainWindow(QMainWindow):
                 except Exception:
                     date_str = published
             # Сравнение версий: поддержка числовых (0.1, 1.2.3) и betaN
+
             def _num(ver: str):
                 m = re.search(r"(\d+(?:\.\d+)+|\d+)", ver or '')
                 return [int(x) for x in m.group(1).split('.')] if m else None
+
             def _beta(ver: str):
                 m = re.search(r"beta\s*(\d+)", (ver or ''), re.I)
                 return int(m.group(1)) if m else None
@@ -3330,7 +3660,8 @@ class MainWindow(QMainWindow):
                     f'Актуальная версия: {remote or name}\n'
                     f'Открыть страницу релизов?'
                 )
-                res = QMessageBox.question(self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
+                res = QMessageBox.question(
+                    self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
                 if res == QMessageBox.Yes:
                     QDesktopServices.openUrl(QUrl(html_url))
             elif cmp_res < 0:
@@ -3342,7 +3673,8 @@ class MainWindow(QMainWindow):
                     f'Актуальная версия: {remote or name}\n'
                     f'Открыть страницу релизов?'
                 )
-                res = QMessageBox.question(self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
+                res = QMessageBox.question(
+                    self, 'Проверить обновления', msg, QMessageBox.Yes | QMessageBox.No)
                 if res == QMessageBox.Yes:
                     QDesktopServices.openUrl(QUrl(html_url))
             elif cmp_res > 0:
@@ -3362,7 +3694,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, 'Проверить обновления', msg)
         except Exception as e:
             debug(f'Ошибка проверки обновлений: {e}')
-            QMessageBox.information(self, 'Проверка обновлений', f'Произошла ошибка. Текущая версия: {APP_VERSION}. Откроем страницу релизов.')
+            QMessageBox.information(
+                self, 'Проверка обновлений', f'Произошла ошибка. Текущая версия: {APP_VERSION}. Откроем страницу релизов.')
             QDesktopServices.openUrl(QUrl(RELEASES_URL))
 
     def _set_awb_ui(self, has_awb: bool, note: str | None = None):
@@ -3393,7 +3726,8 @@ class MainWindow(QMainWindow):
         awb_url = build_project_awb_url(fam, lang)
         if has_awb:
             if is_bypass_awb():
-                self.status_label.setText(f'Авторизовано · <a href="{awb_url}">AWB</a>: обход включён')
+                self.status_label.setText(
+                    f'Авторизовано · <a href="{awb_url}">AWB</a>: обход включён')
             else:
                 text = 'есть'
                 try:
@@ -3401,9 +3735,11 @@ class MainWindow(QMainWindow):
                         text = 'не требуются на этой вики'
                 except Exception:
                     pass
-                self.status_label.setText(f'Авторизовано · <a href="{awb_url}">AWB</a>: {text}')
+                self.status_label.setText(
+                    f'Авторизовано · <a href="{awb_url}">AWB</a>: {text}')
         else:
-            self.status_label.setText(f'Авторизовано. Требуется получить доступ к <a href="{awb_url}">AWB</a>')
+            self.status_label.setText(
+                f'Авторизовано. Требуется получить доступ к <a href="{awb_url}">AWB</a>')
 
         for btn_name in ('replace_btn', 'create_btn', 'rename_btn'):
             try:
@@ -3434,7 +3770,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, 'OK', 'Авторизация прошла успешно.')
 
         try:
-            self.raise_(); self.activateWindow()
+            self.raise_()
+            self.activateWindow()
         except Exception:
             pass
 
@@ -3449,7 +3786,8 @@ class MainWindow(QMainWindow):
         pwd = self.pass_edit.text().strip()
         lang = (self.lang_combo.currentText() or 'ru').strip()
         if not user or not pwd:
-            QMessageBox.warning(self, 'Ошибка', 'Введите имя пользователя и пароль.')
+            QMessageBox.warning(
+                self, 'Ошибка', 'Введите имя пользователя и пароль.')
             self._apply_cred_style(False)
             return
         # Запускаем логин в рабочем потоке, чтобы UI не завис при сетевых/блокирующих ошибках (в т.ч. IP-запрет)
@@ -3457,7 +3795,8 @@ class MainWindow(QMainWindow):
         # На время авторизации удерживаем окно поверх других (Windows может красть фокус)
         self._force_on_top(True)
         try:
-            self.raise_(); self.activateWindow()
+            self.raise_()
+            self.activateWindow()
         except Exception:
             pass
         fam = (self.family_combo.currentText() or 'wikipedia')
@@ -3467,7 +3806,8 @@ class MainWindow(QMainWindow):
         # на провал
         worker.failure.connect(lambda msg: [
             self.status_label.setText('Ошибка авторизации'),
-            QMessageBox.critical(self, 'Ошибка авторизации', f'Не удалось авторизоваться: {msg}'),
+            QMessageBox.critical(self, 'Ошибка авторизации',
+                                 f'Не удалось авторизоваться: {msg}'),
             self._apply_cred_style(False),
             self.login_btn.setEnabled(True),
             # вернуть окно на передний план после модального окна
@@ -3483,22 +3823,26 @@ class MainWindow(QMainWindow):
     def _force_on_top(self, enable: bool, delay_ms: int = 0) -> None:
         if delay_ms and delay_ms > 0:
             try:
-                QTimer.singleShot(delay_ms, lambda: self._force_on_top(enable, 0))
+                QTimer.singleShot(
+                    delay_ms, lambda: self._force_on_top(enable, 0))
                 return
             except Exception:
                 pass
         try:
             if enable == self._stay_on_top_active:
                 if enable:
-                    self.raise_(); self.activateWindow()
+                    self.raise_()
+                    self.activateWindow()
                 return
             self._stay_on_top_active = bool(enable)
             was_visible = self.isVisible()
-            self.setWindowFlag(Qt.WindowStaysOnTopHint, self._stay_on_top_active)
+            self.setWindowFlag(Qt.WindowStaysOnTopHint,
+                               self._stay_on_top_active)
             if was_visible:
                 # пере-применить флаг и удержать окно активным
                 self.show()
-                self.raise_(); self.activateWindow()
+                self.raise_()
+                self.activateWindow()
         except Exception:
             pass
 
@@ -3510,7 +3854,8 @@ class MainWindow(QMainWindow):
                 try:
                     if self.isMinimized():
                         self.showNormal()
-                    self.raise_(); self.activateWindow()
+                    self.raise_()
+                    self.activateWindow()
                     # Дополнительно — WinAPI на Windows
                     if sys.platform.startswith('win'):
                         try:
@@ -3524,8 +3869,10 @@ class MainWindow(QMainWindow):
                             # показать и вывести на передний план
                             user32.ShowWindow(hwnd, SW_SHOWNORMAL)
                             # быстрый цикл topmost -> notopmost для всплытия над другими окнами
-                            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
-                            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+                            user32.SetWindowPos(
+                                hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+                            user32.SetWindowPos(
+                                hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
                             user32.SetForegroundWindow(hwnd)
                         except Exception:
                             pass
@@ -3561,7 +3908,8 @@ class MainWindow(QMainWindow):
                 if mlang:
                     cur_lang = mlang.group(1)
                     self.lang_combo.setCurrentText(cur_lang)
-                fam = cur_family or (self.family_combo.currentText() or 'wikipedia')
+                fam = cur_family or (
+                    self.family_combo.currentText() or 'wikipedia')
                 fam_re = re.escape(fam)
                 for m in re.finditer(rf"usernames\['{fam_re}'\]\['([^']+)'\]\s*=\s*'([^']+)'", txt):
                     username_map[m.group(1)] = m.group(2)
@@ -3587,7 +3935,8 @@ class MainWindow(QMainWindow):
             self._apply_cred_style(True)
 
             try:
-                ok_awb, detail = is_user_awb_enabled(cur_lang, username_map[cur_lang], fam)
+                ok_awb, detail = is_user_awb_enabled(
+                    cur_lang, username_map[cur_lang], fam)
                 self._set_awb_ui(ok_awb, detail)
             except Exception:
                 self._set_awb_ui(False)
@@ -3597,7 +3946,7 @@ class MainWindow(QMainWindow):
     def init_parse_tab(self):
         tab = QWidget()
         main_layout = QVBoxLayout(tab)
-        
+
         # Справочная информация (кратко и по делу)
         parse_help_left = (
             'Префиксы: «Авто» не меняет и не добавляет префиксы; Выбирать пространство имён из списка нужно когда в списке указаны только названия страниц, без префиксов.\n'
@@ -3608,21 +3957,24 @@ class MainWindow(QMainWindow):
             'Результат сохраняется в .tsv (UTF‑8 с BOM).\n'
             'При лимитах API инструмент сам замедляется.'
         )
-        
+
         # === ГОРИЗОНТАЛЬНОЕ РАЗДЕЛЕНИЕ ===
         h_main = QHBoxLayout()
-        
+
         # === ЛЕВАЯ ПАНЕЛЬ: ВВОД ДАННЫХ ===
         left_group = QGroupBox("Настройка и ввод данных")
-        left_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        left_group.setStyleSheet(
+            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
         left_layout = QVBoxLayout(left_group)
         try:
-            left_layout.setContentsMargins(8, 12, 8, 8)  # не двигаем (i) у верхней кромки
-            left_layout.setSpacing(2)  # уменьшили зазор между (i) и строкой «Префиксы»
+            # не двигаем (i) у верхней кромки
+            left_layout.setContentsMargins(8, 12, 8, 8)
+            # уменьшили зазор между (i) и строкой «Префиксы»
+            left_layout.setSpacing(2)
         except Exception:
             pass
         # (i) будет добавлена в строку «Префиксы» справа — без влияния на вертикальные отступы
-        
+
         # Префиксы пространства имён
         prefix_layout = QHBoxLayout()
         prefix_label = QLabel('Префиксы:')
@@ -3630,13 +3982,14 @@ class MainWindow(QMainWindow):
         prefix_layout.addWidget(prefix_label)
         self.ns_combo_parse = QComboBox()
         self.ns_combo_parse.setEditable(False)
-        _populate_ns_combo(self.ns_combo_parse, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
+        _populate_ns_combo(self.ns_combo_parse, (self.family_combo.currentText(
+        ) or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         prefix_layout.addWidget(self.ns_combo_parse)
         # Толкаем (i) к правому краю в этой же строке
         prefix_layout.addStretch()
         self._add_info_button(prefix_layout, parse_help_left, inline=True)
         left_layout.addLayout(prefix_layout)
-        
+
         # Получение подкатегорий
         left_layout.addSpacing(6)
         left_layout.addWidget(QLabel('<b>Получить подкатегории:</b>'))
@@ -3644,84 +3997,98 @@ class MainWindow(QMainWindow):
         self.cat_edit = QLineEdit()
         self.cat_edit.setPlaceholderText('Название корневой категории')
         petscan_input_layout.addWidget(self.cat_edit, 1)
-        
+
         self.petscan_btn = QPushButton('Получить')
-        self.petscan_btn.setToolTip('Клик — получить подкатегории через API.\nCtrl+клик — открыть Petscan с расширенными настройками')
+        self.petscan_btn.setToolTip(
+            'Клик — получить подкатегории через API.\nCtrl+клик — открыть Petscan с расширенными настройками')
         self.petscan_btn.clicked.connect(self.open_petscan)
         petscan_input_layout.addWidget(self.petscan_btn)
         left_layout.addLayout(petscan_input_layout)
-        
+
         # Ручной ввод списка
         left_layout.addSpacing(6)
         lbl_left_top = QLabel('<b>Список категорий для считывания:</b>')
         left_layout.addWidget(lbl_left_top)
         self.manual_list = QTextEdit()
-        self.manual_list.setPlaceholderText('По одному названию категории на строке')
+        self.manual_list.setPlaceholderText(
+            'По одному названию категории на строке')
         self.manual_list.setMinimumHeight(220)
         left_layout.addWidget(self.manual_list, 1)
         try:
             left_layout.setStretchFactor(self.manual_list, 1)
         except Exception:
             pass
-        
+
         # Загрузка из файла
         left_layout.addWidget(QLabel('<b>Или загрузить из файла:</b>'))
         file_layout = QHBoxLayout()
         file_layout.addWidget(QLabel('Файл (.txt):'))
-        
+
         self.in_path = QLineEdit()
         self.in_path.setMinimumWidth(0)
-        self._embed_button_in_lineedit(self.in_path, lambda: self.pick_file(self.in_path, '*.txt'))
+        self._embed_button_in_lineedit(
+            self.in_path, lambda: self.pick_file(self.in_path, '*.txt'))
         file_layout.addWidget(self.in_path, 1)
-        
+
         btn_open_in = QPushButton('Открыть')
         btn_open_in.clicked.connect(lambda: self.open_from_edit(self.in_path))
         file_layout.addWidget(btn_open_in)
         left_layout.addLayout(file_layout)
-        
+
         # === ПРАВАЯ ПАНЕЛЬ: ХОД СЧИТЫВАНИЯ ===
         right_group = QGroupBox("Ход считывания")
-        right_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        right_group.setStyleSheet(
+            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
         right_layout = QVBoxLayout(right_group)
         try:
             right_layout.setContentsMargins(8, 12, 8, 8)
             right_layout.setSpacing(8)
         except Exception:
             pass
-        
+
         # i-кнопка справа будет прикреплена к рамке, без участия в layout
-        
+
         # Файл сохранения
         save_layout = QHBoxLayout()
         save_layout.addWidget(QLabel('Сохранить в:'))
-        
+
         self.out_path = QLineEdit('categories.tsv')
         self.out_path.setMinimumWidth(0)
-        self._embed_button_in_lineedit(self.out_path, lambda: self.pick_save(self.out_path, '.tsv'))
+        self._embed_button_in_lineedit(
+            self.out_path, lambda: self.pick_save(self.out_path, '.tsv'))
         save_layout.addWidget(self.out_path, 1)
-        
+
         btn_open_out = QPushButton('Открыть')
-        btn_open_out.clicked.connect(lambda: self.open_from_edit(self.out_path))
+        btn_open_out.clicked.connect(
+            lambda: self.open_from_edit(self.out_path))
         save_layout.addWidget(btn_open_out)
         # Толкаем (i) к правому краю верхней строки справа
         save_layout.addStretch()
         self._add_info_button(save_layout, parse_help_right, inline=True)
         right_layout.addLayout(save_layout)
-        
+
         # Небольшой отступ и лог процесса (основная область)
         right_layout.addSpacing(6)
         lbl_right_top = QLabel('<b>Лог выполнения:</b>')
         # Заголовок
         right_layout.addWidget(lbl_right_top)
         # Контейнер для лога с кнопкой очистки в правом нижнем углу
-        self.parse_log = QTextEdit(); self.parse_log.setReadOnly(True); self.parse_log.setMinimumHeight(220)
-        parse_log_wrap = QWidget(); parse_log_grid = QGridLayout(parse_log_wrap)
+        self.parse_log = QTextEdit()
+        self.parse_log.setReadOnly(True)
+        self.parse_log.setMinimumHeight(220)
+        parse_log_wrap = QWidget()
+        parse_log_grid = QGridLayout(parse_log_wrap)
         try:
-            parse_log_grid.setContentsMargins(0, 0, 0, 0); parse_log_grid.setSpacing(0)
+            parse_log_grid.setContentsMargins(0, 0, 0, 0)
+            parse_log_grid.setSpacing(0)
         except Exception:
             pass
         parse_log_grid.addWidget(self.parse_log, 0, 0)
-        btn_clear_parse = QToolButton(); btn_clear_parse.setText('🧹'); btn_clear_parse.setAutoRaise(True); btn_clear_parse.setToolTip('<span style="font-size:12px">Очистить</span>')
+        btn_clear_parse = QToolButton()
+        btn_clear_parse.setText('🧹')
+        btn_clear_parse.setAutoRaise(True)
+        btn_clear_parse.setToolTip(
+            '<span style="font-size:12px">Очистить</span>')
         try:
             btn_clear_parse.setStyleSheet('font-size: 20px; padding: 0px;')
             btn_clear_parse.setFixedSize(32, 32)
@@ -3729,13 +4096,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         btn_clear_parse.clicked.connect(lambda: self.parse_log.clear())
-        parse_log_grid.addWidget(btn_clear_parse, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+        parse_log_grid.addWidget(
+            btn_clear_parse, 0, 0, Qt.AlignBottom | Qt.AlignRight)
         right_layout.addWidget(parse_log_wrap, 1)
         try:
             right_layout.setStretchFactor(parse_log_wrap, 1)
         except Exception:
             pass
-        
+
         # Прогресс-бар
         self.parse_bar = QProgressBar()
         self.parse_bar.setMaximum(1)
@@ -3746,7 +4114,7 @@ class MainWindow(QMainWindow):
             right_layout.setStretchFactor(self.parse_log, 1)
         except Exception:
             pass
-        
+
         # Кнопки управления
         control_layout = QHBoxLayout()
         control_layout.addStretch()
@@ -3760,16 +4128,15 @@ class MainWindow(QMainWindow):
         control_layout.addStretch()
         right_layout.addLayout(control_layout)
         self._set_start_stop_ratio(self.parse_btn, self.parse_stop_btn, 3)
-        
+
         # Добавление панелей в основной макет
         h_main.addWidget(left_group, 1)
         h_main.addWidget(right_group, 1)
         main_layout.addLayout(h_main)
 
         # Удалён код закрепления (i) как дочерних виджетов — используется упрощённый вариант в строках выше
-        
-        self.tabs.addTab(tab, 'Считать')
 
+        self.tabs.addTab(tab, 'Считать')
 
     def open_petscan(self):
         debug(f"Fetch subcats btn pressed: cat={self.cat_edit.text().strip()}")
@@ -3803,7 +4170,8 @@ class MainWindow(QMainWindow):
         if re.match(r'(?i)^(категория|category):', category):
             cat_full = category
         else:
-            cat_full = ('Категория:' if lang == 'ru' else 'Category:') + category
+            cat_full = ('Категория:' if lang ==
+                        'ru' else 'Category:') + category
 
         api_url = build_api_url(fam, lang)
         params = {
@@ -3818,17 +4186,22 @@ class MainWindow(QMainWindow):
         try:
             while True:
                 _rate_wait()
-                r = REQUEST_SESSION.get(api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
+                r = REQUEST_SESSION.get(
+                    api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
                 if r.status_code != 200:
-                    raise RuntimeError(f"HTTP {r.status_code} при запросе {api_url}")
+                    raise RuntimeError(
+                        f"HTTP {r.status_code} при запросе {api_url}")
                 try:
                     resp = r.json()
                 except Exception:
                     snippet = (r.text or '')[:200].replace('\n', ' ')
                     ct = r.headers.get('Content-Type')
-                    raise RuntimeError(f"Не удалось распарсить JSON: Content-Type={ct}, тело[:200]={snippet!r}")
-                debug(f"API GET subcats len={len(resp.get('query',{}).get('categorymembers',[]))}")
-                subcats.extend(m['title'] for m in resp.get('query', {}).get('categorymembers', []))
+                    raise RuntimeError(
+                        f"Не удалось распарсить JSON: Content-Type={ct}, тело[:200]={snippet!r}")
+                debug(
+                    f"API GET subcats len={len(resp.get('query', {}).get('categorymembers', []))}")
+                subcats.extend(m['title'] for m in resp.get(
+                    'query', {}).get('categorymembers', []))
                 if 'continue' in resp:
                     params.update(resp['continue'])
                 else:
@@ -3836,7 +4209,8 @@ class MainWindow(QMainWindow):
             if subcats:
                 subcats_sorted = sorted(subcats, key=lambda s: s.casefold())
                 self.manual_list.setPlainText('\n'.join(subcats_sorted))
-                self.log(self.parse_log, f"Получено подкатегорий: {len(subcats_sorted)} (отсортировано)")
+                self.log(
+                    self.parse_log, f"Получено подкатегорий: {len(subcats_sorted)} (отсортировано)")
             else:
                 self.log(self.parse_log, 'Подкатегории не найдены.')
         except Exception as e:
@@ -3860,19 +4234,25 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout()
         self.tsv_path = QLineEdit('categories.tsv')
         self.tsv_path.setMinimumWidth(0)
-        self.tsv_path.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._embed_button_in_lineedit(self.tsv_path, lambda: self.pick_file(self.tsv_path, '*.tsv'))
+        self.tsv_path.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._embed_button_in_lineedit(
+            self.tsv_path, lambda: self.pick_file(self.tsv_path, '*.tsv'))
         h.addWidget(QLabel('Список для замен (.tsv):'))
         h.addWidget(self.tsv_path, 1)
-        btn_open_tsv = QPushButton('Открыть'); btn_open_tsv.clicked.connect(lambda: self.open_from_edit(self.tsv_path))
+        btn_open_tsv = QPushButton('Открыть')
+        btn_open_tsv.clicked.connect(
+            lambda: self.open_from_edit(self.tsv_path))
         btn_open_tsv.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         h.addWidget(btn_open_tsv)
         # компактный выбор префикса (выпадающий список)
         prefix_label_replace = QLabel('Префиксы:')
         prefix_label_replace.setToolTip(PREFIX_TOOLTIP)
         h.addWidget(prefix_label_replace)
-        self.ns_combo_replace = QComboBox(); self.ns_combo_replace.setEditable(False)
-        _populate_ns_combo(self.ns_combo_replace, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
+        self.ns_combo_replace = QComboBox()
+        self.ns_combo_replace.setEditable(False)
+        _populate_ns_combo(self.ns_combo_replace, (self.family_combo.currentText(
+        ) or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_replace)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, replace_help)
@@ -3884,29 +4264,35 @@ class MainWindow(QMainWindow):
 
         self.summary_edit.setText(default_summary('ru'))
 
-
         # Малая правка
         self.minor_checkbox = QCheckBox('Малая правка (minor edit)')
         sum_layout.addWidget(self.minor_checkbox)
 
         # Предпросмотр/старт
-        self.rep_preview_titles = QTextEdit(); self.rep_preview_titles.setReadOnly(True)
+        self.rep_preview_titles = QTextEdit()
+        self.rep_preview_titles.setReadOnly(True)
         try:
             self.rep_preview_titles.setLineWrapMode(QTextEdit.NoWrap)
-            self.rep_preview_titles.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.rep_preview_titles.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded)
         except Exception:
             pass
-        self.rep_preview_rest = QTextEdit(); self.rep_preview_rest.setReadOnly(True)
+        self.rep_preview_rest = QTextEdit()
+        self.rep_preview_rest.setReadOnly(True)
         try:
             self.rep_preview_rest.setLineWrapMode(QTextEdit.NoWrap)
-            self.rep_preview_rest.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.rep_preview_rest.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded)
         except Exception:
             pass
         # синхронизация вертикального скролла
         try:
-            a = self.rep_preview_titles.verticalScrollBar(); b = self.rep_preview_rest.verticalScrollBar()
-            a.valueChanged.connect(lambda v: (b.setValue(v) if b.value()!=v else None))
-            b.valueChanged.connect(lambda v: (a.setValue(v) if a.value()!=v else None))
+            a = self.rep_preview_titles.verticalScrollBar()
+            b = self.rep_preview_rest.verticalScrollBar()
+            a.valueChanged.connect(lambda v: (
+                b.setValue(v) if b.value() != v else None))
+            b.valueChanged.connect(lambda v: (
+                a.setValue(v) if a.value() != v else None))
         except Exception:
             pass
 
@@ -3916,29 +4302,38 @@ class MainWindow(QMainWindow):
         self.replace_stop_btn.setEnabled(False)
         self.replace_stop_btn.clicked.connect(self.stop_replace)
         # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
-        self.rep_log = QTextEdit(); self.rep_log.setReadOnly(True)
-        rep_wrap = QWidget(); rep_grid = QGridLayout(rep_wrap)
+        self.rep_log = QTextEdit()
+        self.rep_log.setReadOnly(True)
+        rep_wrap = QWidget()
+        rep_grid = QGridLayout(rep_wrap)
         try:
-            rep_grid.setContentsMargins(0, 0, 0, 0); rep_grid.setSpacing(0)
+            rep_grid.setContentsMargins(0, 0, 0, 0)
+            rep_grid.setSpacing(0)
         except Exception:
             pass
         rep_header = QLabel('<b>Лог выполнения:</b>')
         rep_grid.addWidget(rep_header, 0, 0)
         rep_grid.addWidget(self.rep_log, 1, 0)
-        btn_clear_rep = QToolButton(); btn_clear_rep.setText('🧹'); btn_clear_rep.setAutoRaise(True); btn_clear_rep.setToolTip('<span style="font-size:12px">Очистить</span>')
+        btn_clear_rep = QToolButton()
+        btn_clear_rep.setText('🧹')
+        btn_clear_rep.setAutoRaise(True)
+        btn_clear_rep.setToolTip(
+            '<span style="font-size:12px">Очистить</span>')
         try:
             btn_clear_rep.setStyleSheet('font-size: 20px; padding: 0px;')
             btn_clear_rep.setFixedSize(32, 32)
             btn_clear_rep.setCursor(Qt.PointingHandCursor)
         except Exception:
             pass
+
         def _clear_rep_all():
             try:
                 self.rep_log.clear()
             except Exception:
                 pass
             try:
-                self.rep_preview_titles.clear(); self.rep_preview_rest.clear()
+                self.rep_preview_titles.clear()
+                self.rep_preview_rest.clear()
             except Exception:
                 pass
             try:
@@ -3954,27 +4349,37 @@ class MainWindow(QMainWindow):
         rep_grid.addWidget(btn_clear_rep, 1, 0, Qt.AlignBottom | Qt.AlignRight)
         # Левая половина: предпросмотр (две синхронные области); правая половина: лог
         content_row = QHBoxLayout()
-        preview_wrap = QWidget(); preview_layout = QVBoxLayout(preview_wrap)
+        preview_wrap = QWidget()
+        preview_layout = QVBoxLayout(preview_wrap)
         try:
-            preview_layout.setContentsMargins(0,0,6,0)
+            preview_layout.setContentsMargins(0, 0, 6, 0)
         except Exception:
             pass
         preview_layout.addWidget(QLabel('<b>Предпросмотр:</b>'))
-        pv_split = QHBoxLayout(); pv_split.addWidget(self.rep_preview_titles, 1); pv_split.addWidget(self.rep_preview_rest, 2)
+        pv_split = QHBoxLayout()
+        pv_split.addWidget(self.rep_preview_titles, 1)
+        pv_split.addWidget(self.rep_preview_rest, 2)
         preview_layout.addLayout(pv_split)
         content_row.addWidget(preview_wrap, 3)
         # лог справа
-        log_wrap = QWidget(); log_layout = QVBoxLayout(log_wrap)
+        log_wrap = QWidget()
+        log_layout = QVBoxLayout(log_wrap)
         try:
-            log_layout.setContentsMargins(6,0,0,0)
+            log_layout.setContentsMargins(6, 0, 0, 0)
         except Exception:
             pass
         log_layout.addWidget(rep_wrap, 1)
         content_row.addWidget(log_wrap, 2)
 
         # Перемещаем кнопки вправо вниз под лог
-        row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.replace_btn); row_run.addWidget(self.replace_stop_btn)
-        v.addLayout(h); v.addLayout(sum_layout); v.addLayout(content_row, 1); v.addLayout(row_run)
+        row_run = QHBoxLayout()
+        row_run.addStretch()
+        row_run.addWidget(self.replace_btn)
+        row_run.addWidget(self.replace_stop_btn)
+        v.addLayout(h)
+        v.addLayout(sum_layout)
+        v.addLayout(content_row, 1)
+        v.addLayout(row_run)
         self._set_start_stop_ratio(self.replace_btn, self.replace_stop_btn, 3)
         self.tabs.addTab(tab, 'Перезаписать')
 
@@ -3991,19 +4396,26 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout()
         self.tsv_path_create = QLineEdit('categories.tsv')
         self.tsv_path_create.setMinimumWidth(0)
-        self.tsv_path_create.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._embed_button_in_lineedit(self.tsv_path_create, lambda: self.pick_file(self.tsv_path_create, '*.tsv'))
+        self.tsv_path_create.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._embed_button_in_lineedit(
+            self.tsv_path_create, lambda: self.pick_file(self.tsv_path_create, '*.tsv'))
         h.addWidget(QLabel('Список для создания (.tsv):'))
         h.addWidget(self.tsv_path_create, 1)
-        btn_open_tsv_create = QPushButton('Открыть'); btn_open_tsv_create.clicked.connect(lambda: self.open_from_edit(self.tsv_path_create))
-        btn_open_tsv_create.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        btn_open_tsv_create = QPushButton('Открыть')
+        btn_open_tsv_create.clicked.connect(
+            lambda: self.open_from_edit(self.tsv_path_create))
+        btn_open_tsv_create.setSizePolicy(
+            QSizePolicy.Fixed, QSizePolicy.Preferred)
         h.addWidget(btn_open_tsv_create)
         # компактный выбор префикса (выпадающий список)
         prefix_label_create = QLabel('Префиксы:')
         prefix_label_create.setToolTip(PREFIX_TOOLTIP)
         h.addWidget(prefix_label_create)
-        self.ns_combo_create = QComboBox(); self.ns_combo_create.setEditable(False)
-        _populate_ns_combo(self.ns_combo_create, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
+        self.ns_combo_create = QComboBox()
+        self.ns_combo_create.setEditable(False)
+        _populate_ns_combo(self.ns_combo_create, (self.family_combo.currentText(
+        ) or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_create)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, create_help)
@@ -4015,22 +4427,29 @@ class MainWindow(QMainWindow):
         self.summary_edit_create.setText(default_create_summary('ru'))
 
         # Предпросмотр/старт
-        self.create_preview_titles = QTextEdit(); self.create_preview_titles.setReadOnly(True)
+        self.create_preview_titles = QTextEdit()
+        self.create_preview_titles.setReadOnly(True)
         try:
             self.create_preview_titles.setLineWrapMode(QTextEdit.NoWrap)
-            self.create_preview_titles.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.create_preview_titles.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded)
         except Exception:
             pass
-        self.create_preview_rest = QTextEdit(); self.create_preview_rest.setReadOnly(True)
+        self.create_preview_rest = QTextEdit()
+        self.create_preview_rest.setReadOnly(True)
         try:
             self.create_preview_rest.setLineWrapMode(QTextEdit.NoWrap)
-            self.create_preview_rest.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.create_preview_rest.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded)
         except Exception:
             pass
         try:
-            a = self.create_preview_titles.verticalScrollBar(); b = self.create_preview_rest.verticalScrollBar()
-            a.valueChanged.connect(lambda v: (b.setValue(v) if b.value()!=v else None))
-            b.valueChanged.connect(lambda v: (a.setValue(v) if a.value()!=v else None))
+            a = self.create_preview_titles.verticalScrollBar()
+            b = self.create_preview_rest.verticalScrollBar()
+            a.valueChanged.connect(lambda v: (
+                b.setValue(v) if b.value() != v else None))
+            b.valueChanged.connect(lambda v: (
+                a.setValue(v) if a.value() != v else None))
         except Exception:
             pass
 
@@ -4040,29 +4459,38 @@ class MainWindow(QMainWindow):
         self.create_stop_btn.setEnabled(False)
         self.create_stop_btn.clicked.connect(self.stop_create)
         # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
-        self.create_log = QTextEdit(); self.create_log.setReadOnly(True)
-        create_wrap = QWidget(); create_grid = QGridLayout(create_wrap)
+        self.create_log = QTextEdit()
+        self.create_log.setReadOnly(True)
+        create_wrap = QWidget()
+        create_grid = QGridLayout(create_wrap)
         try:
-            create_grid.setContentsMargins(0, 0, 0, 0); create_grid.setSpacing(0)
+            create_grid.setContentsMargins(0, 0, 0, 0)
+            create_grid.setSpacing(0)
         except Exception:
             pass
         create_header = QLabel('<b>Лог выполнения:</b>')
         create_grid.addWidget(create_header, 0, 0)
         create_grid.addWidget(self.create_log, 1, 0)
-        btn_clear_create = QToolButton(); btn_clear_create.setText('🧹'); btn_clear_create.setAutoRaise(True); btn_clear_create.setToolTip('<span style="font-size:12px">Очистить</span>')
+        btn_clear_create = QToolButton()
+        btn_clear_create.setText('🧹')
+        btn_clear_create.setAutoRaise(True)
+        btn_clear_create.setToolTip(
+            '<span style="font-size:12px">Очистить</span>')
         try:
             btn_clear_create.setStyleSheet('font-size: 20px; padding: 0px;')
             btn_clear_create.setFixedSize(32, 32)
             btn_clear_create.setCursor(Qt.PointingHandCursor)
         except Exception:
             pass
+
         def _clear_create_all():
             try:
                 self.create_log.clear()
             except Exception:
                 pass
             try:
-                self.create_preview_titles.clear(); self.create_preview_rest.clear()
+                self.create_preview_titles.clear()
+                self.create_preview_rest.clear()
             except Exception:
                 pass
             try:
@@ -4075,29 +4503,40 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         btn_clear_create.clicked.connect(_clear_create_all)
-        create_grid.addWidget(btn_clear_create, 1, 0, Qt.AlignBottom | Qt.AlignRight)
+        create_grid.addWidget(btn_clear_create, 1, 0,
+                              Qt.AlignBottom | Qt.AlignRight)
         # Левая половина: предпросмотр; правая: лог
         content_row = QHBoxLayout()
-        preview_wrap = QWidget(); preview_layout = QVBoxLayout(preview_wrap)
+        preview_wrap = QWidget()
+        preview_layout = QVBoxLayout(preview_wrap)
         try:
-            preview_layout.setContentsMargins(0,0,6,0)
+            preview_layout.setContentsMargins(0, 0, 6, 0)
         except Exception:
             pass
         preview_layout.addWidget(QLabel('<b>Предпросмотр:</b>'))
-        pv_split = QHBoxLayout(); pv_split.addWidget(self.create_preview_titles, 1); pv_split.addWidget(self.create_preview_rest, 2)
+        pv_split = QHBoxLayout()
+        pv_split.addWidget(self.create_preview_titles, 1)
+        pv_split.addWidget(self.create_preview_rest, 2)
         preview_layout.addLayout(pv_split)
         content_row.addWidget(preview_wrap, 3)
-        log_wrap = QWidget(); log_layout = QVBoxLayout(log_wrap)
+        log_wrap = QWidget()
+        log_layout = QVBoxLayout(log_wrap)
         try:
-            log_layout.setContentsMargins(6,0,0,0)
+            log_layout.setContentsMargins(6, 0, 0, 0)
         except Exception:
             pass
         log_layout.addWidget(create_wrap, 1)
         content_row.addWidget(log_wrap, 2)
 
         # кнопки справа внизу
-        row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.create_btn); row_run.addWidget(self.create_stop_btn)
-        v.addLayout(h); v.addLayout(sum_layout); v.addLayout(content_row, 1); v.addLayout(row_run)
+        row_run = QHBoxLayout()
+        row_run.addStretch()
+        row_run.addWidget(self.create_btn)
+        row_run.addWidget(self.create_stop_btn)
+        v.addLayout(h)
+        v.addLayout(sum_layout)
+        v.addLayout(content_row, 1)
+        v.addLayout(row_run)
         self._set_start_stop_ratio(self.create_btn, self.create_stop_btn, 3)
         self.tabs.addTab(tab, 'Создать')
 
@@ -4133,19 +4572,26 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout()
         self.tsv_path_rename = QLineEdit('categories.tsv')
         self.tsv_path_rename.setMinimumWidth(0)
-        self.tsv_path_rename.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._embed_button_in_lineedit(self.tsv_path_rename, lambda: self.pick_file(self.tsv_path_rename, '*.tsv'))
+        self.tsv_path_rename.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._embed_button_in_lineedit(
+            self.tsv_path_rename, lambda: self.pick_file(self.tsv_path_rename, '*.tsv'))
         h.addWidget(QLabel('Список для переименования (.tsv):'))
         h.addWidget(self.tsv_path_rename, 1)
-        btn_open_tsv_rename = QPushButton('Открыть'); btn_open_tsv_rename.clicked.connect(lambda: self.open_from_edit(self.tsv_path_rename))
-        btn_open_tsv_rename.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        btn_open_tsv_rename = QPushButton('Открыть')
+        btn_open_tsv_rename.clicked.connect(
+            lambda: self.open_from_edit(self.tsv_path_rename))
+        btn_open_tsv_rename.setSizePolicy(
+            QSizePolicy.Fixed, QSizePolicy.Preferred)
         h.addWidget(btn_open_tsv_rename)
         # компактный выбор префикса (выпадающий список)
         prefix_label_rename = QLabel('Префиксы:')
         prefix_label_rename.setToolTip(PREFIX_TOOLTIP)
         h.addWidget(prefix_label_rename)
-        self.ns_combo_rename = QComboBox(); self.ns_combo_rename.setEditable(False)
-        _populate_ns_combo(self.ns_combo_rename, (self.family_combo.currentText() or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
+        self.ns_combo_rename = QComboBox()
+        self.ns_combo_rename.setEditable(False)
+        _populate_ns_combo(self.ns_combo_rename, (self.family_combo.currentText(
+        ) or 'wikipedia'), (self.lang_combo.currentText() or 'ru'))
         h.addWidget(self.ns_combo_rename)
         # кнопка ℹ в строке выбора файла
         self._add_info_button(h, rename_help)
@@ -4171,10 +4617,12 @@ class MainWindow(QMainWindow):
         )
         # Первая опция: прямые ссылки
         row_p1 = QHBoxLayout()
-        self.chk_phase1 = QCheckBox('Обычное перемещение содержимого (категории прямо указаны на странице)')
+        self.chk_phase1 = QCheckBox(
+            'Обычное перемещение содержимого (категории прямо указаны на странице)')
         self.chk_phase1.setChecked(True)
         try:
-            self.chk_phase1.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            self.chk_phase1.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
         except Exception:
             pass
         row_p1.addWidget(self.chk_phase1)
@@ -4183,13 +4631,14 @@ class MainWindow(QMainWindow):
             row_p1.addStretch(1)
         except Exception:
             pass
-        
+
         # Опция: переименовывать саму категорию
         row_move_cat = QHBoxLayout()
         self.chk_move_category = QCheckBox('Переименовывать страницы')
         self.chk_move_category.setChecked(True)
         try:
-            self.chk_move_category.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            self.chk_move_category.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
         except Exception:
             pass
         row_move_cat.addWidget(self.chk_move_category)
@@ -4201,10 +4650,12 @@ class MainWindow(QMainWindow):
         # Блок перенаправлений заменим двумя строками в сетке
         # Вторая опция: параметры шаблонов
         row_p2 = QHBoxLayout()
-        self.chk_find_in_templates = QCheckBox('Поиск и исправление категоризации через параметры шаблонов')
+        self.chk_find_in_templates = QCheckBox(
+            'Поиск и исправление категоризации через параметры шаблонов')
         self.chk_find_in_templates.setChecked(True)
         try:
-            self.chk_find_in_templates.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            self.chk_find_in_templates.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
         except Exception:
             pass
         row_p2.addWidget(self.chk_find_in_templates)
@@ -4213,8 +4664,6 @@ class MainWindow(QMainWindow):
             row_p2.addStretch(1)
         except Exception:
             pass
-        
-
 
         # Кнопки: открыть/очистить правила замен шаблонов (переместим в сетку)
         try:
@@ -4242,7 +4691,8 @@ class MainWindow(QMainWindow):
                         try:
                             base = _dist_configs_dir()
                         except Exception:
-                            base = os.path.join(os.path.dirname(__file__), 'configs')
+                            base = os.path.join(
+                                os.path.dirname(__file__), 'configs')
                         path = os.path.join(base, 'template_rules.json')
                     import os
                     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -4268,12 +4718,15 @@ class MainWindow(QMainWindow):
                             ok = False
                     if not ok:
                         # Последняя попытка: открыть папку
-                        dir_url = QUrl.fromLocalFile(os.path.dirname(os.path.abspath(path)))
+                        dir_url = QUrl.fromLocalFile(
+                            os.path.dirname(os.path.abspath(path)))
                         ok = QDesktopServices.openUrl(dir_url)
                     if not ok:
-                        raise RuntimeError('Не удалось открыть файл или папку с правилами')
+                        raise RuntimeError(
+                            'Не удалось открыть файл или папку с правилами')
                 except Exception:
-                    QMessageBox.warning(self, 'Ошибка', 'Не удалось открыть файл правил замен.')
+                    QMessageBox.warning(
+                        self, 'Ошибка', 'Не удалось открыть файл правил замен.')
 
             def _clear_rules():
                 try:
@@ -4303,7 +4756,8 @@ class MainWindow(QMainWindow):
                         try:
                             base = _dist_configs_dir()
                         except Exception:
-                            base = os.path.join(os.path.dirname(__file__), 'configs')
+                            base = os.path.join(
+                                os.path.dirname(__file__), 'configs')
                         path = os.path.join(base, 'template_rules.json')
                     if path:
                         try:
@@ -4313,38 +4767,49 @@ class MainWindow(QMainWindow):
                         except Exception:
                             pass
                     if cleared:
-                        QMessageBox.information(self, 'Готово', 'Правила замен очищены.')
+                        QMessageBox.information(
+                            self, 'Готово', 'Правила замен очищены.')
                     else:
-                        QMessageBox.information(self, 'Инфо', 'Кэш правил замен уже пуст.')
+                        QMessageBox.information(
+                            self, 'Инфо', 'Кэш правил замен уже пуст.')
                 except Exception:
-                    QMessageBox.warning(self, 'Ошибка', 'Не удалось очистить правила замен.')
+                    QMessageBox.warning(
+                        self, 'Ошибка', 'Не удалось очистить правила замен.')
 
             btn_show_rules.clicked.connect(_open_rules_dialog)
             btn_clear_rules.clicked.connect(_clear_rules)
         except Exception:
             pass
 
-        self.chk_redirect_cat = QCheckBox('Оставлять перенаправления для категорий')
+        self.chk_redirect_cat = QCheckBox(
+            'Оставлять перенаправления для категорий')
         try:
-            self.chk_redirect_cat.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+            self.chk_redirect_cat.setSizePolicy(
+                QSizePolicy.Maximum, QSizePolicy.Preferred)
         except Exception:
             pass
         self.chk_redirect_cat.setChecked(False)
-        self.chk_redirect_other = QCheckBox('Оставлять перенаправления для других страниц')
+        self.chk_redirect_other = QCheckBox(
+            'Оставлять перенаправления для других страниц')
         try:
-            self.chk_redirect_other.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+            self.chk_redirect_other.setSizePolicy(
+                QSizePolicy.Maximum, QSizePolicy.Preferred)
         except Exception:
             pass
         self.chk_redirect_other.setChecked(True)
         # Управление доступностью перенаправлений по галке «Переименовывать страницы»
         try:
-            self.chk_redirect_cat.setEnabled(self.chk_move_category.isChecked())
-            self.chk_redirect_other.setEnabled(self.chk_move_category.isChecked())
-            self.chk_move_category.toggled.connect(self.chk_redirect_cat.setEnabled)
-            self.chk_move_category.toggled.connect(self.chk_redirect_other.setEnabled)
+            self.chk_redirect_cat.setEnabled(
+                self.chk_move_category.isChecked())
+            self.chk_redirect_other.setEnabled(
+                self.chk_move_category.isChecked())
+            self.chk_move_category.toggled.connect(
+                self.chk_redirect_cat.setEnabled)
+            self.chk_move_category.toggled.connect(
+                self.chk_redirect_other.setEnabled)
         except Exception:
             pass
-        
+
         # Сетка 2x3 — выравнивание строк между колонками
         grid = QGridLayout()
         try:
@@ -4373,8 +4838,12 @@ class MainWindow(QMainWindow):
 
         # Левая колонка: 3 строки
         grid.addWidget(_wrap(row_move_cat), 1, 0)
-        row_redirect_cat = QHBoxLayout(); row_redirect_cat.addWidget(self.chk_redirect_cat); row_redirect_cat.addStretch(1)
-        row_redirect_other = QHBoxLayout(); row_redirect_other.addWidget(self.chk_redirect_other); row_redirect_other.addStretch(1)
+        row_redirect_cat = QHBoxLayout()
+        row_redirect_cat.addWidget(self.chk_redirect_cat)
+        row_redirect_cat.addStretch(1)
+        row_redirect_other = QHBoxLayout()
+        row_redirect_other.addWidget(self.chk_redirect_other)
+        row_redirect_other.addStretch(1)
         grid.addWidget(_wrap(row_redirect_cat), 2, 0)
         grid.addWidget(_wrap(row_redirect_other), 3, 0)
 
@@ -4390,17 +4859,23 @@ class MainWindow(QMainWindow):
             pass
         v.addLayout(grid)
 
-
         # Лог выполнения и кнопка очистки в правом нижнем углу
         v.addWidget(QLabel('<b>Лог выполнения:</b>'))
-        self.rename_log = QTextEdit(); self.rename_log.setReadOnly(True)
-        rename_wrap = QWidget(); rename_grid = QGridLayout(rename_wrap)
+        self.rename_log = QTextEdit()
+        self.rename_log.setReadOnly(True)
+        rename_wrap = QWidget()
+        rename_grid = QGridLayout(rename_wrap)
         try:
-            rename_grid.setContentsMargins(0, 0, 0, 0); rename_grid.setSpacing(0)
+            rename_grid.setContentsMargins(0, 0, 0, 0)
+            rename_grid.setSpacing(0)
         except Exception:
             pass
         rename_grid.addWidget(self.rename_log, 0, 0)
-        btn_clear_rename = QToolButton(); btn_clear_rename.setText('🧹'); btn_clear_rename.setAutoRaise(True); btn_clear_rename.setToolTip('<span style="font-size:12px">Очистить</span>')
+        btn_clear_rename = QToolButton()
+        btn_clear_rename.setText('🧹')
+        btn_clear_rename.setAutoRaise(True)
+        btn_clear_rename.setToolTip(
+            '<span style="font-size:12px">Очистить</span>')
         try:
             btn_clear_rename.setStyleSheet('font-size: 20px; padding: 0px;')
             btn_clear_rename.setFixedSize(32, 32)
@@ -4408,16 +4883,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         btn_clear_rename.clicked.connect(lambda: self.rename_log.clear())
-        rename_grid.addWidget(btn_clear_rename, 0, 0, Qt.AlignBottom | Qt.AlignRight)
+        rename_grid.addWidget(btn_clear_rename, 0, 0,
+                              Qt.AlignBottom | Qt.AlignRight)
         v.addWidget(rename_wrap, 1)
-
 
         self.rename_btn = QPushButton('Начать переименование')
         self.rename_btn.clicked.connect(self.start_rename)
         self.rename_stop_btn = QPushButton('Остановить')
         self.rename_stop_btn.setEnabled(False)
         self.rename_stop_btn.clicked.connect(self.stop_rename)
-        row_run = QHBoxLayout(); row_run.addStretch(); row_run.addWidget(self.rename_btn); row_run.addWidget(self.rename_stop_btn)
+        row_run = QHBoxLayout()
+        row_run.addStretch()
+        row_run.addWidget(self.rename_btn)
+        row_run.addWidget(self.rename_stop_btn)
         v.addLayout(row_run)
         self._set_start_stop_ratio(self.rename_btn, self.rename_stop_btn, 3)
         self.tabs.addTab(tab, 'Переименовать')
@@ -4433,11 +4911,14 @@ class MainWindow(QMainWindow):
                     old_full = str(data.get('old_full') or '')
                     new_full = str(data.get('new_full') or '')
                     page_title = str(data.get('page_title') or '')
-                    fam = (self.family_combo.currentText() or 'wikipedia').strip()
+                    fam = (self.family_combo.currentText()
+                           or 'wikipedia').strip()
                     lng = (self.lang_combo.currentText() or 'ru').strip()
-                    page_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(page_title.replace(' ', '_')) if page_title else ''
+                    page_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(
+                        page_title.replace(' ', '_')) if page_title else ''
                     mode = str(data.get('mode') or 'direct')
-                    proposed_template = str(data.get('proposed_template') or '')
+                    proposed_template = str(
+                        data.get('proposed_template') or '')
                     old_sub = str(data.get('old_sub') or '')
                     new_sub = str(data.get('new_sub') or '')
                     is_direct = (mode == 'direct')
@@ -4449,19 +4930,25 @@ class MainWindow(QMainWindow):
                         new_direct = str(data.get('new_direct') or new_full)
                         esc_old_direct = html.escape(old_direct)
                         esc_new_direct = html.escape(new_direct)
-                        highlighted_old = esc_tmpl.replace(esc_old_direct, f"<span style='color:#8b0000;font-weight:bold'>{esc_old_direct}</span>")
-                        proposed_raw = template_str.replace(old_direct, new_direct, 1)
-                        highlighted_new = html.escape(proposed_raw).replace(esc_new_direct, f"<span style='color:#0b6623;font-weight:bold'>{esc_new_direct}</span>")
+                        highlighted_old = esc_tmpl.replace(
+                            esc_old_direct, f"<span style='color:#8b0000;font-weight:bold'>{esc_old_direct}</span>")
+                        proposed_raw = template_str.replace(
+                            old_direct, new_direct, 1)
+                        highlighted_new = html.escape(proposed_raw).replace(
+                            esc_new_direct, f"<span style='color:#0b6623;font-weight:bold'>{esc_new_direct}</span>")
                     else:
                         esc_old_sub = html.escape(old_sub)
                         esc_new_sub = html.escape(new_sub)
                         highlighted_old = esc_tmpl
                         if esc_old_sub:
-                            highlighted_old = highlighted_old.replace(esc_old_sub, f"<span style='color:#8b0000;font-weight:bold'>{esc_old_sub}</span>")
-                        esc_prop = html.escape(proposed_template or (template_str.replace(old_sub, new_sub, 1) if old_sub and new_sub else template_str))
+                            highlighted_old = highlighted_old.replace(
+                                esc_old_sub, f"<span style='color:#8b0000;font-weight:bold'>{esc_old_sub}</span>")
+                        esc_prop = html.escape(proposed_template or (template_str.replace(
+                            old_sub, new_sub, 1) if old_sub and new_sub else template_str))
                         highlighted_new = esc_prop
                         if esc_new_sub:
-                            highlighted_new = highlighted_new.replace(esc_new_sub, f"<span style='color:#0b6623;font-weight:bold'>{esc_new_sub}</span>")
+                            highlighted_new = highlighted_new.replace(
+                                esc_new_sub, f"<span style='color:#0b6623;font-weight:bold'>{esc_new_sub}</span>")
 
                     dlg = QDialog(self)
                     dlg.setWindowTitle('Замена по параметрам шаблона')
@@ -4473,12 +4960,14 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
                     if page_title:
-                        history_url = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(page_title.replace(' ', '_')) + "&action=history"
+                        history_url = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(
+                            page_title.replace(' ', '_')) + "&action=history"
                         # Верхний блок-«карточка» с информацией о переименовании категории
                         header = QFrame()
                         try:
                             header.setObjectName('reviewHeader')
-                            header.setStyleSheet("QFrame#reviewHeader { background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; } QLabel { font-size:13px; }")
+                            header.setStyleSheet(
+                                "QFrame#reviewHeader { background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; } QLabel { font-size:13px; }")
                         except Exception:
                             pass
                         hlay = QVBoxLayout(header)
@@ -4487,17 +4976,23 @@ class MainWindow(QMainWindow):
                             hlay.setSpacing(4)
                         except Exception:
                             pass
-                        old_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(old_full.replace(' ', '_'))
-                        old_hist = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(old_full.replace(' ', '_')) + "&action=history"
-                        new_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(new_full.replace(' ', '_'))
-                        new_hist = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(new_full.replace(' ', '_')) + "&action=history"
-                        move1 = QLabel(f"❌ {html.escape(old_full)} (<a href='{old_url}'>открыть</a> · <a href='{old_hist}'>история</a>)")
+                        old_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(
+                            old_full.replace(' ', '_'))
+                        old_hist = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(
+                            old_full.replace(' ', '_')) + "&action=history"
+                        new_url = f"https://{build_host(fam, lng)}/wiki/" + urllib.parse.quote(
+                            new_full.replace(' ', '_'))
+                        new_hist = f"https://{build_host(fam, lng)}/w/index.php?title=" + urllib.parse.quote(
+                            new_full.replace(' ', '_')) + "&action=history"
+                        move1 = QLabel(
+                            f"❌ {html.escape(old_full)} (<a href='{old_url}'>открыть</a> · <a href='{old_hist}'>история</a>)")
                         move1.setTextFormat(Qt.RichText)
                         try:
                             move1.setWordWrap(True)
                         except Exception:
                             pass
-                        move2 = QLabel(f"✅ {html.escape(new_full)} (<a href='{new_url}'>открыть</a> · <a href='{new_hist}'>история</a>)")
+                        move2 = QLabel(
+                            f"✅ {html.escape(new_full)} (<a href='{new_url}'>открыть</a> · <a href='{new_hist}'>история</a>)")
                         move2.setTextFormat(Qt.RichText)
                         try:
                             move2.setWordWrap(True)
@@ -4505,7 +5000,8 @@ class MainWindow(QMainWindow):
                             pass
                         try:
                             for wgt in (move1, move2):
-                                wgt.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                                wgt.setTextInteractionFlags(
+                                    Qt.TextBrowserInteraction)
                                 wgt.setOpenExternalLinks(True)
                         except Exception:
                             pass
@@ -4521,7 +5017,8 @@ class MainWindow(QMainWindow):
                         except Exception:
                             pass
                         try:
-                            page_line.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                            page_line.setTextInteractionFlags(
+                                Qt.TextBrowserInteraction)
                             page_line.setOpenExternalLinks(True)
                         except Exception:
                             pass
@@ -4551,7 +5048,8 @@ class MainWindow(QMainWindow):
                         lay.addSpacing(6)
                     except Exception:
                         pass
-                    lbl_old = QLabel(f"<b>Исходный вызов:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>{highlighted_old}</div>")
+                    lbl_old = QLabel(
+                        f"<b>Исходный вызов:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>{highlighted_old}</div>")
                     lbl_old.setTextFormat(Qt.RichText)
                     lay.addWidget(lbl_old)
 
@@ -4560,7 +5058,8 @@ class MainWindow(QMainWindow):
                         lay.addSpacing(6)
                     except Exception:
                         pass
-                    lbl_new = QLabel(f"<b>Предлагаемая замена:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>{highlighted_new}</div>")
+                    lbl_new = QLabel(
+                        f"<b>Предлагаемая замена:</b><br/><div style='font-family:Consolas,\"Courier New\",monospace;background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>{highlighted_new}</div>")
                     lbl_new.setTextFormat(Qt.RichText)
                     lay.addWidget(lbl_new)
 
@@ -4571,9 +5070,11 @@ class MainWindow(QMainWindow):
                     lay.addWidget(QLabel('<b>Ручное редактирование:</b>'))
                     edit = QPlainTextEdit()
                     if is_direct:
-                        edit.setPlainText(template_str.replace(str(data.get('old_direct') or old_full), str(data.get('new_direct') or new_full), 1))
+                        edit.setPlainText(template_str.replace(str(data.get(
+                            'old_direct') or old_full), str(data.get('new_direct') or new_full), 1))
                     else:
-                        edit.setPlainText(proposed_template or (template_str.replace(old_sub, new_sub, 1) if old_sub and new_sub else template_str))
+                        edit.setPlainText(proposed_template or (template_str.replace(
+                            old_sub, new_sub, 1) if old_sub and new_sub else template_str))
                     edit.setMinimumHeight(160)
                     try:
                         mono = QFont('Consolas')
@@ -4586,12 +5087,14 @@ class MainWindow(QMainWindow):
 
                     # Нижняя панель управления: слева — массовые действия (вторичные кнопки), справа — стандартные кнопки
                     controls = QHBoxLayout()
-                    btn_confirm_all = QPushButton('Подтверждать все аналогичные')
+                    btn_confirm_all = QPushButton(
+                        'Подтверждать все аналогичные')
                     btn_skip_all = QPushButton('Пропускать все аналогичные')
                     try:
                         # Группа в окантовке с заголовком и горизонтальными кнопками
                         mass_group = QGroupBox("Массовые действия")
-                        mass_group.setStyleSheet("QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+                        mass_group.setStyleSheet(
+                            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
                         mass_layout = QHBoxLayout(mass_group)
                         try:
                             mass_layout.setContentsMargins(8, 8, 8, 8)
@@ -4620,9 +5123,12 @@ class MainWindow(QMainWindow):
                     btn_skip = QPushButton('Пропустить')
                     btn_cancel = QPushButton('Отмена')
                     try:
-                        button_box.addButton(btn_confirm, QDialogButtonBox.AcceptRole)
-                        button_box.addButton(btn_skip, QDialogButtonBox.ActionRole)
-                        button_box.addButton(btn_cancel, QDialogButtonBox.RejectRole)
+                        button_box.addButton(
+                            btn_confirm, QDialogButtonBox.AcceptRole)
+                        button_box.addButton(
+                            btn_skip, QDialogButtonBox.ActionRole)
+                        button_box.addButton(
+                            btn_cancel, QDialogButtonBox.RejectRole)
                     except Exception:
                         # Fallback если роли недоступны
                         pass
@@ -4659,9 +5165,12 @@ class MainWindow(QMainWindow):
                         pass
                     # Горячие клавиши: Enter = подтвердить, Esc = отмена
                     try:
-                        QShortcut(QKeySequence(Qt.Key_Return), dlg, activated=lambda: _finish('confirm'))
-                        QShortcut(QKeySequence(Qt.Key_Enter), dlg, activated=lambda: _finish('confirm'))
-                        QShortcut(QKeySequence(Qt.Key_Escape), dlg, activated=lambda: _finish('cancel'))
+                        QShortcut(QKeySequence(Qt.Key_Return), dlg,
+                                  activated=lambda: _finish('confirm'))
+                        QShortcut(QKeySequence(Qt.Key_Enter), dlg,
+                                  activated=lambda: _finish('confirm'))
+                        QShortcut(QKeySequence(Qt.Key_Escape), dlg,
+                                  activated=lambda: _finish('cancel'))
                         btn_confirm.setAutoDefault(True)
                         btn_confirm.setDefault(True)
                         btn_confirm.setFocus()
@@ -4709,7 +5218,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-
     def eventFilter(self, obj, event):
         try:
             if event.type() == QEvent.KeyPress and DEBUG_VIEW is not None and obj is DEBUG_VIEW:
@@ -4723,14 +5231,16 @@ class MainWindow(QMainWindow):
                         if len(ch_raw) == 1 and ch_raw.isprintable() and not ch_raw.isspace():
                             ch = ch_raw.lower()
                             max_len = len(token)
-                            self._secret_buffer = (self._secret_buffer + ch)[-max_len:]
+                            self._secret_buffer = (
+                                self._secret_buffer + ch)[-max_len:]
                             if self._secret_buffer == token and not is_bypass_awb():
                                 set_bypass_awb(True)
                                 self._set_awb_ui(True)
                                 debug('Bypass AWB activated via token')
                                 # TEMP: не показываем всплывающее сообщение об обходе при отключённых проверках
                                 if not AWB_CHECKS_DISABLED:
-                                    QMessageBox.information(self, 'Режим обхода', 'Доступ к AWB: обход включён.')
+                                    QMessageBox.information(
+                                        self, 'Режим обхода', 'Доступ к AWB: обход включён.')
                     else:
                         # Токен не задан — обход по клавишам невозможен
                         self._secret_buffer = ''
@@ -4738,14 +5248,17 @@ class MainWindow(QMainWindow):
             pass
         return super().eventFilter(obj, event)
 
-
     def pick_file(self, edit: QLineEdit, pattern):
-        path, _ = QFileDialog.getOpenFileName(self, 'Выберите файл', filter=f'Files ({pattern})')
-        if path: edit.setText(path)
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Выберите файл', filter=f'Files ({pattern})')
+        if path:
+            edit.setText(path)
 
     def pick_save(self, edit: QLineEdit, default_ext):
-        path, _ = QFileDialog.getSaveFileName(self, 'Куда сохранить', filter=f'*.{default_ext.lstrip(".")}')
-        if path: edit.setText(path)
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Куда сохранить', filter=f'*.{default_ext.lstrip(".")}')
+        if path:
+            edit.setText(path)
 
     def _embed_button_in_lineedit(self, edit: QLineEdit, on_click):
         """Добавляет кнопку '…' внутрь правой части QLineEdit."""
@@ -4787,7 +5300,8 @@ class MainWindow(QMainWindow):
         try:
             path = (edit.text() or '').strip()
             if not path:
-                QMessageBox.warning(self, 'Ошибка', 'Сначала укажите путь к файлу.')
+                QMessageBox.warning(
+                    self, 'Ошибка', 'Сначала укажите путь к файлу.')
                 return
             # Если это TSV и файла нет — создаём пустой файл (как с правилами замен)
             try:
@@ -4805,7 +5319,8 @@ class MainWindow(QMainWindow):
                 return
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
         except Exception as e:
-            QMessageBox.warning(self, 'Ошибка', f'Не удалось открыть файл: {e}')
+            QMessageBox.warning(
+                self, 'Ошибка', f'Не удалось открыть файл: {e}')
 
     def _pretty_format_msg(self, raw: str) -> tuple[str, bool]:
         """Преобразует типичные сообщения о переносе в формат с эмодзи и разделителями.
@@ -4814,7 +5329,8 @@ class MainWindow(QMainWindow):
         try:
             s = (raw or '').strip()
             # Шаблон: "→ Категория:Имя : "Статья" — тип/статус"
-            m = re.match(r'^(?:→|▪️)\s+(?P<cat>[^:]+:.+?)\s*:\s*"(?P<title>[^"]+)"\s*—\s*(?P<rest>.+)$', s)
+            m = re.match(
+                r'^(?:→|▪️)\s+(?P<cat>[^:]+:.+?)\s*:\s*"(?P<title>[^"]+)"\s*—\s*(?P<rest>.+)$', s)
             if m:
                 cat = (m.group('cat') or '').strip()
                 title = (m.group('title') or '').strip()
@@ -4823,7 +5339,8 @@ class MainWindow(QMainWindow):
                 # Извлечь тип сущности в начале сообщения, если есть
                 typ = None
                 tail = rest
-                m2 = re.match(r'^(?P<typ>статья|страница|шаблон|модуль|файл)\b\s*(?P<tail>.*)$', rest, flags=re.I)
+                m2 = re.match(
+                    r'^(?P<typ>статья|страница|шаблон|модуль|файл)\b\s*(?P<tail>.*)$', rest, flags=re.I)
                 if m2:
                     typ = (m2.group('typ') or '').lower()
                     tail = (m2.group('tail') or '').strip()
@@ -4860,7 +5377,8 @@ class MainWindow(QMainWindow):
 
                 sep1 = ' • '
                 sep2 = ' — '
-                pretty = f"{folder_emoji} {cat}{sep1}{item_emoji} {title}{sep2}{status_emoji} {tail}".strip()
+                pretty = f"{folder_emoji} {cat}{sep1}{item_emoji} {title}{sep2}{status_emoji} {tail}".strip(
+                )
                 try:
                     return html.escape(pretty), True
                 except Exception:
@@ -4889,6 +5407,7 @@ class MainWindow(QMainWindow):
             # более тёмный зелёный для лучшей читаемости на светлой теме
             color = '#2e7d32'
         # Преобразуем переводы строк в <br/>, чтобы многострочные сообщения корректно отображались в HTML
+
         def _html_lines(s: str) -> str:
             try:
                 return s.replace('\n', '<br/>')
@@ -4902,9 +5421,11 @@ class MainWindow(QMainWindow):
             prefix = ''
         # Попробовать преобразовать в красивый формат
         formatted, escaped = self._pretty_format_msg(msg)
-        text_to_show = (html.escape(prefix) + formatted) if escaped else (prefix + formatted)
+        text_to_show = (html.escape(prefix) +
+                        formatted) if escaped else (prefix + formatted)
         if color:
-            widget.append(f"<span style='color:{color}'>" + _html_lines(text_to_show) + "</span>")
+            widget.append(
+                f"<span style='color:{color}'>" + _html_lines(text_to_show) + "</span>")
         else:
             widget.append(_html_lines(text_to_show))
 
@@ -4922,7 +5443,6 @@ class MainWindow(QMainWindow):
             stop_btn.setFixedWidth(100)
             start_btn.setFixedWidth(300)
 
-
     def start_parse(self):
         if not self.out_path.text():
             QMessageBox.warning(self, 'Ошибка', 'Укажите файл результата.')
@@ -4936,13 +5456,15 @@ class MainWindow(QMainWindow):
                 with open(in_file, encoding='utf-8') as f:
                     titles = [l.strip() for l in f if l.strip()]
             except Exception as e:
-                QMessageBox.critical(self, 'Ошибка', str(e)); return
+                QMessageBox.critical(self, 'Ошибка', str(e))
+                return
         else:
             manual_lines = self.manual_list.toPlainText().splitlines()
             titles = [l.strip() for l in manual_lines if l.strip()]
 
         if not titles:
-            QMessageBox.warning(self, 'Ошибка', 'Не указан ни файл со списком, ни текст списка.')
+            QMessageBox.warning(
+                self, 'Ошибка', 'Не указан ни файл со списком, ни текст списка.')
             return
         lang = self.lang_combo.currentText()
 
@@ -4951,8 +5473,10 @@ class MainWindow(QMainWindow):
         self.parse_btn.setEnabled(False)
         fam = (self.family_combo.currentText() or 'wikipedia')
         ns_sel = self.ns_combo_parse.currentData()
-        self.worker = ParseWorker(titles, self.out_path.text(), ns_sel, lang, fam)
-        self.worker.progress.connect(lambda m: [self._inc_parse_prog(), self.log(self.parse_log, m)])
+        self.worker = ParseWorker(
+            titles, self.out_path.text(), ns_sel, lang, fam)
+        self.worker.progress.connect(
+            lambda m: [self._inc_parse_prog(), self.log(self.parse_log, m)])
         self.worker.finished.connect(self._on_parse_finished)
         self.parse_btn.setEnabled(False)
         # Возвращаем кнопку в режим «Остановить» при старте нового считывания
@@ -4998,12 +5522,14 @@ class MainWindow(QMainWindow):
                 self.parse_stop_btn.setEnabled(True)
                 # Привяжем к открытию файла результата
                 out_path = self.out_path.text().strip()
+
                 def _open_result():
                     try:
                         if out_path and os.path.isfile(out_path):
                             os.startfile(out_path)
                         else:
-                            QMessageBox.information(self, 'Файл не найден', 'Файл результата не найден.')
+                            QMessageBox.information(
+                                self, 'Файл не найден', 'Файл результата не найден.')
                     except Exception as e:
                         QMessageBox.warning(self, 'Ошибка', str(e))
                 try:
@@ -5023,9 +5549,6 @@ class MainWindow(QMainWindow):
     def _inc_parse_prog(self):
         self.parse_bar.setValue(self.parse_bar.value()+1)
 
-
- 
-
     def start_replace(self):
         debug(f'Start replace: file={self.tsv_path.text()}')
         if not self.tsv_path.text():
@@ -5042,15 +5565,19 @@ class MainWindow(QMainWindow):
             except Exception:
                 ok_awb = False
             if not ok_awb:
-                QMessageBox.warning(self, 'Нет допуска AWB', 'Получите доступ к AWB или используйте режим считывания.')
+                QMessageBox.warning(
+                    self, 'Нет допуска AWB', 'Получите доступ к AWB или используйте режим считывания.')
                 return
         summary = self.summary_edit.text().strip()
         if not summary:
             summary = default_summary(lang)
         minor = self.minor_checkbox.isChecked()
-        self.replace_btn.setEnabled(False); self.replace_stop_btn.setEnabled(True); self.rep_log.clear()
+        self.replace_btn.setEnabled(False)
+        self.replace_stop_btn.setEnabled(True)
+        self.rep_log.clear()
         ns_sel = self.ns_combo_replace.currentData()
-        self.rworker = ReplaceWorker(self.tsv_path.text(), user, pwd, lang, fam, ns_sel, summary, minor)
+        self.rworker = ReplaceWorker(self.tsv_path.text(
+        ), user, pwd, lang, fam, ns_sel, summary, minor)
         self.rworker.progress.connect(lambda m: self.log(self.rep_log, m))
         self.rworker.finished.connect(self._on_replace_finished)
         self.rworker.start()
@@ -5065,7 +5592,8 @@ class MainWindow(QMainWindow):
             with open(path, newline='', encoding='utf-8-sig') as f:
                 rows = list(csv.reader(f, delimiter='\t'))
         except Exception as e:
-            QMessageBox.critical(self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+            QMessageBox.critical(
+                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
             return
         left = []
         right = []
@@ -5094,7 +5622,8 @@ class MainWindow(QMainWindow):
     def _on_replace_finished(self):
         self.replace_btn.setEnabled(True)
         self.replace_stop_btn.setEnabled(False)
-        msg = 'Остановлено!' if getattr(self, 'rworker', None) and getattr(self.rworker, '_stop', False) else 'Запись завершена!'
+        msg = 'Остановлено!' if getattr(self, 'rworker', None) and getattr(
+            self.rworker, '_stop', False) else 'Запись завершена!'
         self.log(self.rep_log, msg)
 
     def start_create(self):
@@ -5112,15 +5641,18 @@ class MainWindow(QMainWindow):
             except Exception:
                 ok_awb = False
             if not ok_awb:
-                QMessageBox.warning(self, 'Нет допуска AWB', 'Получите доступ к AWB или используйте режим считывания.')
+                QMessageBox.warning(
+                    self, 'Нет допуска AWB', 'Получите доступ к AWB или используйте режим считывания.')
                 return
         summary = self.summary_edit_create.text().strip()
         if not summary:
             summary = default_create_summary(lang)
         minor = False  # Малая правка не применяется при создании
-        self.create_btn.setEnabled(False); self.create_stop_btn.setEnabled(True)
+        self.create_btn.setEnabled(False)
+        self.create_stop_btn.setEnabled(True)
         ns_sel = self.ns_combo_create.currentData()
-        self.cworker = CreateWorker(self.tsv_path_create.text(), user, pwd, lang, fam, ns_sel, summary, minor)
+        self.cworker = CreateWorker(self.tsv_path_create.text(
+        ), user, pwd, lang, fam, ns_sel, summary, minor)
         self.cworker.progress.connect(lambda m: self.log(self.create_log, m))
         self.cworker.finished.connect(self._on_create_finished)
         self.cworker.start()
@@ -5135,7 +5667,8 @@ class MainWindow(QMainWindow):
             with open(path, newline='', encoding='utf-8-sig') as f:
                 rows = list(csv.reader(f, delimiter='\t'))
         except Exception as e:
-            QMessageBox.critical(self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+            QMessageBox.critical(
+                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
             return
         left = []
         right = []
@@ -5164,7 +5697,8 @@ class MainWindow(QMainWindow):
     def _on_create_finished(self):
         self.create_btn.setEnabled(True)
         self.create_stop_btn.setEnabled(False)
-        msg = 'Остановлено!' if getattr(self, 'cworker', None) and getattr(self.cworker, '_stop', False) else 'Создание завершено!'
+        msg = 'Остановлено!' if getattr(self, 'cworker', None) and getattr(
+            self.cworker, '_stop', False) else 'Создание завершено!'
         self.log(self.create_log, msg)
 
     def start_rename(self):
@@ -5182,21 +5716,28 @@ class MainWindow(QMainWindow):
             except Exception:
                 ok_awb = False
             if not ok_awb:
-                QMessageBox.warning(self, 'Нет допуска AWB', 'Получите доступ к AWB или используйте режим считывания.')
+                QMessageBox.warning(
+                    self, 'Нет допуска AWB', 'Получите доступ к AWB или используйте режим считывания.')
                 return
         # Передаём выбор префикса воркеру: 'Авто' (auto) или конкретный NS-ID
         ns_sel = self.ns_combo_rename.currentData()
         leave_cat = self.chk_redirect_cat.isChecked()
         leave_other = self.chk_redirect_other.isChecked()
-        move_members = True  # общий чекбокс переноса больше не используется как мастер-переключатель
+        # общий чекбокс переноса больше не используется как мастер-переключатель
+        move_members = True
         find_in_templates = getattr(self, 'chk_find_in_templates', None)
-        find_in_templates_flag = bool(find_in_templates.isChecked()) if find_in_templates is not None else True
+        find_in_templates_flag = bool(
+            find_in_templates.isChecked()) if find_in_templates is not None else True
         phase1_widget = getattr(self, 'chk_phase1', None)
-        phase1_flag = bool(phase1_widget.isChecked()) if phase1_widget is not None else True
+        phase1_flag = bool(phase1_widget.isChecked()
+                           ) if phase1_widget is not None else True
         move_category_widget = getattr(self, 'chk_move_category', None)
-        move_category_flag = bool(move_category_widget.isChecked()) if move_category_widget is not None else True
-        self.rename_btn.setEnabled(False); self.rename_stop_btn.setEnabled(True)
-        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, ns_sel, leave_cat, leave_other, move_members, find_in_templates_flag, phase1_flag, move_category_flag)
+        move_category_flag = bool(move_category_widget.isChecked(
+        )) if move_category_widget is not None else True
+        self.rename_btn.setEnabled(False)
+        self.rename_stop_btn.setEnabled(True)
+        self.mrworker = RenameWorker(self.tsv_path_rename.text(), user, pwd, lang, fam, ns_sel, leave_cat,
+                                     leave_other, move_members, find_in_templates_flag, phase1_flag, move_category_flag)
         self.mrworker.progress.connect(lambda m: self.log(self.rename_log, m))
         self.mrworker.finished.connect(self._on_rename_finished)
         try:
@@ -5210,7 +5751,8 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, '_template_auto_cache_ui') and isinstance(self._template_auto_cache_ui, dict):
                 try:
-                    self.mrworker.template_auto_cache.update(self._template_auto_cache_ui)
+                    self.mrworker.template_auto_cache.update(
+                        self._template_auto_cache_ui)
                 except Exception:
                     pass
         except Exception:
@@ -5225,9 +5767,9 @@ class MainWindow(QMainWindow):
     def _on_rename_finished(self):
         self.rename_btn.setEnabled(True)
         self.rename_stop_btn.setEnabled(False)
-        msg = 'Остановлено!' if getattr(self, 'mrworker', None) and getattr(self.mrworker, '_stop', False) else '<b>Переименование завершено!</b>'
+        msg = 'Остановлено!' if getattr(self, 'mrworker', None) and getattr(
+            self.mrworker, '_stop', False) else '<b>Переименование завершено!</b>'
         self.log(self.rename_log, msg)
-
 
     def _on_lang_change(self, new_lang):
         edits = [
@@ -5256,30 +5798,31 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-
     def closeEvent(self, event):
         running_threads = []
-        for attr in ('worker','rworker','cworker','mrworker'):
+        for attr in ('worker', 'rworker', 'cworker', 'mrworker'):
             t = getattr(self, attr, None)
             if t and t.isRunning():
                 running_threads.append(attr)
         if running_threads:
-            res = QMessageBox.question(self, 'Внимание', 'Некоторые операции ещё выполняются. Закрыть программу?')
+            res = QMessageBox.question(
+                self, 'Внимание', 'Некоторые операции ещё выполняются. Закрыть программу?')
             if res != QMessageBox.Yes:
                 event.ignore()
                 return
         super().closeEvent(event)
 
-
     def show_debug(self):
         global DEBUG_VIEW
         if DEBUG_VIEW is not None and not DEBUG_VIEW.parent().isHidden():
-            DEBUG_VIEW.parent().raise_(); DEBUG_VIEW.parent().activateWindow(); return
+            DEBUG_VIEW.parent().raise_()
+            DEBUG_VIEW.parent().activateWindow()
+            return
 
         dlg = QDialog(self)
         dlg.setAttribute(Qt.WA_DeleteOnClose)
         dlg.setWindowTitle('Debug log')
-        dlg.resize(700,500)
+        dlg.resize(700, 500)
         v = QVBoxLayout(dlg)
         txt = QPlainTextEdit('\n'.join(DEBUG_BUFFER))
         txt.setReadOnly(True)
@@ -5296,13 +5839,16 @@ class MainWindow(QMainWindow):
             DEBUG_VIEW = None
         dlg.destroyed.connect(on_close)
 
-        btn_clear = QPushButton('Clear'); btn_close = QPushButton('Close')
+        btn_clear = QPushButton('Clear')
+        btn_close = QPushButton('Close')
         btn_clear.clicked.connect(lambda: [DEBUG_BUFFER.clear(), txt.clear()])
         btn_close.clicked.connect(dlg.close)
-        h = QHBoxLayout(); h.addStretch(); h.addWidget(btn_clear); h.addWidget(btn_close)
+        h = QHBoxLayout()
+        h.addStretch()
+        h.addWidget(btn_clear)
+        h.addWidget(btn_close)
         v.addLayout(h)
         dlg.show()
-
 
     def switch_account(self):
 
@@ -5323,11 +5869,13 @@ class MainWindow(QMainWindow):
 
 # ===== Main =====
 
+
 def main():
     # Ensure Windows taskbar uses our EXE icon
     try:
         if sys.platform.startswith('win'):
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('sc113.WikiCatTool')
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                'sc113.WikiCatTool')
     except Exception:
         pass
 
@@ -5347,8 +5895,11 @@ def main():
         app.setStyleSheet(qdarktheme.load_stylesheet())
     except ImportError:
         pass
-    w = MainWindow(); w.load_creds(); w.show()
+    w = MainWindow()
+    w.load_creds()
+    w.show()
     sys.exit(app.exec())
 
+
 if __name__ == '__main__':
-    main() 
+    main()
