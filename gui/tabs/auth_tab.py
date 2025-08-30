@@ -85,7 +85,7 @@ class AuthTab(QWidget):
         # Верхняя строка: версия справа
         try:
             top_row = QHBoxLayout()
-            top_row.setContentsMargins(6, 6, 6, 0)
+            top_row.setContentsMargins(6, 6, 0, 0)
             top_row.setSpacing(0)
             top_row.addStretch()
             self.version_label = QLabel(f"v{APP_VERSION}")
@@ -526,6 +526,43 @@ class AuthTab(QWidget):
                 self, 'Ошибка', 'Введите имя пользователя и пароль.')
             self._apply_cred_style(False)
             return
+
+        # Перед первой авторизацией — запросить подтверждение условий
+        try:
+            consent_path = os.path.join(_dist_configs_dir(), 'consent.accepted')
+            consent_ok = os.path.isfile(consent_path)
+        except Exception:
+            consent_ok = False
+        if not consent_ok:
+            try:
+                consent_text = (
+                    'Авторизуясь, вы соглашаетесь с правилами использования Wikimedia и локальными правилами конкретного проекта.\n\n'
+                    'Ответственность за любые изменения и массовые правки несёт пользователь, вносящий их.'
+                )
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Warning)
+                msg_box.setWindowTitle('Подтверждение условий')
+                msg_box.setText(consent_text)
+                btn_accept = msg_box.addButton('Подтвердить', QMessageBox.YesRole)
+                btn_decline = msg_box.addButton('Отказаться', QMessageBox.RejectRole)
+                try:
+                    msg_box.setDefaultButton(btn_accept)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+                msg_box.exec()
+                if msg_box.clickedButton() is not btn_accept:
+                    debug('Пользователь отказался от условий — авторизация отменена')
+                    return
+                try:
+                    os.makedirs(_dist_configs_dir(), exist_ok=True)
+                    with open(consent_path, 'w', encoding='utf-8') as f:
+                        f.write('1')
+                except Exception as e:
+                    debug(f'Не удалось записать флаг согласия: {e}')
+            except Exception as e:
+                debug(f'Ошибка показа диалога согласия: {e}')
+                return
+
         # Запускаем логин в рабочем потоке, чтобы UI не завис при сетевых/блокирующих ошибках (в т.ч. IP-запрет)
         debug('Блокируем кнопку авторизации и запускаем LoginWorker')
         self.login_btn.setEnabled(False)
