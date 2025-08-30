@@ -542,8 +542,8 @@ def _resolve_ns_context_from_tree(tree: QTreeWidget):
         # Вкладки хранят ссылку на главное окно в поле parent_window
         mw = getattr(parent, 'parent_window', None) or getattr(parent, 'window', lambda: None)()
         ns_manager = getattr(mw, 'namespace_manager', None)
-        family = getattr(mw, 'current_family', None) or 'wikipedia'
-        lang = getattr(mw, 'current_lang', None) or 'ru'
+        family = getattr(mw, 'current_family', None)
+        lang = getattr(mw, 'current_lang', None)
         if ns_manager is None:
             try:
                 from ...core.namespace_manager import get_namespace_manager
@@ -562,7 +562,7 @@ def _detect_object_type_by_ns(tree: QTreeWidget, title: str) -> str:
     """
     try:
         ns_manager, family, lang = _resolve_ns_context_from_tree(tree)
-        if ns_manager:
+        if ns_manager and family and lang:
             txt = (title or '').strip()
             # Template (10) и Module (828)
             if ns_manager.has_prefix_by_policy(family, lang, txt, {10, 828}):
@@ -592,7 +592,7 @@ def _is_template_like_source(tree: QTreeWidget, source: str) -> bool:
         if not source:
             return False
         ns_manager, family, lang = _resolve_ns_context_from_tree(tree)
-        if ns_manager:
+        if ns_manager and family and lang:
             return ns_manager.has_prefix_by_policy(family, lang, source, {10, 828})
     except Exception:
         pass
@@ -1160,19 +1160,26 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                     try:
                         # Пытаемся собрать URL из текущих family/lang главного окна
                         ns_manager, family, lang = _resolve_ns_context_from_tree(tree)
-                        host = 'ru.wikipedia.org'
+                        if not (ns_manager and family and lang):
+                            return
                         try:
                             from ..dialogs.template_review_dialog import TemplateReviewDialog
-                            host = TemplateReviewDialog.build_host(family or 'wikipedia', lang or 'ru')
+                            host = TemplateReviewDialog.build_host(family, lang)
                         except Exception:
-                            pass
+                            return
                         import urllib.parse as _up
                         def _add_prefix(title_base: str, ns_id: int | None) -> str:
                             if not ns_id:
                                 return title_base
+                            # Не добавляем префикс, если уже есть согласно политике NS
+                            try:
+                                if ns_manager.has_prefix_by_policy(family, lang, title_base, {ns_id}):
+                                    return title_base
+                            except Exception:
+                                pass
                             try:
                                 from ...constants import DEFAULT_EN_NS as _DEN
-                                pref = ns_manager.get_policy_prefix(family or 'wikipedia', lang or 'ru', ns_id, _DEN.get(ns_id, '')) if ns_manager else ''
+                                pref = ns_manager.get_policy_prefix(family, lang, ns_id, _DEN.get(ns_id, '')) if ns_manager else ''
                             except Exception:
                                 from ...constants import DEFAULT_EN_NS as _DEN
                                 pref = _DEN.get(ns_id, '')
