@@ -356,10 +356,10 @@ class RenameWorker(BaseWorker):
                 return
 
             # Сформируем комментарий к правке для операции переименования
+            # В summary оставляем только дополнительный комментарий (без «Old → New»),
+            # так как информация о переименовании отображается автоматически системой.
             comment_text = self.override_comment or (reason or '')
-            move_summary = f"[[{old_name}]] → [[{new_name}]]"
-            if comment_text:
-                move_summary = f"{move_summary} — {comment_text}"
+            move_summary = comment_text
 
             # Системное сообщение: начинаем переименование
             try:

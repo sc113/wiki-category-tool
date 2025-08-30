@@ -24,6 +24,10 @@ from PySide6.QtGui import QAction
 from PySide6.QtGui import QDesktopServices
 
 
+# Последняя пара переименования для системных сообщений (начало/успех)
+_LAST_RENAME_OLD: str | None = None
+_LAST_RENAME_NEW: str | None = None
+
 def add_info_button(parent_widget, host_layout, text: str, inline: bool = False):
     """Insert an ℹ button.
 
@@ -610,7 +614,7 @@ def init_log_tree(parent_widget) -> QTreeWidget:
     try:
         # Добавляем колонку «Категория» между Заголовком и Источником
         tree.setColumnCount(6)
-        tree.setHeaderLabels(['Время', 'Тип', 'Статус', 'Заголовок', 'Категория', 'Источник'])
+        tree.setHeaderLabels(['Время', 'Тип', 'Статус', 'Действие или заголовок', 'Категория', 'Источник'])
         # Плоская таблица: без древовидности и индикаторов
         tree.setRootIsDecorated(False)
         tree.setAlternatingRowColors(True)
@@ -868,6 +872,34 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
         s = (raw_msg or '').strip()
         # Время — текущее
         ts = datetime.now().strftime('%H:%M:%S')
+        # 0) Спец-обработка системных сообщений переименования
+        try:
+            import re as _re0
+            # Приводим к plain‑тексту для устойчивого парсинга
+            plain = _re0.sub(r'<[^>]+>', '', s)
+            # Начало переименования: «Начинаем переименование: Old → New»
+            m_begin = _re0.search(r"Начинаем\s+переименовани[ея]:\s*(?P<old>.+?)\s*→\s*(?P<new>.+)$", plain)
+            if m_begin:
+                try:
+                    global _LAST_RENAME_OLD, _LAST_RENAME_NEW
+                    _LAST_RENAME_OLD = (m_begin.group('old') or '').strip()
+                    _LAST_RENAME_NEW = (m_begin.group('new') or '').strip()
+                except Exception:
+                    pass
+                # В колонку «Категория» — старое имя; строка — служебная, без открытия по клику
+                title_txt = f"Начинаем переименование: {_LAST_RENAME_OLD} → {_LAST_RENAME_NEW}"
+                log_tree_add(tree, ts, _LAST_RENAME_OLD, title_txt, 'manual', 'success', None, 'article', True)
+                return
+            # Завершение: «Переименовано успешно — …»
+            if plain.startswith('Переименовано успешно'):
+                try:
+                    new_cat = _LAST_RENAME_NEW or ''
+                except Exception:
+                    new_cat = ''
+                log_tree_add(tree, ts, new_cat, plain, 'manual', 'success', None, 'article', True)
+                return
+        except Exception:
+            pass
         # 1) Попытка распарсить сообщения нашего нового формата с эмодзи
         m = re.search(r"📁\s*(?P<cat>[^•]+)\s*•\s*📄\s*(?P<title>[^—]+)\s*—\s*(?P<status>[^()]+?)(?:\s*\((?P<src>[^)]+)\))?\s*$", s)
         if not m:
@@ -1104,6 +1136,24 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                 raw_text = (item.text(col) or '').strip()
                 if not raw_text:
                     return
+                # В колонке 3 «Действие или заголовок» открывать только явные названия страниц
+                if col == 3:
+                    # Блокируем системные строки (⚙️ в колонке «Тип»)
+                    try:
+                        if (item.text(1) or '').strip().startswith('⚙️'):
+                            return
+                    except Exception:
+                        pass
+                    # Дополнительная эвристика: исключаем строки с явными действиями/стрелками/длинными подписями
+                    try:
+                        ttxt = raw_text
+                        if ttxt[:2] in ('📄 ', '🧩 ', '🖼️ ', '📁 '):
+                            ttxt = ttxt[2:].strip()
+                        low_t = ttxt.lower()
+                        if ('→' in ttxt) or (' — ' in ttxt) or low_t.startswith('начинаем переимен') or low_t.startswith('переименовано успешно'):
+                            return
+                    except Exception:
+                        pass
                 m = QMenu(tree)
                 act_open = QAction('Открыть', m)
                 def _open():
