@@ -31,7 +31,7 @@ from ...core.pywikibot_config import apply_pwb_config, _dist_configs_dir
 from ..widgets.ui_helpers import (
     embed_button_in_lineedit, add_info_button, pick_file, 
     open_from_edit, set_start_stop_ratio,
-    init_log_tree, log_tree_parse_and_add, log_tree_add
+    init_log_tree, log_tree_parse_and_add, log_tree_add, log_tree_add_event
 )
 from ..dialogs.template_review_dialog import TemplateReviewDialog
 
@@ -618,6 +618,11 @@ class RenameTab(QWidget):
         
         # Подключаем сигналы
         self.mrworker.progress.connect(lambda m: log_tree_parse_and_add(self.rename_log_tree, m))
+        # Подключаем структурированные события
+        try:
+            self.mrworker.log_event.connect(lambda e: log_tree_add_event(self.rename_log_tree, e))
+        except Exception:
+            pass
         # Прогресс по файлу TSV
         try:
             self.mrworker.tsv_progress_init.connect(self._rename_outer_init)

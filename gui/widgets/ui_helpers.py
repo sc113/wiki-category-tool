@@ -24,6 +24,32 @@ from PySide6.QtGui import QAction
 from PySide6.QtGui import QDesktopServices
 
 
+# Структурированный приём событий из воркера
+def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
+    try:
+        if not isinstance(event, dict):
+            return
+        ts = datetime.now().strftime('%H:%M:%S')
+        et = (event.get('type') or '').strip()
+        status = (event.get('status') or 'info').strip().lower()
+        # Нормализуем статус к известным ключам
+        if status not in ('success', 'skipped', 'error', 'not_found', 'info'):
+            status = 'info'
+        if et == 'category_move_start':
+            old_cat = (event.get('old_category') or '').strip()
+            new_cat = (event.get('new_category') or '').strip()
+            cnt_str = (event.get('count_str') or str(event.get('count') or '')).strip()
+            title_txt = f"ℹ️ Перенос содержимого категории {old_cat} → {new_cat}"
+            log_tree_add(tree, ts, old_cat, title_txt, 'manual', status or 'info', cnt_str or None, 'category', True)
+            return
+        if et == 'destination_exists':
+            dst = (event.get('title') or '').strip()
+            title_txt = f"Страница назначения {dst} уже существует."
+            log_tree_add(tree, ts, dst, title_txt, 'manual', status or 'info', None, 'article', True)
+            return
+    except Exception:
+        pass
+
 # Последняя пара переименования для системных сообщений (начало/успех)
 _LAST_RENAME_OLD: str | None = None
 _LAST_RENAME_NEW: str | None = None
@@ -900,6 +926,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
                 return
         except Exception:
             pass
+        # 0b) Спец‑регексы убраны — такие строки приходят как структурированные события
         # 1) Попытка распарсить сообщения нашего нового формата с эмодзи
         m = re.search(r"📁\s*(?P<cat>[^•]+)\s*•\s*📄\s*(?P<title>[^—]+)\s*—\s*(?P<status>[^()]+?)(?:\s*\((?P<src>[^)]+)\))?\s*$", s)
         if not m:
@@ -1122,20 +1149,33 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                 col = tree.columnAt(pos.x())
                 if col not in (3, 4, 5):
                     return
-                # Блокируем для информационных строк
+                # Блокируем для информационных строк только для колонки «Действие или заголовок»
                 try:
-                    st = (item.text(2) or '')
-                    if 'Инфо' in st or 'ℹ' in st:
-                        return
+                    if col == 3:
+                        st = (item.text(2) or '')
+                        if 'Инфо' in st or 'ℹ' in st:
+                            return
                 except Exception:
                     pass
-                # Дополнительно блокируем текстовые «служебные» строки
-                raw_all = ' '.join([(item.text(i) or '') for i in range(tree.columnCount())]).strip().lower()
-                if 'пропущено переименование категории' in raw_all:
-                    return
+                # Дополнительно блокируем текстовые «служебные» строки — только для колонки 3
+                if col == 3:
+                    raw_all = ' '.join([(item.text(i) or '') for i in range(tree.columnCount())]).strip().lower()
+                    if 'пропущено переименование категории' in raw_all:
+                        return
                 raw_text = (item.text(col) or '').strip()
                 if not raw_text:
                     return
+                # Для колонки «Источник»: не показываем меню, если это просто количество страниц
+                if col == 5:
+                    try:
+                        import re as _re
+                        txt_plain = raw_text
+                        if txt_plain[:2] in ('🧩 ', '🧪 ', '📁 ', '📄 ', '🖼️ '):
+                            txt_plain = txt_plain[2:].strip()
+                        if _re.match(r'^\s*\d+\s*(страниц(?:а|ы)?|строк(?:а|и)?)?\s*$', txt_plain, _re.I):
+                            return
+                    except Exception:
+                        pass
                 # В колонке 3 «Действие или заголовок» открывать только явные названия страниц
                 if col == 3:
                     # Блокируем системные строки (⚙️ в колонке «Тип»)
@@ -1188,6 +1228,9 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                         txt = raw_text
                         # Сначала удалим возможные эмодзи
                         if txt[:2] in ('📄 ', '🧩 ', '🖼️ ', '📁 '):
+                            txt = txt[2:].strip()
+                        # Для «Источник»: уберём эмодзи источника (🧩/🧪)
+                        if col == 5 and txt[:2] in ('🧩 ', '🧪 '):
                             txt = txt[2:].strip()
 
                         # Колонка 3: заголовок с эмодзи — определяем ns
@@ -1247,10 +1290,30 @@ def _auto_expand_columns_for_row(tree: QTreeWidget, row: QTreeWidgetItem) -> Non
                 continue  # не трогаем «Время», «Тип», «Статус»
             try:
                 txt = row.text(col) or ''
-                width_needed = fm.horizontalAdvance(txt) + padding
+                # Учитываем метрику текста и особенности эмодзи/иконок
+                try:
+                    w1 = fm.horizontalAdvance(txt)
+                except Exception:
+                    w1 = 0
+                try:
+                    w2 = fm.boundingRect(txt).width()
+                except Exception:
+                    w2 = 0
+                width_needed = max(w1, w2) + padding
+                # Небольшой запас на внутренние отступы и возможные отличия метрик эмодзи
+                extra = 5
+                if col == 3:
+                    extra = 6
+                try:
+                    if txt and (txt[0:2] in ('📄 ', '🧩 ', '🖼️ ', '📁 ', 'ℹ️ ')):
+                        extra += 6
+                except Exception:
+                    pass
+                width_needed += extra
                 cur = tree.columnWidth(col)
                 if width_needed > cur:
-                    tree.setColumnWidth(col, min(width_needed, 1200))
+                    # Растягиваем по длине самой длинной строки без жёсткого лимита
+                    tree.setColumnWidth(col, width_needed)
             except Exception:
                 pass
     except Exception:

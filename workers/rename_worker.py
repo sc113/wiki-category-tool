@@ -29,6 +29,8 @@ class RenameWorker(BaseWorker):
     
     template_review_request = Signal(object)
     review_response = Signal(object)
+    # Структурированные события для UI
+    log_event = Signal(object)
     # Прогресс по TSV: инициализация общего количества и инкремент по строкам
     tsv_progress_init = Signal(int)
     tsv_progress_inc = Signal()
@@ -353,7 +355,14 @@ class RenameWorker(BaseWorker):
                 self.progress.emit(f"Страница <b>{html.escape(old_name)}</b> не найдена.")
                 return
             if new_page.exists():
-                self.progress.emit(f"Страница назначения <b>{html.escape(new_name)}</b> уже существует.")
+                # Структурированное событие; текстовый лог используем только как фолбэк
+                try:
+                    self.log_event.emit({'type': 'destination_exists', 'title': new_name, 'status': 'info'})
+                except Exception:
+                    try:
+                        self.progress.emit(f"Страница назначения <b>{html.escape(new_name)}</b> уже существует.")
+                    except Exception:
+                        self.progress.emit(f"Страница назначения {new_name} уже существует.")
                 return
 
             # Сформируем комментарий к правке для операции переименования
@@ -476,8 +485,19 @@ class RenameWorker(BaseWorker):
                     return
                 
                 try:
-                    self.progress.emit(f"ℹ️ Перенос содержимого категории <b>{html.escape(old_cat_full)}</b> → <b>{html.escape(new_cat_full)}</b>: {format_russian_pages_nominative(len(members_titles))}")
+                    # Структурированное событие для UI: старая категория в «Категория», число страниц — в «Источник»
+                    try:
+                        cnt = len(members_titles)
+                        cnt_str = format_russian_pages_nominative(cnt)
+                        self.log_event.emit({'type': 'category_move_start', 'old_category': old_cat_full, 'new_category': new_cat_full, 'count': cnt, 'count_str': cnt_str, 'status': 'info'})
+                    except Exception:
+                        # Фолбэк на текст, если событие не удалось отправить
+                        try:
+                            self.progress.emit(f"ℹ️ Перенос содержимого категории <b>{html.escape(old_cat_full)}</b> → <b>{html.escape(new_cat_full)}</b>: {format_russian_pages_nominative(len(members_titles))}")
+                        except Exception:
+                            self.progress.emit(f"ℹ️ Перенос содержимого категории {old_cat_full} → {new_cat_full}: {format_russian_pages_nominative(len(members_titles))}")
                 except Exception:
+                    # Если общий блок упал, попробуем простую текстовую строку
                     self.progress.emit(f"ℹ️ Перенос содержимого категории {old_cat_full} → {new_cat_full}: {format_russian_pages_nominative(len(members_titles))}")
                 try:
                     self.inner_progress_init.emit(len(members_titles))
