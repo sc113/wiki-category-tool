@@ -1052,14 +1052,21 @@ class RenameWorker(BaseWorker):
                 debug(f'Найдено совпадение в шаблоне {template_name}: {match_info["param_value"]}')
                 
                 # Создаем предложение замены
-                # Если в исходном значении первая буква была строчной и это позиционный/именованный
-                # параметр-значение категории, повышаем регистр первой буквы в новом значении
+                # Требование: предлагать значение с точно такой же капитализацией,
+                # как в исходном параметре. Если исходное значение начиналось с
+                # заглавной — сохраняем заглавную; если со строчной — сохраняем строчную.
                 is_partial = (match_info.get('type') != 'direct')
                 old_val = match_info.get('old_value') if not is_partial else (match_info.get('old_sub') or '')
                 new_val = match_info.get('new_value') if not is_partial else (match_info.get('new_sub') or '')
                 try:
-                    if old_val and new_val and old_val[:1].islower():
-                        new_val = new_val[:1].upper() + new_val[1:]
+                    if old_val and new_val:
+                        old_first = old_val[:1]
+                        new_first = new_val[:1]
+                        # Приводим первую букву нового значения к регистру первой буквы исходного
+                        if old_first.islower() and new_first.isupper():
+                            new_val = new_first.lower() + new_val[1:]
+                        elif old_first.isupper() and new_first.islower():
+                            new_val = new_first.upper() + new_val[1:]
                 except Exception:
                     pass
                 proposed_param = match_info['param_value'].replace(old_val, new_val, 1)
