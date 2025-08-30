@@ -164,6 +164,3 @@ class DebugDialog(QDialog):
     def installEventFilter(self, filter_obj):
         """Установка фильтра событий для text_edit"""
         self.text_edit.installEventFilter(filter_obj)
-
-
-# Функция show_debug_dialog удалена - используйте DebugDialog напрямую

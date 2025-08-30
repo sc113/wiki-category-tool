@@ -650,7 +650,7 @@ class TemplateManager:
                     named_idx += 1
                     rebuilt_params.append(f"{left}{eq}{val}")
                 else:
-                    # Проверяем, не помечен ли текущий безымянный индекс на удаление
+                    # Проверяем, не помечен ли текущий безымянный индекс
                     if unnamed_idx in drop_unnamed_indices:
                         unnamed_idx += 1
                         continue

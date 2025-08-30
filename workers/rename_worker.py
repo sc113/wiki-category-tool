@@ -308,7 +308,7 @@ class RenameWorker(BaseWorker):
 
                     leave_redirect = self.leave_cat_redirect if is_category else self.leave_other_redirect
                     
-                    # Если отключено переименование категории — пропускаем сам move для категорий
+                    # Если переименование категории выключено — пропускаем сам move для категорий
                     if is_category and not self.move_category:
                         try:
                             self.progress.emit(f"Пропущено переименование категории <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>. Переносим содержимое…")

@@ -32,13 +32,8 @@ from ...core.pywikibot_config import (
     _dist_configs_dir, config_base_dir, apply_pwb_config, cookies_exist,
     _delete_all_cookies, reset_pywikibot_session
 )
-# AWB функции удалены
 from ...utils import debug, default_summary, default_create_summary
 from ...workers.login_worker import LoginWorker
-
-
-# AWB функция удалена
-
 
 class AuthTab(QWidget):
     """Вкладка авторизации"""
@@ -60,10 +55,7 @@ class AuthTab(QWidget):
         self._login_worker = None
         self._last_loaded_lang = None  # Для отслеживания последнего загруженного языка
         
-        # ОТКЛЮЧАЕМ таймер - он вызывает зависания при вводе текста
-        # self._namespace_update_timer = QTimer()
-        # self._namespace_update_timer.setSingleShot(True)
-        # self._namespace_update_timer.timeout.connect(self._delayed_namespace_update)
+        
         self._pending_lang = None
 
         # UI элементы
@@ -340,8 +332,7 @@ class AuthTab(QWidget):
         except Exception:
             pass
 
-        # ОТКЛЮЧАЕМ автоматическое обновление при вводе текста - это вызывает зависания
-        # self.lang_combo.currentTextChanged.connect(self._on_lang_change_immediate)
+        
         
         # Обновление только при потере фокуса или нажатии Enter
         self.lang_combo.lineEdit().editingFinished.connect(self._on_lang_editing_finished)
@@ -738,8 +729,6 @@ class AuthTab(QWidget):
 
             self.prev_lang = new_lang
             
-            # ОТКЛЮЧАЕМ автоматическое обновление namespace'ов при изменении языка
-            # чтобы избежать зависания из-за синхронных HTTP-запросов к API
             debug(f'Язык изменен на {new_lang}, но автоматическое обновление namespace отключено')
             
             # Сразу уведомляем об изменении языка без задержки
@@ -790,8 +779,6 @@ class AuthTab(QWidget):
 
             self._last_loaded_lang = new_lang
 
-            # ОТКЛЮЧАЕМ автоматическое обновление namespace'ов при вводе языка
-            # чтобы избежать зависания из-за синхронных HTTP-запросов к API
             debug(f'Пропускаем автоматическое обновление namespace для {new_lang} (отключено для предотвращения зависания)')
             
             # Только уведомляем об изменении языка без обновления комбобоксов

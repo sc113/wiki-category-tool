@@ -317,11 +317,6 @@ class ReplaceTab(QWidget):
         if page_count == 0:
             QMessageBox.warning(self, 'Ошибка', 'В файле нет страниц для замены.')
             return
-        
-        # Показываем диалог подтверждения
-        from ..dialogs.confirmation_dialog import ConfirmationDialog
-        if not ConfirmationDialog.confirm_operation("заменить", page_count, self):
-            return
 
         # Получаем данные авторизации от родительского окна
         if not self.parent_window:
@@ -446,8 +441,3 @@ class ReplaceTab(QWidget):
     def update_summary(self, lang: str):
         """Автообновление summary при смене языка"""
         self.update_language(lang)
-    
-    # Локальные validate_tsv/check_tsv_format удалены — используйте хелперы из ui_helpers
-    
-    # Константа для лимита предпросмотра (убрана - показываем все строки)
-    # PREVIEW_LIMIT = 5

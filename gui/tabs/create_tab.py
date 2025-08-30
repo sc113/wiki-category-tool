@@ -306,11 +306,6 @@ class CreateTab(QWidget):
         if page_count == 0:
             QMessageBox.warning(self, 'Ошибка', 'В файле нет страниц для создания.')
             return
-        
-        # Показываем диалог подтверждения
-        from ..dialogs.confirmation_dialog import ConfirmationDialog
-        if not ConfirmationDialog.confirm_operation("создать", page_count, self):
-            return
             
         # Получаем данные авторизации от родительского окна
         if not self.parent_window:
@@ -430,9 +425,7 @@ class CreateTab(QWidget):
     def update_summary(self, lang: str):
         """Автообновление summary при смене языка"""
         self.update_language(lang)
-    
-    # Локальные validate_tsv/check_tsv_format удалены — используйте хелперы из ui_helpers
-    
+
     def check_page_exists(self, title: str, lang: str, family: str) -> bool:
         """Проверка существования страницы"""
         # Эта функция будет использоваться в CreateWorker
@@ -456,9 +449,5 @@ class CreateTab(QWidget):
             QMessageBox.Yes | QMessageBox.No
         )
         return reply == QMessageBox.Yes
-    
-    # Константа для лимита предпросмотра (убрана - показываем все строки)
-    # PREVIEW_LIMIT = 5
-    
-    # Константа для отключения малой правки при создании
+
     MINOR_EDIT_DISABLED = True

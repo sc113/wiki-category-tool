@@ -251,9 +251,7 @@ class MainWindow(QMainWindow):
         if family:
             family_text = family.currentText() or 'wikipedia'
             self.current_family = family_text
-            # ОТКЛЮЧАЕМ автоматическое обновление namespace при изменении языка
             debug(f'Пропускаем обновление namespace при изменении языка на {new_lang}')
-            # self._update_all_namespaces(new_lang, family_text)
         
         # Уведомление вкладок об изменении языка
         for tab in self.content_tabs():
@@ -335,7 +333,6 @@ class MainWindow(QMainWindow):
         """Обновление семейства проектов"""
         self.current_family = new_family
         
-        # ОТКЛЮЧАЕМ автоматическое обновление namespace при изменении семейства
         debug(f'Пропускаем обновление namespace при изменении семейства на {new_family}')
 
         # Уведомление вкладок об изменении семейства
@@ -492,8 +489,6 @@ class MainWindow(QMainWindow):
             from ..utils import get_debug_view
             debug_view = get_debug_view()
             if event.type() == QEvent.KeyPress and debug_view is not None and obj is debug_view:
-                # Обработка специальных клавиш в debug окне
-                # AWB bypass система удалена в рефакторированной версии
                 pass
         except Exception:
             pass

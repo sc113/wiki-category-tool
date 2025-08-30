@@ -254,8 +254,6 @@ class ParseTab(QWidget):
         h_main.addWidget(right_group, 1)
         main_layout.addLayout(h_main)
 
-        # Удалён код закрепления (i) как дочерних виджетов — используется упрощённый вариант в строках выше
-    
     def update_namespace_combo(self, family: str, lang: str):
         """Обновление комбобокса пространств имен для текущего языка/проекта"""
         try:
