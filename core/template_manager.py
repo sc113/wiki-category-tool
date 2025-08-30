@@ -21,6 +21,8 @@ class TemplateManager:
             config_manager: Configuration manager instance
         """
         self.config_manager = config_manager
+        # Кэш правил в памяти. Ключ — нормализованный ключ шаблона
+        # вида "family::lang::name_cf" (см. _norm_tmpl_key).
         self.template_auto_cache: Dict[str, Any] = {}
         self.auto_skip_templates: set = set()
         self.auto_confirm_direct_all = False
@@ -28,6 +30,8 @@ class TemplateManager:
         self._rules_file_path: Optional[str] = None
         self._rules_mtime: Optional[float] = None
         self._prompt_events: Dict[int, Event] = {}
+        # Отображаемые (читаемые) названия шаблонов для сохранения в файл
+        self._display_names: Dict[str, str] = {}
         
         # Initialize rules file
         self._init_rules_file()
@@ -69,6 +73,10 @@ class TemplateManager:
         except Exception:
             self._rules_file_path = None
     
+    def _project_key(self, family: str, lang: str) -> str:
+        """Возвращает ключ проекта в формате 'lang:family' (например 'ru:wikipedia')."""
+        return f"{(lang or '').strip().lower()}:{(family or '').strip().lower()}"
+
     def _load_rules(self):
         """Load template rules from JSON file supporting legacy and new formats.
 
@@ -84,40 +92,89 @@ class TemplateManager:
                 with open(self._rules_file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    scope = 'rename_worker'
-                    scoped = data.get(scope, {}) or {}
-                    # Загружаем поддерживаемые поля. Приоритет у нового поля 'auto'.
-                    cleaned: Dict[str, Any] = {}
-                    for key, bucket in (scoped.items() if isinstance(scoped, dict) else []):
-                        try:
-                            if not isinstance(bucket, dict):
+                    # Формат V2: ключи верхнего уровня — 'lang:family'
+                    # Значения — dict с шаблонами напрямую или в поле 'templates'.
+                    # Формат V1 (legacy): data['rename_worker'] содержит словарь
+                    # '{fam::lang::name_cf}' → bucket.
+                    if 'rename_worker' in data and isinstance(data.get('rename_worker'), dict):
+                        scoped = data.get('rename_worker') or {}
+                        for key, bucket in scoped.items():
+                            try:
+                                if not isinstance(bucket, dict):
+                                    continue
+                                # Нормализуем bucket
+                                rules_list_raw = list(bucket.get('rules') or [])
+                                rules_list: List[Dict[str, Any]] = []
+                                for r in rules_list_raw:
+                                    if isinstance(r, dict):
+                                        rr = dict(r)
+                                        if 'auto' not in rr or not isinstance(rr.get('auto'), str):
+                                            rr['auto'] = 'none'
+                                        rules_list.append(rr)
+                                auto_val = bucket.get('auto')
+                                if isinstance(auto_val, str):
+                                    auto_cf = auto_val.strip().casefold()
+                                    auto_norm = auto_cf if auto_cf in ('approve', 'skip') else 'none'
+                                else:
+                                    approve_flag = bool(bucket.get('approve', False))
+                                    skip_flag = bool(bucket.get('skip', False))
+                                    auto_norm = 'approve' if approve_flag else ('skip' if skip_flag else 'none')
+                                # Храним как есть по старому ключу
+                                self.template_auto_cache[key] = {'rules': rules_list, 'auto': auto_norm}
+                                if auto_norm == 'skip':
+                                    try:
+                                        self.auto_skip_templates.add(key)
+                                    except Exception:
+                                        pass
+                            except Exception:
                                 continue
-                            # Поддерживаем хранение auto на уровне КАЖДОГО правила
-                            rules_list_raw = list(bucket.get('rules') or [])
-                            rules_list: List[Dict[str, Any]] = []
-                            for r in rules_list_raw:
-                                if isinstance(r, dict):
-                                    rr = dict(r)
-                                    if 'auto' not in rr or not isinstance(rr.get('auto'), str):
-                                        rr['auto'] = 'none'
-                                    rules_list.append(rr)
-
-                            auto_val = bucket.get('auto')
-                            if isinstance(auto_val, str):
-                                auto_cf = auto_val.strip().casefold()
-                                auto_norm = auto_cf if auto_cf in ('approve', 'skip') else 'none'
-                            else:
-                                approve_flag = bool(bucket.get('approve', False))
-                                skip_flag = bool(bucket.get('skip', False))
-                                auto_norm = 'approve' if approve_flag else ('skip' if skip_flag else 'none')
-
-                            cleaned[key] = {
-                                'rules': rules_list,
-                                'auto': auto_norm,
-                            }
-                        except Exception:
-                            continue
-                    self.template_auto_cache.update(cleaned)
+                    else:
+                        # Новый формат: {'ru:wikipedia': {'templates': { 'Публицист': {...}}}}
+                        for proj_key, tmpl_map in data.items():
+                            try:
+                                if not isinstance(tmpl_map, dict):
+                                    continue
+                                # Разрешаем как с 'templates', так и без него
+                                inner = tmpl_map.get('templates') if isinstance(tmpl_map.get('templates'), dict) else tmpl_map
+                                if not isinstance(inner, dict):
+                                    continue
+                                # Разобрать проект
+                                lang = ''
+                                family = ''
+                                try:
+                                    parts = str(proj_key or '').split(':', 1)
+                                    if len(parts) == 2:
+                                        lang, family = parts[0].strip(), parts[1].strip()
+                                except Exception:
+                                    pass
+                                if not lang or not family:
+                                    continue
+                                for display_name, bucket in inner.items():
+                                    if not isinstance(bucket, dict):
+                                        continue
+                                    # Нормализация
+                                    rules_list_raw = list(bucket.get('rules') or [])
+                                    rules_list: List[Dict[str, Any]] = []
+                                    for r in rules_list_raw:
+                                        if isinstance(r, dict):
+                                            rr = dict(r)
+                                            if 'auto' not in rr or not isinstance(rr.get('auto'), str):
+                                                rr['auto'] = 'none'
+                                            rules_list.append(rr)
+                                    auto_val = bucket.get('auto')
+                                    auto_cf = str(auto_val or 'none').strip().casefold()
+                                    auto_norm = auto_cf if auto_cf in ('approve', 'skip') else 'none'
+                                    # Ключ в памяти
+                                    tmpl_key = self._norm_tmpl_key(display_name, family, lang)
+                                    self.template_auto_cache[tmpl_key] = {
+                                        'rules': rules_list,
+                                        'auto': auto_norm
+                                    }
+                                    self._display_names[tmpl_key] = str(display_name)
+                                    if auto_norm == 'skip':
+                                        self.auto_skip_templates.add(tmpl_key)
+                            except Exception:
+                                continue
                 try:
                     self._rules_mtime = os.path.getmtime(self._rules_file_path)
                 except Exception:
@@ -149,16 +206,21 @@ class TemplateManager:
         try:
             if not self._rules_file_path:
                 return
-            scope = 'rename_worker'
-            # Сохраняем только поддерживаемые поля
-            minimal_scope: Dict[str, Any] = {}
+            # Группируем по проекту 'lang:family' и сохраняем читаемые имена шаблонов
+            by_project: Dict[str, Dict[str, Any]] = {}
             for key, bucket in self.template_auto_cache.items():
                 try:
-                    approve_flag = bool(bucket.get('approve', False))
-                    skip_flag = bool(bucket.get('skip', False))
-                    auto_val = 'approve' if approve_flag else ('skip' if skip_flag else 'none')
-
-                    # Сохраняем auto на уровне каждого правила
+                    # Разобрать fam/lang из ключа вида fam::lang::name
+                    fam = ''
+                    lng = ''
+                    try:
+                        parts = str(key).split('::', 2)
+                        if len(parts) >= 2:
+                            fam, lng = parts[0].strip(), parts[1].strip()
+                    except Exception:
+                        pass
+                    proj_key = self._project_key(fam, lng)
+                    # Правила и auto
                     rules_src = list((bucket.get('rules') or []))
                     rules_norm: List[Dict[str, Any]] = []
                     for r in rules_src:
@@ -167,14 +229,27 @@ class TemplateManager:
                             if 'auto' not in rr or not isinstance(rr.get('auto'), str):
                                 rr['auto'] = 'none'
                             rules_norm.append(rr)
-
-                    minimal_scope[key] = {
+                    auto_val = str(bucket.get('auto') or 'none').strip().casefold()
+                    if auto_val not in ('approve', 'skip'):
+                        auto_val = 'none'
+                    # Отображаемое имя шаблона
+                    disp = self._display_names.get(key)
+                    if not disp:
+                        # Fallback: взять последнюю часть ключа (не идеально, но лучше, чем пусто)
+                        try:
+                            disp = str(key).split('::', 2)[-1]
+                        except Exception:
+                            disp = str(key)
+                    # Размещаем
+                    dst = by_project.setdefault(proj_key, {})
+                    dst_templates = dst.setdefault('templates', {})
+                    dst_templates[disp] = {
                         'rules': rules_norm,
                         'auto': auto_val,
                     }
                 except Exception:
                     continue
-            file_data = {scope: minimal_scope}
+            file_data = by_project
             with open(self._rules_file_path, 'w', encoding='utf-8') as f:
                 json.dump(file_data, f, ensure_ascii=False, indent=2)
             try:
@@ -307,7 +382,11 @@ class TemplateManager:
             base = re.sub(r"[_\s]+", " ", base).strip()
         except Exception:
             pass
-        return base.casefold()
+        # ВКЛЮЧАЕМ СКОУП по проекту/языку, чтобы правила не пересекались
+        fam = str(family or '').strip().lower()
+        lng = str(lang or '').strip().lower()
+        # Разделитель двойное двоеточие, чтобы исключить коллизии с названиями шаблонов
+        return f"{fam}::{lng}::{base.casefold()}"
     
     def _strip_tmpl_prefix(self, title: str, family: str, lang: str) -> str:
         """
@@ -438,11 +517,17 @@ class TemplateManager:
         """
         try:
             diff = self._diff_template_params(before_chunk, after_chunk)
-            tmpl_key = self._norm_tmpl_key(diff.get('name') or '', family, lang)
+            name_for_key = diff.get('name') or ''
+            tmpl_key = self._norm_tmpl_key(name_for_key, family, lang)
             if not tmpl_key:
                 return
                 
             bucket = self._ensure_cache_bucket(tmpl_key)
+            # Сохраняем отображаемое имя для человекочитаемого JSON
+            try:
+                self._display_names[tmpl_key] = self._strip_tmpl_prefix(name_for_key, family, lang)
+            except Exception:
+                self._display_names[tmpl_key] = name_for_key
             
             # Named parameters → только правило (не дублируем в старую структуру)
             for name_cf, (oldv, newv) in (diff.get('named') or {}).items():

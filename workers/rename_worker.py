@@ -352,7 +352,20 @@ class RenameWorker(BaseWorker):
             page = pywikibot.Page(site, old_name)
             new_page = pywikibot.Page(site, new_name)
             if not page.exists():
-                self.progress.emit(f"Страница <b>{html.escape(old_name)}</b> не найдена.")
+                # Сообщение должно корректно отражать тип объекта и позволять UI
+                # определить его по префиксу. Для категории выводим только
+                # заголовок с префиксом «Категория:…» без лишнего слова «Категория » перед ним.
+                try:
+                    typ = self._page_kind(page)
+                except Exception:
+                    typ = 'страница'
+                if typ == 'категория':
+                    try:
+                        self.progress.emit(f"<b>{html.escape(old_name)}</b> не найдена.")
+                    except Exception:
+                        self.progress.emit(f"{old_name} не найдена.")
+                else:
+                    self.progress.emit(f"Страница <b>{html.escape(old_name)}</b> не найдена.")
                 return
             if new_page.exists():
                 # Структурированное событие; текстовый лог используем только как фолбэк
@@ -539,7 +552,7 @@ class RenameWorker(BaseWorker):
 
                         # Если ни фаза 1, ни фаза 2 не внесли изменений — добавим понятную строку в лог
                         try:
-                            if changes_made == 0 and (not self.find_in_templates or phase2_changes == 0):
+                            if changes_made == 0 and (not self.find_in_templates or (phase2_changes == 0 and not getattr(self, '_last_template_interactions', False))):
                                 # Для корректной классификации как «шаблонной» операции
                                 # укажем источник вида «<локальный префикс шаблона>…». Тогда в колонке «Тип» будет ✍️, а не 📝.
                                 if self.find_in_templates:
@@ -702,6 +715,11 @@ class RenameWorker(BaseWorker):
                 # Обновляем текст для дальнейшей обработки
                 original_text = modified_text
             
+            # Сброс признака «были ли какие-либо взаимодействия в диалогах» для текущей страницы
+            try:
+                self._last_template_interactions = False
+            except Exception:
+                pass
             # Интерактивная обработка шаблонов с диалогами подтверждения
             modified_text, interactive_changes = self._process_templates_interactive(
                 modified_text, old_cat_full, new_cat_full, title
@@ -1208,12 +1226,33 @@ class RenameWorker(BaseWorker):
                         # Лог в стиле оригинала (пропуск пользователем)
                         try:
                             tmpl_label = self._format_template_label(template_name, is_partial)
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label})')
+                            # Фикс: если есть совпадение только по частям (is_partial=True),
+                            # не вводим в заблуждение, что это «Категории».
+                            src_label = tmpl_label
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({src_label})')
                         except Exception:
                             self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({DEFAULT_EN_NS.get(10, 'Template:')}{template_name}{" [частично]" if is_partial else ""})')
+                        # Отметим, что было взаимодействие (диалог) — чтобы не выводить общий «пропущено, без изменений»
+                        try:
+                            self._last_template_interactions = True
+                        except Exception:
+                            pass
                         continue
                     elif action == 'cancel':
                         debug(f'Пользователь отменил процесс')
+                        # Отметим факт взаимодействия, чтобы внешний код не выводил
+                        # общий фолбэк «пропущено, без изменений (Ш:Категории)»
+                        try:
+                            self._last_template_interactions = True
+                        except Exception:
+                            pass
+                        # Лог: укажем шаблон и тип совпадения (полное/частичное), чтобы в
+                        # «Источник» корректно показалась иконка 🧪 для частичных совпадений
+                        try:
+                            tmpl_label = self._format_template_label(template_name, is_partial)
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — отменено пользователем ({tmpl_label})')
+                        except Exception:
+                            pass
                         self._stop = True
                         self.progress.emit("Процесс остановлен пользователем.")
                         return modified_text, changes

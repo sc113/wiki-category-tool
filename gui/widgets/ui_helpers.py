@@ -982,6 +982,25 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             title = f"{_fmt_cat(cat)} — не существует"
             log_tree_add(tree, ts, None, title, 'manual', 'not_found', 'API', 'category', True)
             return
+        # Новый формат: "<b>Категория:Name</b> не найдена." или любой <b>Title</b> не найден(а/о)
+        m_nf_generic = re.search(r"<b>(?P<title>[^<]+)</b>\s*не найден[ао]\.?", s, re.I)
+        if m_nf_generic:
+            title0 = (m_nf_generic.group('title') or '').strip()
+            obj_type = _detect_object_type_by_ns(tree, title0)
+            # Если это категория — продублируем в соответствующую колонку
+            cat_col = title0 if obj_type == 'category' else None
+            # Статусный хвост по роду объекта
+            if obj_type == 'category':
+                tail = 'не найдена'
+            elif obj_type == 'file':
+                tail = 'не найден'
+            elif obj_type == 'template':
+                tail = 'не найден'
+            else:
+                tail = 'не найдено'
+            title_txt = f"{title0} — {tail}"
+            log_tree_add(tree, ts, cat_col, title_txt, 'manual', 'not_found', None, obj_type, False)
+            return
         # "Категория <b>Old</b> пуста."
         m_empty = re.search(r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*пуста\.?", s, re.I)
         if m_empty:
