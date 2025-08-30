@@ -1,0 +1,217 @@
+"""
+Утилитарные функции и классы для Wiki Category Tool.
+
+Содержит:
+- Класс для перенаправления stdout/stderr в GUI
+- Функции для работы с путями и ресурсами
+- Функции для нормализации имен пользователей
+- Функции для создания стандартных комментариев к правкам
+- UI утилиты для работы с комбобоксами
+- Систему логирования и отладки
+- Функции для работы с файлами TSV
+"""
+
+import sys
+import os
+import io
+import csv
+from datetime import datetime
+from threading import Lock, local
+try:
+    from PySide6.QtCore import QObject, Signal
+except Exception:  # PySide6 может быть недоступен при импорт-тестах
+    QObject = object  # type: ignore
+    class Signal:  # type: ignore
+        def __init__(self, *_, **__):
+            pass
+        def connect(self, *_args, **_kwargs):
+            pass
+        def emit(self, *_args, **_kwargs):
+            pass
+
+# Глобальные переменные для системы логирования
+DEBUG_BUFFER = []
+DEBUG_VIEW = None
+
+# Блокировка для записи в файлы
+write_lock = Lock()
+_DBG_TLS = local()
+class _DebugBridge(QObject):
+    """Потокобезопасный мост для передачи debug-сообщений в GUI через сигнал."""
+    try:
+        message = Signal(str)
+    except Exception:
+        # Заглушка если нет Qt
+        def message(self, *_args, **_kwargs):  # type: ignore
+            pass
+
+
+DEBUG_BRIDGE = _DebugBridge()
+
+
+def get_debug_bridge():
+    """Вернуть глобальный мост для debug-сообщений."""
+    return DEBUG_BRIDGE
+
+
+
+class GuiStdWriter(io.TextIOBase):
+    """Класс для перенаправления stdout/stderr в GUI приложение."""
+
+    def write(self, s: str) -> int:
+        try:
+            if s and s.strip():
+                dbg = globals().get('debug')
+                if callable(dbg):
+                    dbg(str(s).rstrip())
+        except Exception:
+            pass
+        return len(s or '')
+
+    def flush(self) -> None:
+        pass
+
+
+def resource_path(relative: str) -> str:
+    """Возвращает абсолютный путь к ресурсу, работает для dev и PyInstaller onefile."""
+    try:
+        base_path = getattr(sys, '_MEIPASS', None)
+        if base_path and os.path.exists(base_path):
+            return os.path.join(base_path, relative)
+    except Exception:
+        pass
+    try:
+        base = os.path.dirname(__file__)
+    except Exception:
+        base = os.getcwd()
+    return os.path.join(base, relative)
+
+
+def tool_base_dir() -> str:
+    """Возвращает базовую директорию инструмента."""
+    try:
+        return os.path.dirname(__file__)
+    except NameError:
+        return os.getcwd()
+
+def write_row(title, lines, writer):
+    """Записывает строку в TSV файл с блокировкой потоков."""
+    if not lines:
+        return
+    with write_lock:
+        writer.writerow([title, *lines])
+
+
+def normalize_username(name: str | None) -> str:
+    """Нормализует имя пользователя для сравнения."""
+    if not name:
+        return ''
+    return name.strip().replace('_', ' ').casefold()
+
+
+def default_summary(lang: str) -> str:
+    """Возвращает стандартный комментарий для правок в зависимости от языка."""
+    mapping = {
+        'ru': 'Замена содержимого страницы на единообразное наполнение',
+        'uk': 'Заміна вмісту сторінки на одноманітне наповнення',
+        'be': 'Замена зместу старонкі на адзіную структуру',
+        'en': 'Replacement of the page content with uniform filling',
+        'fr': 'Remplacement du contenu pour cohérence',
+        'es': 'Sustitución del contenido para uniformidad',
+        'de': 'Ersetzung des Seiteninhalts für Konsistenz'
+    }
+    return mapping.get(lang, 'Consistency content replacement')
+
+
+def default_create_summary(lang: str) -> str:
+    """Возвращает стандартный комментарий для создания страниц в зависимости от языка."""
+    mapping = {
+        'ru': 'Создание новой категории с заготовленным содержимым',
+        'uk': 'Створення нової категорії з уніфікованим наповненням',
+        'be': 'Стварэнне новай катэгорыі з адзінай структурай',
+        'en': 'Creation of a new category with prepared content',
+        'fr': 'Création d\'une nouvelle catégorie avec contenu préparé',
+        'es': 'Creación de una nueva categoría con contenido preparado',
+        'de': 'Erstellung einer neuen Kategorie mit vorbereitetem Inhalt'
+    }
+    return mapping.get(lang, 'Category creation with prepared content')
+
+
+def adjust_combo_popup_width(combo) -> None:
+    """Настройка ширины выпадающего списка комбобокса."""
+    try:
+        view = combo.view()
+        fm = view.fontMetrics() if hasattr(view, 'fontMetrics') else combo.fontMetrics()
+        max_w = 0
+        for i in range(combo.count()):
+            text = combo.itemText(i) or ''
+            w = fm.horizontalAdvance(text)
+            if w > max_w:
+                max_w = w
+        max_w += 48
+        try:
+            view.setMinimumWidth(max_w)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+
+def debug(msg: str):
+    """Добавляет сообщение в буфер отладки с временной меткой."""
+    global DEBUG_VIEW
+    ts = datetime.now().strftime('%H:%M:%S')
+    formatted_msg = f"[{ts}] {msg}"
+    DEBUG_BUFFER.append(formatted_msg)
+    # Защита от реэнтрантности (например, при ошибках вывода stderr)
+    try:
+        if getattr(_DBG_TLS, 'in_debug', False):
+            return
+        _DBG_TLS.in_debug = True
+        try:
+            # Отправляем в GUI через сигнал (безопасно из фоновых потоков)
+            get_debug_bridge().message.emit(formatted_msg)
+        finally:
+            _DBG_TLS.in_debug = False
+    except Exception:
+        try:
+            _DBG_TLS.in_debug = False
+        except Exception:
+            pass
+        pass
+
+
+def setup_gui_stdout_redirect():
+    """Настраивает перенаправление stdout/stderr для GUI приложения."""
+    if getattr(sys, 'stdout', None) is None:
+        sys.stdout = GuiStdWriter()
+    if getattr(sys, 'stderr', None) is None:
+        sys.stderr = GuiStdWriter()
+
+
+def get_debug_buffer():
+    """Возвращает текущий буфер отладки."""
+    return DEBUG_BUFFER
+
+
+def clear_debug_buffer():
+    """Очищает буфер отладки."""
+    DEBUG_BUFFER.clear()
+
+
+def set_debug_view(view):
+    """Устанавливает виджет для отображения отладочных сообщений."""
+    global DEBUG_VIEW
+    DEBUG_VIEW = view
+
+
+def get_debug_view():
+    """Возвращает текущий виджет отладки."""
+    return DEBUG_VIEW
+
+
+def get_debug_view_ref():
+    """Возвращает ссылку на DEBUG_VIEW как список для передачи в диалоги."""
+    global DEBUG_VIEW
+    return [DEBUG_VIEW]

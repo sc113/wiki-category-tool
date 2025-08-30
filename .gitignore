@@ -1,0 +1,20 @@
+# Project-specific ignores
+
+# Generated/build artifacts
+build/
+dist/
+
+# Caches
+__pycache__/
+
+# Local data and credentials
+configs/
+
+# Legacy beta version sources
+_legacy/
+
+# Local files not for VCS
+categories.tsv
+compile.txt
+icon.ico
+
