@@ -416,28 +416,17 @@ class AuthTab(QWidget):
                     date_str = (published.split('T', 1)[0])
                 except Exception:
                     date_str = published
-            # Сравнение версий: учитываем стабильные и beta
+            # Сравнение версий: только числовые части
 
             def _num(ver: str):
                 m = re.search(r"(\d+(?:\.\d+)+|\d+)", ver or '')
                 return [int(x) for x in m.group(1).split('.')] if m else None
-
-            def _beta(ver: str):
-                m = re.search(r"beta\s*(\d+)", (ver or ''), re.I)
-                return int(m.group(1)) if m else None
-
-            def _is_beta(ver: str) -> bool:
-                return bool(re.search(r"beta", (ver or ''), re.I))
 
             local = (APP_VERSION or '').strip()
             remote = (tag or '').strip()
 
             ln = _num(local)
             rn = _num(remote)
-            lb = _beta(local)
-            rb = _beta(remote)
-            local_is_beta = _is_beta(local)
-            remote_is_beta = _is_beta(remote)
 
             def _cmp_lists(a, b):
                 la, lb_ = len(a), len(b)
@@ -449,18 +438,9 @@ class AuthTab(QWidget):
                 return 1 if a > b else -1
 
             cmp_res = None
-            # Стабильная локальная против удалённой беты — считаем локальную новее
-            if not local_is_beta and remote_is_beta:
-                cmp_res = 1
-            # Локальная бета против стабильной удалённой — удалённая новее
-            elif local_is_beta and not remote_is_beta:
-                cmp_res = -1
-            # Обе стабильные цифры — сравниваем по спискам
-            elif not local_is_beta and not remote_is_beta and ln and rn:
+            # Сравниваем только числовые части версий
+            if ln and rn:
                 cmp_res = _cmp_lists(ln, rn)
-            # Обе беты — сравниваем номера betaN
-            elif local_is_beta and remote_is_beta and lb is not None and rb is not None:
-                cmp_res = -1 if lb < rb else (1 if lb > rb else 0)
             elif local and remote:
                 # Фолбэк: строковое сравнение по равенству
                 cmp_res = 0 if local == remote else None
