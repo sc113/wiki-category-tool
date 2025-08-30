@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox
 )
 from PySide6.QtCore import Qt
+from ...utils import format_russian_pages_accusative, format_russian_pages_genitive_for_content
 from PySide6.QtGui import QIcon, QPixmap
 
 
@@ -47,22 +48,11 @@ class ConfirmationDialog(QDialog):
         icon_label.setAlignment(Qt.AlignTop)
         message_layout.addWidget(icon_label)
         
-        # Текст сообщения
-        if self.page_count == 1:
-            if self.operation_type == "создать":
-                message_text = f"Вы собираетесь создать {self.page_count} страницу."
-            else:
-                message_text = f"Вы собираетесь заменить содержимое {self.page_count} страницы."
-        elif 2 <= self.page_count <= 4:
-            if self.operation_type == "создать":
-                message_text = f"Вы собираетесь создать {self.page_count} страницы."
-            else:
-                message_text = f"Вы собираетесь заменить содержимое {self.page_count} страниц."
+        # Текст сообщения (корректные формы)
+        if self.operation_type == "создать":
+            message_text = f"Вы собираетесь создать {format_russian_pages_accusative(self.page_count)}."
         else:
-            if self.operation_type == "создать":
-                message_text = f"Вы собираетесь создать {self.page_count} страниц."
-            else:
-                message_text = f"Вы собираетесь заменить содержимое {self.page_count} страниц."
+            message_text = f"Вы собираетесь заменить содержимое {format_russian_pages_genitive_for_content(self.page_count)}."
         
         message_text += "\n\nПродолжить?"
         

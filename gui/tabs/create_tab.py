@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 
 from ...constants import PREFIX_TOOLTIP
-from ...utils import debug, default_create_summary
+from ...utils import debug, default_create_summary, format_russian_pages_nominative
 from ...workers.create_worker import CreateWorker
 from ...core.pywikibot_config import apply_pwb_config
 from ..widgets.ui_helpers import (
@@ -447,7 +447,8 @@ class CreateTab(QWidget):
         msg = f"Следующие страницы уже существуют:\n\n"
         msg += "\n".join(existing_pages[:10])  # Показываем первые 10
         if len(existing_pages) > 10:
-            msg += f"\n... и еще {len(existing_pages) - 10} страниц"
+            rest = len(existing_pages) - 10
+            msg += f"\n... и еще {format_russian_pages_nominative(rest)}"
         msg += "\n\nПродолжить создание остальных страниц?"
         
         reply = QMessageBox.question(

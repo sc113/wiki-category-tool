@@ -6,7 +6,7 @@ import csv
 
 from .base_worker import BaseWorker
 from ..core.api_client import WikimediaAPIClient
-from ..utils import write_row
+from ..utils import write_row, format_russian_pages_nominative
 
 
 class ParseWorker(BaseWorker):
@@ -100,7 +100,7 @@ class ParseWorker(BaseWorker):
             if self.output_file:
                 self.output_file.close()
             if processed_count > 0:
-                self.progress.emit(f"Сохранено {processed_count} страниц в {self.out_path}")
+                self.progress.emit(f"Сохранено {format_russian_pages_nominative(processed_count)} в {self.out_path}")
             else:
                 self.progress.emit("Нет данных для сохранения")
         except Exception as e:

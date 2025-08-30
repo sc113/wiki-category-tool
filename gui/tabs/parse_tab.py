@@ -26,7 +26,7 @@ from PySide6.QtGui import QFont
 
 from ...constants import PREFIX_TOOLTIP, REQUEST_HEADERS
 from ...core.api_client import WikimediaAPIClient, REQUEST_SESSION, _rate_wait
-from ...utils import debug
+from ...utils import debug, format_russian_subcategories_nominative
 from ...workers.parse_worker import ParseWorker
 from ..widgets.ui_helpers import (
     embed_button_in_lineedit, add_info_button, pick_file, pick_save, 
@@ -360,7 +360,7 @@ class ParseTab(QWidget):
             if subcats:
                 subcats_sorted = sorted(subcats, key=lambda s: s.casefold())
                 self.manual_list.setPlainText('\n'.join(subcats_sorted))
-                log_message(self.parse_log, f"Получено подкатегорий: {len(subcats_sorted)} (отсортировано)", debug)
+                log_message(self.parse_log, f"Получено {format_russian_subcategories_nominative(len(subcats_sorted))} (отсортировано)", debug)
             else:
                 log_message(self.parse_log, 'Подкатегории не найдены.', debug)
         except Exception as e:

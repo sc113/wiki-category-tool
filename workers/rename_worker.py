@@ -13,6 +13,7 @@ from ..core.namespace_manager import normalize_title_by_selection, title_has_ns_
 
 from ..core.template_manager import TemplateManager
 from ..constants import DEFAULT_EN_NS
+from ..utils import format_russian_pages_nominative
 
 
 class RenameWorker(BaseWorker):
@@ -465,7 +466,7 @@ class RenameWorker(BaseWorker):
                     else:
                         break
                 
-                debug(f'Найдено страниц в категории: {len(members_titles)}')
+                debug(f"Найдено {format_russian_pages_nominative(len(members_titles))} в категории")
                 if not members_titles:
                     self.progress.emit(f"Категория <b>{html.escape(old_cat_full)}</b> пуста.")
                     try:
@@ -475,9 +476,9 @@ class RenameWorker(BaseWorker):
                     return
                 
                 try:
-                    self.progress.emit(f"ℹ️ Перенос содержимого категории <b>{html.escape(old_cat_full)}</b> → <b>{html.escape(new_cat_full)}</b>: {len(members_titles)} страниц")
+                    self.progress.emit(f"ℹ️ Перенос содержимого категории <b>{html.escape(old_cat_full)}</b> → <b>{html.escape(new_cat_full)}</b>: {format_russian_pages_nominative(len(members_titles))}")
                 except Exception:
-                    self.progress.emit(f"ℹ️ Перенос содержимого категории {old_cat_full} → {new_cat_full}: {len(members_titles)} страниц")
+                    self.progress.emit(f"ℹ️ Перенос содержимого категории {old_cat_full} → {new_cat_full}: {format_russian_pages_nominative(len(members_titles))}")
                 try:
                     self.inner_progress_init.emit(len(members_titles))
                 except Exception:
