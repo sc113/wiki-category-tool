@@ -572,6 +572,68 @@ class RenameTab(QWidget):
             QMessageBox.warning(self, 'Ошибка', 'Необходимо войти в систему.')
             return
         
+        # Предупреждение, если выбран «Авто» и в TSV, похоже, названия без префиксов
+        try:
+            ns_sel_preview = self.rename_ns_combo.currentData()
+        except Exception:
+            ns_sel_preview = 'auto'
+        try:
+            is_auto = isinstance(ns_sel_preview, str) and (ns_sel_preview or '').strip().lower() == 'auto'
+        except Exception:
+            is_auto = True
+
+        if is_auto:
+            try:
+                import csv as _csv
+                plain_rows = 0
+                checked = 0
+                with open(self.rename_file_edit.text(), newline='', encoding='utf-8-sig') as _f:
+                    _reader = _csv.reader(_f, delimiter='\t')
+                    for _row in _reader:
+                        if len(_row) < 2:
+                            continue
+                        _old = (_row[0] or '').strip()
+                        _new = (_row[1] or '').strip()
+                        if not _old and not _new:
+                            continue
+                        checked += 1
+                        if (':' not in _old) and (':' not in _new):
+                            plain_rows += 1
+                        if checked >= 30:
+                            break
+                if checked > 0 and plain_rows == checked:
+                    # Информируем в лог
+                    try:
+                        info_msg = (
+                            'В файле обнаружены заголовки без префиксов пространств имён; '
+                            'в списке «Префиксы» выбран режим «Авто». По умолчанию это '
+                            'приведёт к переименованию обычных статей.'
+                        )
+                        log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, info_msg, 'manual', 'info', None, None, True)
+                    except Exception:
+                        pass
+                    msg = (
+                        'В файле обнаружены заголовки без префиксов пространств имён.\n'
+                        'В списке «Префиксы» выбран режим «Авто».\n\n'
+                        'Будет запущено переименование обычных статей; перенос содержимого категорий выполнен не будет.\n\n'
+                        'Вы уверены, что хотите продолжить?'
+                    )
+                    res = QMessageBox.question(self, 'Подтвердите запуск', msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                    if res != QMessageBox.Yes:
+                        try:
+                            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, 'Запуск отменён пользователем.', 'manual', 'info', None, None, True)
+                        except Exception:
+                            pass
+                        return
+                    else:
+                        try:
+                            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, 'Подтверждено: запуск переименования статей без нормализации NS.', 'manual', 'info', None, None, True)
+                        except Exception:
+                            pass
+            except Exception:
+                # Любые ошибки эвристики не должны мешать запуску
+                pass
+
         apply_pwb_config(lang, fam)
 
         # Блокируем кнопки и очищаем лог
