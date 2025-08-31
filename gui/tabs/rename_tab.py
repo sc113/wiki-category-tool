@@ -804,6 +804,30 @@ class RenameTab(QWidget):
         try:
             debug(f'Получен запрос на диалог подтверждения: {payload}')
             
+            # Добавим контекст проекта (family/lang) для корректных ссылок «открыть/история»
+            try:
+                fam = None
+                lng = None
+                try:
+                    fam = getattr(self.mrworker, 'family', None)
+                    lng = getattr(self.mrworker, 'lang', None)
+                except Exception:
+                    fam = None
+                    lng = None
+                if not fam:
+                    fam = getattr(self, 'current_family', None) or (
+                        getattr(self.parent_window, 'current_family', None)
+                    ) or 'wikipedia'
+                if not lng:
+                    lng = getattr(self, 'current_lang', None) or (
+                        getattr(self.parent_window, 'current_lang', None)
+                    ) or 'ru'
+                payload = dict(payload)
+                payload['family'] = fam
+                payload['lang'] = lng
+            except Exception:
+                pass
+
             # Показываем диалог проверки шаблона
             dialog = TemplateReviewDialog(self, payload)
             result = dialog.exec()
@@ -849,10 +873,18 @@ class RenameTab(QWidget):
                 
         except Exception as e:
             debug(f'Ошибка в диалоге подтверждения шаблона: {e}')
-            # В случае ошибки отправляем cancel
+            # При ошибке безопасно пропускаем кейс, не останавливая процесс
+            try:
+                # Логируем как ошибку, но продолжаем
+                msg = f"Ошибка диалога подтверждения: {e}. Случай пропущен, продолжаем."
+                log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, msg, 'manual', 'error', None, None, True)
+            except Exception:
+                pass
             response_data = {
                 'req_id': payload.get('request_id'),
-                'result': 'cancel'
+                'result': 'skip',
+                'skip_reason': 'dialog_error',
+                'error': str(e)
             }
             if hasattr(self.mrworker, 'review_response'):
                 self.mrworker.review_response.emit(response_data)

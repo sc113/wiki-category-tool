@@ -709,11 +709,16 @@ class RenameWorker(BaseWorker):
                         suffix = ''
                     auto_note = 'автоматически' if cached_changes == 1 else f'автоматически ({cached_changes} изменений)'
                     self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена {auto_note}{suffix}')
+                    # Обновляем текст для дальнейшей обработки только при успешном сохранении
+                    original_text = modified_text
                 else:
-                    self.progress.emit(f"Не удалось обновить: <b>{html.escape(title)}</b>")
-                    
-                # Обновляем текст для дальнейшей обработки
-                original_text = modified_text
+                    # Если сохранение не удалось (например, LockedPageError) — не открываем диалог заново
+                    # Отмечаем факт взаимодействия, чтобы верхний уровень не писал фолбэк «пропущено, без изменений»
+                    try:
+                        self._last_template_interactions = True
+                    except Exception:
+                        pass
+                    return (original_text, 0)
             
             # Сброс признака «были ли какие-либо взаимодействия в диалогах» для текущей страницы
             try:
@@ -755,10 +760,11 @@ class RenameWorker(BaseWorker):
                     except Exception:
                         self.progress.emit(f'→ {new_cat_full} : "{title}" — перенесена')
                 else:
+                    # Ошибка уже залогирована внутри _save_with_retry; не дублируем сообщение
                     try:
-                        self.progress.emit(f"Ошибка сохранения <b>{html.escape(title)}</b>")
+                        self._last_template_interactions = True
                     except Exception:
-                        self.progress.emit(f"Ошибка сохранения {title}")
+                        pass
             
             # Если никаких изменений не было сделано
             if changes_made == 0:

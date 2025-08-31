@@ -8,10 +8,10 @@ Template Review Dialog Module
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QPlainTextEdit, QDialogButtonBox, QFrame, QGroupBox, QWidget,
-    QRadioButton, QButtonGroup
+    QRadioButton, QButtonGroup, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextOption
 import html
 import urllib.parse
 
@@ -233,30 +233,67 @@ class TemplateReviewDialog(QDialog):
         """Создание секций с исходным и предлагаемым шаблоном"""
         # Подготавливаем highlighted версии
         highlighted_old, highlighted_new = self.prepare_highlighted_templates()
+        # Вставляем мягкие переносы после разделителей, чтобы узкое окно не разъезжалось
+        def _soft_wrap(s: str) -> str:
+            try:
+                zwsp = '&#8203;'
+                return s.replace('|', '|' + zwsp)
+            except Exception:
+                return s
+        highlighted_old = _soft_wrap(highlighted_old)
+        highlighted_new = _soft_wrap(highlighted_new)
         
-        # Отступ перед блоком «Исходный вызов»
-        layout.addSpacing(6)
-        
-        lbl_old = QLabel(
-            f"<b>Исходный вызов:</b><br/>"
+        # Отступ перед блоком «Исходный вызов» (минимальный)
+        layout.addSpacing(4)
+
+        old_html = (
             f"<div style='font-family:Consolas,\"Courier New\",monospace;background:#f6f8fa;"
             f"border:1px solid #e1e4e8;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>"
             f"{highlighted_old}</div>"
         )
+        lbl_old = QLabel(old_html)
         lbl_old.setTextFormat(Qt.RichText)
-        layout.addWidget(lbl_old)
-        
-        # Отступ перед блоком «Предлагаемая замена»
-        layout.addSpacing(6)
-        
-        lbl_new = QLabel(
-            f"<b>Предлагаемая замена:</b><br/>"
+        lbl_old.setWordWrap(True)
+        lbl_old.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        lbl_old.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        try:
+            lbl_old.setStyleSheet('margin:5')
+        except Exception:
+            pass
+
+        sec1 = QWidget()
+        sec1_l = QVBoxLayout(sec1)
+        sec1_l.setContentsMargins(0, 0, 0, 0)
+        sec1_l.setSpacing(0)  # заголовок вплотную к содержимому
+        sec1_l.addWidget(QLabel('<b>Исходный вызов:</b>'))
+        sec1_l.addWidget(lbl_old)
+        layout.addWidget(sec1)
+
+        # Отступ перед блоком «Предлагаемая замена» (минимальный)
+        layout.addSpacing(4)
+
+        new_html = (
             f"<div style='font-family:Consolas,\"Courier New\",monospace;background:#ecfdf5;"
             f"border:1px solid #d1fae5;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>"
             f"{highlighted_new}</div>"
         )
+        lbl_new = QLabel(new_html)
         lbl_new.setTextFormat(Qt.RichText)
-        layout.addWidget(lbl_new)
+        lbl_new.setWordWrap(True)
+        lbl_new.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        lbl_new.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        try:
+            lbl_new.setStyleSheet('margin:5')
+        except Exception:
+            pass
+
+        sec2 = QWidget()
+        sec2_l = QVBoxLayout(sec2)
+        sec2_l.setContentsMargins(0, 0, 0, 0)
+        sec2_l.setSpacing(0)
+        sec2_l.addWidget(QLabel('<b>Предлагаемая замена:</b>'))
+        sec2_l.addWidget(lbl_new)
+        layout.addWidget(sec2)
     
     def prepare_highlighted_templates(self):
         """Подготовка highlighted версий шаблонов с подсветкой изменений"""
@@ -332,6 +369,13 @@ class TemplateReviewDialog(QDialog):
         mono.setStyleHint(QFont.Monospace)
         mono.setFixedPitch(True)
         self.edit_field.setFont(mono)
+        # Перенос строк внутри редактора
+        try:
+            self.edit_field.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+            self.edit_field.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+            self.edit_field.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        except Exception:
+            pass
     
     def create_control_panel(self, layout):
         """Создание панели управления с кнопками"""
