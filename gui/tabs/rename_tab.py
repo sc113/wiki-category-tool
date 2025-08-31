@@ -604,11 +604,7 @@ class RenameTab(QWidget):
                 if checked > 0 and plain_rows == checked:
                     # Информируем в лог
                     try:
-                        info_msg = (
-                            'В файле обнаружены заголовки без префиксов пространств имён; '
-                            'в списке «Префиксы» выбран режим «Авто». По умолчанию это '
-                            'приведёт к переименованию обычных статей.'
-                        )
+                        info_msg = 'В файле заголовки без префиксов; «Авто» начнёт переименование статей.'
                         log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, info_msg, 'manual', 'info', None, None, True)
                     except Exception:
                         pass
