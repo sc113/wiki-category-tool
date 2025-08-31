@@ -12,13 +12,14 @@
 """
 
 # ===== Версия приложения и URL-адреса =====
-APP_VERSION = "1.0"
+APP_VERSION = "1.01"
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'
 GITHUB_API_RELEASES = 'https://api.github.com/repos/sc113/wiki-category-tool/releases'
 
 # ===== HTTP заголовки и настройки API =====
+USER_AGENT = f'WikiCatTool/{APP_VERSION} (+https://github.com/sc113/wiki-category-tool; contact:none) requests'
 REQUEST_HEADERS = {
-    'User-Agent': 'WikiCatTool/1.0 (+https://github.com/sc113/wiki-category-tool; contact:none) requests',
+    'User-Agent': USER_AGENT,
     'Accept': 'application/json'
 }
 
