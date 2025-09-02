@@ -161,6 +161,29 @@ def normalize_spaces_for_compare(text: str | None) -> str:
         return (text or '').strip()
 
 
+def align_first_letter_case(source: str, target: str) -> str:
+    """Делает первую букву target соответствующей регистру первой буквы source.
+
+    Если source начинается с заглавной буквы, а target с маленькой (или наоборот),
+    изменяет первый символ target так, чтобы он соответствовал source, 
+    оставляя остальную часть target без изменений. Безопасно для пустых строк.
+    """
+    try:
+        s0 = (source or '')[:1]
+        if not target:
+            return target or ''
+        t0 = target[:1]
+        tail = target[1:]
+        if not s0 or not t0:
+            return target
+        if s0.islower() and t0.isupper():
+            return t0.lower() + tail
+        if s0.isupper() and t0.islower():
+            return t0.upper() + tail
+        return target
+    except Exception:
+        return target
+
 def build_ws_fuzzy_pattern(text: str) -> str:
     """Строит regex-паттерн для текста с учётом всех видов пробелов и невидимых.
 

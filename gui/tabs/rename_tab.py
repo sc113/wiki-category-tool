@@ -27,6 +27,7 @@ from PySide6.QtGui import QFont, QDesktopServices
 from ...constants import PREFIX_TOOLTIP
 from ...utils import debug
 from ...workers.rename_worker import RenameWorker
+from ...core.template_manager import TemplateManager
 from ...core.pywikibot_config import apply_pwb_config, _dist_configs_dir
 from ..widgets.ui_helpers import (
     embed_button_in_lineedit, add_info_button, pick_file, 
@@ -481,22 +482,8 @@ class RenameTab(QWidget):
     def _open_rules_dialog(self):
         """Открыть файл правил в системе (папка configs/template_rules.json)"""
         try:
-            # Получаем путь к файлу правил
-            path = None
-            w = getattr(self, 'mrworker', None)
-            try:
-                path = getattr(w, '_rules_file_path', None)
-            except Exception:
-                path = None
-            if not path:
-                path = getattr(self, '_rules_file_path', None)
-            # Фолбэк: вычислить путь рядом с configs дистрибутива
-            if not path:
-                try:
-                    base = _dist_configs_dir()
-                except Exception:
-                    base = os.path.join(os.path.dirname(__file__), 'configs')
-                path = os.path.join(base, 'template_rules.json')
+            # Унифицированное определение пути к правилам
+            path = self._resolve_rules_path()
             
             os.makedirs(os.path.dirname(path), exist_ok=True)
             if not os.path.exists(path):
@@ -533,46 +520,59 @@ class RenameTab(QWidget):
         """Очистить правила замен"""
         try:
             cleared = False
+            # Очищаем через TemplateManager, если доступен у воркера
             w = getattr(self, 'mrworker', None)
-            if w is not None and hasattr(w, 'template_auto_cache'):
-                try:
-                    w.template_auto_cache.clear()
+            try:
+                if w and hasattr(w, 'template_manager') and w.template_manager:
+                    w.template_manager.clear_template_cache()
                     cleared = True
-                except Exception:
-                    pass
+            except Exception:
+                pass
+            # Очистим и локальный UI‑кэш
             if hasattr(self, '_template_auto_cache_ui'):
                 try:
                     self._template_auto_cache_ui.clear()
                     cleared = True or cleared
                 except Exception:
                     pass
-            # Очистим и файл на диске
-            path = None
-            try:
-                path = getattr(w, '_rules_file_path', None)
-            except Exception:
-                path = None
-            if not path:
-                path = getattr(self, '_rules_file_path', None)
-            if not path:
-                try:
-                    base = _dist_configs_dir()
-                except Exception:
-                    base = os.path.join(os.path.dirname(__file__), 'configs')
-                path = os.path.join(base, 'template_rules.json')
-            if path:
-                try:
-                    with open(path, 'w', encoding='utf-8') as f:
-                        f.write('{}')
-                    cleared = True or cleared
-                except Exception:
-                    pass
+            # Фолбэк: принудительно записать пустой JSON в файл
+            if not cleared:
+                path = self._resolve_rules_path()
+                if path:
+                    try:
+                        with open(path, 'w', encoding='utf-8') as f:
+                            f.write('{}')
+                        cleared = True or cleared
+                    except Exception:
+                        pass
             if cleared:
                 QMessageBox.information(self, 'Готово', 'Правила замен очищены.')
             else:
                 QMessageBox.information(self, 'Инфо', 'Кэш правил замен уже пуст.')
         except Exception:
             QMessageBox.warning(self, 'Ошибка', 'Не удалось очистить правила замен.')
+
+    def _resolve_rules_path(self) -> str:
+        """Единая точка получения пути к файлу правил шаблонов."""
+        try:
+            # 1) Через активный TemplateManager воркера
+            w = getattr(self, 'mrworker', None)
+            if w and hasattr(w, 'template_manager') and w.template_manager:
+                p = w.template_manager.get_rules_file_path()
+                if p:
+                    return p
+        except Exception:
+            pass
+        # 2) Вычислить путь по политике TemplateManager
+        try:
+            return TemplateManager.resolve_rules_file_path()
+        except Exception:
+            # 3) Жёсткий фолбэк: рядом с GUI модулем
+            try:
+                base = _dist_configs_dir()
+            except Exception:
+                base = os.path.join(os.path.dirname(__file__), 'configs')
+            return os.path.join(base, 'template_rules.json')
     
     def start_rename(self):
         """Запускает процесс переименования"""

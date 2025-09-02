@@ -14,6 +14,7 @@ from ..core.namespace_manager import normalize_title_by_selection, title_has_ns_
 from ..core.template_manager import TemplateManager
 from ..constants import DEFAULT_EN_NS
 from ..utils import format_russian_pages_nominative
+from ..utils import align_first_letter_case
 
 
 class RenameWorker(BaseWorker):
@@ -1544,13 +1545,7 @@ class RenameWorker(BaseWorker):
                 new_val = match_info.get('new_value') if not is_partial else (match_info.get('new_sub') or '')
                 try:
                     if old_val and new_val:
-                        old_first = old_val[:1]
-                        new_first = new_val[:1]
-                        # Приводим первую букву нового значения к регистру первой буквы исходного
-                        if old_first.islower() and new_first.isupper():
-                            new_val = new_first.lower() + new_val[1:]
-                        elif old_first.isupper() and new_first.islower():
-                            new_val = new_first.upper() + new_val[1:]
+                        new_val = align_first_letter_case(old_val, new_val)
                 except Exception:
                     pass
                 proposed_param = match_info['param_value'].replace(old_val, new_val, 1)
@@ -1623,35 +1618,10 @@ class RenameWorker(BaseWorker):
                         # Применим выбранный режим дедупликации к текущему финальному шаблону
                         dedupe_mode = result.get('dedupe_mode', None)
                         try:
-                            # Обратная совместимость: keep_first/keep_second → left/right
-                            if dedupe_mode == 'keep_first':
-                                dedupe_mode = 'left'
-                            elif dedupe_mode == 'keep_second':
-                                dedupe_mode = 'right'
+                            # Нормализуем и применим дедупликацию через помощник TemplateManager
+                            dedupe_mode = self.template_manager.normalize_dedupe_mode(dedupe_mode)
                             if dup_warning and dedupe_mode in ('left', 'right'):
-                                # Удаляем дубликаты нового значения среди позиционных параметров
-                                inner2 = final_template[2:-2]
-                                parts2 = inner2.split('|') if inner2 else []
-                                def _norm_val2(s: str) -> str:
-                                    try:
-                                        return (s or '').strip().strip('\"\'')
-                                    except Exception:
-                                        return (s or '').strip()
-                                target_val = _norm_val2(new_val)
-                                pos_list = []
-                                for k, tok in enumerate(parts2[1:], 1):
-                                    if '=' in tok:
-                                        continue
-                                    if _norm_val2(tok) == target_val and target_val != '':
-                                        pos_list.append(k)
-                                if len(pos_list) >= 2:
-                                    if dedupe_mode == 'left':
-                                        keep = pos_list[0]
-                                    else:
-                                        keep = pos_list[-1]
-                                    to_remove = {p for p in pos_list if p != keep}
-                                    rebuilt = [parts2[0]] + [tok for idx, tok in enumerate(parts2[1:], 1) if idx not in to_remove]
-                                    final_template = '{{' + '|'.join(rebuilt) + '}}'
+                                final_template = self.template_manager.apply_positional_dedupe(final_template, new_val, dedupe_mode)
                         except Exception:
                             pass
                         # Фиксируем правило в кэше (для автоприменения в будущем)

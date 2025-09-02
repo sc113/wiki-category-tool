@@ -73,6 +73,35 @@ class TemplateManager:
         except Exception:
             self._rules_file_path = None
     
+    # ===== Helper/utility API (shared by GUI/Workers) =====
+    def get_rules_file_path(self) -> Optional[str]:
+        """Return current rules file path if initialized."""
+        return self._rules_file_path
+
+    @staticmethod
+    def resolve_rules_file_path(config_manager=None) -> str:
+        """Compute rules file path similarly to internal initialization.
+
+        Safe to call without constructing a long-lived manager.
+        """
+        try:
+            if config_manager:
+                base_cfg = config_manager._dist_configs_dir()
+            else:
+                from .pywikibot_config import _dist_configs_dir
+                base_cfg = _dist_configs_dir()
+            from ..constants import TEMPLATE_RULES_FILE as _TFILE
+            path = os.path.join(base_cfg, _TFILE)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            return path
+        except Exception:
+            # Fallback: place alongside module
+            try:
+                base = os.path.dirname(__file__)
+            except Exception:
+                base = os.getcwd()
+            return os.path.join(base, 'configs', 'template_rules.json')
+    
     def _project_key(self, family: str, lang: str) -> str:
         """Возвращает ключ проекта в формате 'lang:family' (например 'ru:wikipedia')."""
         return f"{(lang or '').strip().lower()}:{(family or '').strip().lower()}"
@@ -579,6 +608,66 @@ class TemplateManager:
                 
         except Exception:
             pass
+
+    # ===== Dedupe helpers used by worker/UI =====
+    def normalize_dedupe_mode(self, mode: Optional[str]) -> str:
+        """Normalize dedupe mode to one of: 'left' | 'right' | 'keep_both' | '' (unset)."""
+        try:
+            m = str(mode or '').strip()
+        except Exception:
+            m = ''
+        if not m:
+            return ''
+        m_cf = m.casefold()
+        if m_cf == 'keep_first':
+            return 'left'
+        if m_cf == 'keep_second':
+            return 'right'
+        if m_cf in ('left', 'right', 'keep_both'):
+            return m_cf
+        return ''
+
+    def apply_positional_dedupe(self, template_text: str, target_new_value: str, dedupe_mode: str) -> str:
+        """Apply positional deduplication to a template string for given new value.
+
+        Keeps only the first ('left') or last ('right') occurrence of target_new_value
+        among positional parameters. When 'keep_both' or unknown/empty mode is passed,
+        the template is returned unchanged.
+        """
+        try:
+            mode = self.normalize_dedupe_mode(dedupe_mode)
+            if mode not in ('left', 'right'):
+                return template_text
+            chunk = template_text
+            if not (chunk.startswith('{{') and chunk.endswith('}}')):
+                return template_text
+            inner = chunk[2:-2]
+            parts = inner.split('|') if inner else []
+            if len(parts) <= 1:
+                return template_text
+            def _norm_val(s: str) -> str:
+                try:
+                    return (s or '').strip().strip('"\'"')
+                except Exception:
+                    return (s or '').strip()
+            tgt = _norm_val(target_new_value)
+            pos_list = []
+            for idx1, tok in enumerate(parts[1:], 1):
+                try:
+                    if '=' in tok:
+                        continue
+                    if _norm_val(tok) == tgt and tgt != '':
+                        pos_list.append(idx1)
+                except Exception:
+                    continue
+            if len(pos_list) < 2:
+                return template_text
+            keep = pos_list[0] if mode == 'left' else pos_list[-1]
+            to_remove = {p for p in pos_list if p != keep}
+            rebuilt = [parts[0]] + [tok for idx, tok in enumerate(parts[1:], 1) if idx not in to_remove]
+            return '{{' + '|'.join(rebuilt) + '}}'
+        except Exception:
+            return template_text
     
     def _apply_cache_to_chunk(self, family: str, lang: str, chunk: str) -> Tuple[str, int]:
         """
