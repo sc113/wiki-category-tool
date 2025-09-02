@@ -138,30 +138,36 @@ class NamespaceManager:
         except Exception as e:
             debug(f"NS disk cache read error: {e}")
             
-        # Fetch from API and save to cache - using direct requests like original
+        # Fetch from API and save to cache (use shared API client to handle special hosts like commons)
         prefixes_by_id: Dict[int, Dict[str, Set[str] | str]] = {}
         try:
-            # Build URL like original code
-            url = f"https://{lang}.{family}.org/w/api.php"
-            params = {
-                'action': 'query', 
-                'meta': 'siteinfo', 
-                'siprop': 'namespaces|namespacealiases', 
-                'format': 'json'
-            }
-            
-            # Use direct requests like original
-            response = requests.get(url, params=params, timeout=10, headers=REQUEST_HEADERS)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                query_data = data.get('query', {})
-                ns_map = query_data.get('namespaces', {}) or {}
-                aliases = query_data.get('namespacealiases', []) or []
-                
-                debug(f"Загружены namespace префиксы для {lang}.{family}: {len(ns_map)} пространств, {len(aliases)} алиасов")
-                
+            # 1) Основной путь: через общий API-клиент (корректно строит host для commons/wikidata/meta/...)
+            try:
+                query_data = self.api_client.get_namespace_info(family, lang) if self.api_client else {}
+            except Exception:
+                query_data = {}
+
+            # 2) Фолбэк: прямой запрос с использованием правильного URL из клиента
+            if not query_data:
+                try:
+                    url = self.api_client._build_api_url(family, lang) if self.api_client else f"https://{lang}.{family}.org/w/api.php"
+                    params = {
+                        'action': 'query',
+                        'meta': 'siteinfo',
+                        'siprop': 'namespaces|namespacealiases',
+                        'format': 'json'
+                    }
+                    response = requests.get(url, params=params, timeout=10, headers=REQUEST_HEADERS)
+                    query_data = (response.json() or {}).get('query', {}) if response.status_code == 200 else {}
+                except Exception:
+                    query_data = {}
+
+            ns_map = query_data.get('namespaces', {}) or {}
+            aliases = query_data.get('namespacealiases', []) or []
+
+            if ns_map or aliases:
+                debug(f"Загружены namespace префиксы для {family}/{lang}: {len(ns_map)} пространств, {len(aliases)} алиасов")
+
                 for sid, meta in ns_map.items():
                     try:
                         ns_id = int(sid)
@@ -170,21 +176,21 @@ class NamespaceManager:
                     # Skip talk namespaces (odd ns) and negative ns
                     if ns_id % 2 == 1 or ns_id < 0:
                         continue
-                        
+
                     names: Set[str] = set()
                     local_name = (meta.get('*') or '').strip()
                     canon = (meta.get('canonical') or '').strip()
-                    
+
                     if local_name:
                         names.add(local_name + ':')
                     if canon:
                         names.add(canon + ':')
-                        
+
                     prefixes_by_id[ns_id] = {
                         'primary': (local_name or canon) + ':' if (local_name or canon) else '',
                         'all': {p.lower() for p in names if p}
                     }
-                    
+
                 for a in aliases:
                     try:
                         ns_id = int(a.get('id'))
@@ -198,16 +204,16 @@ class NamespaceManager:
                         d['all'].add((name + ':').lower())
                     except Exception:
                         continue
-                        
-                debug(f"Обработано {len(prefixes_by_id)} namespace префиксов для {lang}.{family}")
-            else:
-                # Не логируем ошибки для несуществующих языков - это нормально при печатании
-                pass
-                    
-        except Exception as e:
-            # Не логируем ошибки сети для несуществующих языков - это нормально при печатании
-            prefixes_by_id = {}
+                debug(f"Обработано {len(prefixes_by_id)} namespace префиксов для {family}/{lang}")
+            # Если ничего не получили — оставим prefixes_by_id пустым
             
+        except Exception as e:
+            try:
+                debug(f"NS API load error: {e}")
+            except Exception:
+                pass
+            prefixes_by_id = {}
+
         if prefixes_by_id:
             self.ns_cache[key] = prefixes_by_id
             # Save disk cache

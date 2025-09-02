@@ -460,12 +460,13 @@ class RenameWorker(BaseWorker):
 
             # Получаем список страниц в категории через MediaWiki API (как в оригинале)
             try:
-                from ..core.api_client import REQUEST_SESSION, _rate_wait
+                from ..core.api_client import REQUEST_SESSION, _rate_wait, WikimediaAPIClient
                 from ..constants import REQUEST_HEADERS
                 import requests
                 import urllib.parse
                 
-                api_url = f"https://{self.lang}.{self.family}.org/w/api.php"
+                api_client = WikimediaAPIClient()
+                api_url = api_client._build_api_url(self.family, self.lang)
                 params = {
                     'action': 'query',
                     'list': 'categorymembers',

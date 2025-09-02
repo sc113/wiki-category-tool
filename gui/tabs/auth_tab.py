@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QToolButton, QMessageBox, QApplication
 )
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QSignalBlocker
 from PySide6.QtGui import QDesktopServices
 
 from ...constants import (
@@ -338,13 +338,65 @@ class AuthTab(QWidget):
         self.lang_combo.lineEdit().editingFinished.connect(self._on_lang_editing_finished)
         self.lang_combo.lineEdit().returnPressed.connect(self._on_lang_editing_finished)
 
-        # Изменение проекта будет обрабатываться в главном окне
+        # Синхронизация commons при изменении проекта
+        try:
+            self.family_combo.currentTextChanged.connect(self._on_family_combo_changed)
+            self.family_combo.currentIndexChanged.connect(self._on_family_combo_index_changed)
+            self.family_combo.activated.connect(self._on_family_combo_index_changed)
+        except Exception:
+            pass
 
     def _on_family_change(self, fam):
         """Обработчик изменения проекта"""
         # Уведомляем главное окно об изменении семейства проектов
         if hasattr(self.parent_window, 'update_family'):
             self.parent_window.update_family(fam)
+
+    def _ensure_commons_sync_from_lang(self, new_lang: str) -> None:
+        """Если выбран язык commons — автоматически установить проект commons."""
+        try:
+            if (new_lang or '').strip().lower() == 'commons':
+                cur_fam = (self.family_combo.currentText() or '').strip().lower()
+                if cur_fam != 'commons':
+                    blocker = None
+                    try:
+                        blocker = QSignalBlocker(self.family_combo)
+                    except Exception:
+                        blocker = None
+                    self.family_combo.setCurrentText('commons')
+                    del blocker
+        except Exception:
+            pass
+
+    def _on_family_combo_changed(self, fam_text: str) -> None:
+        """Если выбран проект commons — автоматически установить язык commons."""
+        try:
+            fam = (fam_text or '').strip().lower()
+            if fam == 'commons':
+                cur_lang = (self.lang_combo.currentText() or '').strip().lower()
+                if cur_lang != 'commons':
+                    blocker = None
+                    try:
+                        blocker = QSignalBlocker(self.lang_combo)
+                    except Exception:
+                        blocker = None
+                    self.lang_combo.setCurrentText('commons')
+                    del blocker
+                    # Немедленно уведомим главное окно о смене языка
+                    self._on_lang_change_immediate('commons')
+        except Exception as e:
+            try:
+                debug(f'Ошибка в _on_family_combo_changed: {e}')
+            except Exception:
+                pass
+
+    def _on_family_combo_index_changed(self, index: int) -> None:
+        """Адаптер для сигналов indexChanged/activated → текстовое значение."""
+        try:
+            text = self.family_combo.itemText(index)
+        except Exception:
+            text = self.family_combo.currentText()
+        self._on_family_combo_changed(text)
 
     def _show_debug(self):
         """Показать окно отладки"""
@@ -516,6 +568,19 @@ class AuthTab(QWidget):
         pwd = self.pass_edit.text().strip()
         lang = (self.lang_combo.currentText() or 'ru').strip()
         fam = (self.family_combo.currentText() or 'wikipedia')
+
+        # Фолбэк: если выбран commons, язык принудительно commons
+        if (fam or '').strip().lower() == 'commons' and (lang or '').strip().lower() != 'commons':
+            try:
+                blocker = QSignalBlocker(self.lang_combo)
+            except Exception:
+                blocker = None
+            lang = 'commons'
+            try:
+                self.lang_combo.setCurrentText('commons')
+            except Exception:
+                pass
+            del blocker
 
         debug(
             f'Попытка авторизации: пользователь={user}, язык={lang}, проект={fam}')
@@ -781,6 +846,9 @@ class AuthTab(QWidget):
             new_lang = (self.lang_combo.currentText() or 'ru').strip()
             debug(f'_on_lang_editing_finished: новый язык = {new_lang}')
 
+            # Синхронизация commons → commons (family)
+            self._ensure_commons_sync_from_lang(new_lang)
+
             # Проверяем, изменился ли язык
             last_lang = getattr(self, '_last_loaded_lang', None)
             debug(f'Сравниваем языки: новый={new_lang}, последний={last_lang}')
@@ -845,15 +913,35 @@ class AuthTab(QWidget):
                     except Exception:
                         pass
 
+                    # Асинхронная загрузка
                     self.parent_window.force_update_namespace_combos(current_family, current_lang)
 
-                    # Сообщение об успехе
+                    # Подпишемся на результат единоразово
+                    def _on_ns_done(fam, lng, ok):
+                        try:
+                            if fam == current_family and lng == current_lang:
+                                if ok:
+                                    QMessageBox.information(
+                                        self,
+                                        'Готово',
+                                        'Префиксы пространств имён успешно обновлены.'
+                                    )
+                                else:
+                                    QMessageBox.warning(
+                                        self,
+                                        'Не удалось',
+                                        'Не удалось загрузить префиксы для выбранного проекта/языка. Проверьте сеть и попробуйте ещё раз.'
+                                    )
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                self.parent_window.ns_update_finished.disconnect(_on_ns_done)
+                            except Exception:
+                                pass
+
                     try:
-                        QMessageBox.information(
-                            self,
-                            'Готово',
-                            'Префиксы пространств имён обновлены для текущего языка и проекта.'
-                        )
+                        self.parent_window.ns_update_finished.connect(_on_ns_done)
                     except Exception:
                         pass
                     finally:

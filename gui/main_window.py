@@ -9,7 +9,7 @@
 import os
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QTimer, QSignalBlocker
+from PySide6.QtCore import QEvent, QTimer, QSignalBlocker, QThread, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QMessageBox, QToolButton
 )
@@ -30,8 +30,31 @@ from .tabs.create_tab import CreateTab
 from .tabs.rename_tab import RenameTab
 
 
+class NSLoadThread(QThread):
+    finished_ok = Signal(bool)
+
+    def __init__(self, namespace_manager, family: str, lang: str):
+        super().__init__()
+        self._nm = namespace_manager
+        self._family = (family or 'wikipedia')
+        self._lang = (lang or 'ru')
+
+    def run(self):
+        ok = False
+        try:
+            info = self._nm._load_ns_info(self._family, self._lang)
+            ok = bool(info)
+        except Exception:
+            ok = False
+        try:
+            self.finished_ok.emit(ok)
+        except Exception:
+            pass
+
+
 class MainWindow(QMainWindow):
     """Основное окно приложения"""
+    ns_update_finished = Signal(str, str, bool)  # family, lang, ok
     
     def __init__(self):
         super().__init__()
@@ -326,8 +349,45 @@ class MainWindow(QMainWindow):
                 pass
     
     def force_update_namespace_combos(self, family: str, lang: str):
-        """Совместимость: перенаправление на update_namespace_combos с флагом force."""
-        self.update_namespace_combos(family, lang, force=True)
+        """Асинхронная загрузка NS в кэш и обновление комбобоксов после завершения."""
+        try:
+            # Не запускаем второй поток, если первый ещё работает
+            running = getattr(self, '_ns_thread', None)
+            if running is not None and hasattr(running, 'isRunning') and running.isRunning():
+                return
+        except Exception:
+            pass
+
+        t = NSLoadThread(self.namespace_manager, family, lang)
+        self._ns_thread = t
+
+        def _on_done(ok: bool):
+            try:
+                self.update_namespace_combos(family, lang, force=False)
+            except Exception:
+                pass
+            try:
+                self.ns_update_finished.emit(family, lang, ok)
+            except Exception:
+                pass
+            try:
+                self._ns_thread = None
+            except Exception:
+                pass
+
+        try:
+            t.finished_ok.connect(_on_done)
+            t.start()
+        except Exception:
+            # Фолбэк: синхронно (нежелательно, но лучше, чем отсутствие действия)
+            try:
+                self.update_namespace_combos(family, lang, force=True)
+                self.ns_update_finished.emit(family, lang, True)
+            except Exception:
+                try:
+                    self.ns_update_finished.emit(family, lang, False)
+                except Exception:
+                    pass
 
     def update_family(self, new_family: str):
         """Обновление семейства проектов"""
