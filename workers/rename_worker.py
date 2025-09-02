@@ -223,7 +223,8 @@ class RenameWorker(BaseWorker):
                     'auto_confirm': response_data.get('auto_confirm', False),
                     'auto_skip': response_data.get('auto_skip', False),
                     'edited_template': response_data.get('edited_template', ''),
-                    'dedupe_mode': response_data.get('dedupe_mode', 'keep_both')
+                    # Если dedupe_mode не передан (диалог без дублей) — оставляем неустановленным (None)
+                    'dedupe_mode': (response_data.get('dedupe_mode') if response_data.get('dedupe_mode') else None)
                 }
                 debug(f'Сохранен результат для req_id {req_id}: {self._prompt_results[req_id]}')
                 
@@ -828,7 +829,15 @@ class RenameWorker(BaseWorker):
             alt_pat = re.escape((DEFAULT_EN_NS.get(14, 'Category:').rstrip(':')))
 
         # Единый паттерн с локальными префиксами; игнор регистра для унификации
-        rx = re.compile(r"\[\[\s*(?P<prefix>(" + alt_pat + r"))\s*:\s*" + re.escape(old_cat_name) + r"\s*(?:\|\s*(?P<sort>[^\]]*?))?\s*\]\]", re.IGNORECASE)
+        # Учитываем невидимые символы и любые юникод‑пробелы вокруг разделителей
+        try:
+            from ..utils import build_ws_fuzzy_pattern
+            name_pat = build_ws_fuzzy_pattern(old_cat_name)
+        except Exception:
+            name_pat = re.escape(old_cat_name)
+        invis = r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]*"
+        spaces = r"[\s\u00A0\u202F\u1680\u2000-\u200A\u2007\u205F\u3000]"
+        rx = re.compile(r"\[\[" + invis + spaces + r"*" + invis + r"(?P<prefix>(" + alt_pat + r"))" + invis + spaces + r"*" + invis + r":" + invis + spaces + r"*" + invis + name_pat + invis + spaces + r"*(?:\|" + invis + spaces + r"*(?P<sort>[^\]]*?))?" + invis + spaces + r"*" + invis + r"\]\]", re.IGNORECASE)
 
         def _repl(m: "re.Match") -> str:
             try:
@@ -924,6 +933,25 @@ class RenameWorker(BaseWorker):
             return pairs
 
         partial_pairs = _generate_partial_pairs(old_cat_name, new_cat_name)
+        
+        # Нормализация строк для сравнения: удаляем невидимые спецсимволы и нормализуем пробелы
+        def _normalize_for_compare(s: str) -> str:
+            try:
+                if s is None:
+                    return ''
+                # Удаляем ZWSP/ZWJ/ZWNJ, LRM/RLM и прочие маркеры направления, BOM и т.п.
+                s2 = re.sub(r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]", "", s)
+                # NBSP/NNBSP → обычный пробел
+                s2 = s2.replace('\u00A0', ' ').replace('\u202F', ' ')
+                # Схлопываем повторные пробелы
+                s2 = re.sub(r"\s+", " ", s2)
+                return (s2 or '').strip()
+            except Exception:
+                return (s or '').strip()
+        
+        # Предрассчитанные нормализованные формы искомых названий категорий
+        old_cat_name_norm = _normalize_for_compare(old_cat_name)
+        old_cat_full_norm = _normalize_for_compare(old_cat_full)
         
         for match in templates:
             if self._stop:
@@ -1046,6 +1074,19 @@ class RenameWorker(BaseWorker):
                 elif _eq_first_only(value_plain, old_cat_full):
                     _append_match(value_plain, new_cat_full)
 
+                # 2c) Сопоставление после нормализации невидимых символов/пробелов
+                else:
+                    try:
+                        value_plain_normed = _normalize_for_compare(value_plain)
+                        value_norm_normed = _normalize_for_compare(value_norm)
+                    except Exception:
+                        value_plain_normed = value_plain
+                        value_norm_normed = value_norm
+                    if value_plain_normed == old_cat_name_norm or value_norm_normed == old_cat_name_norm:
+                        _append_match(value_plain, new_cat_name)
+                    elif value_plain_normed == old_cat_full_norm or value_norm_normed == old_cat_full_norm:
+                        _append_match(value_plain, new_cat_full)
+
                 # Если прямых совпадений не найдено — пробуем частичные пары
                 if not matched_this_param and partial_pairs:
                     try:
@@ -1161,7 +1202,7 @@ class RenameWorker(BaseWorker):
                         edited_template = (result.get('edited_template') or '').strip()
                         final_template = edited_template or proposed_template
                         # Применим выбранный режим дедупликации к текущему финальному шаблону
-                        dedupe_mode = str(result.get('dedupe_mode', 'keep_both') or 'keep_both')
+                        dedupe_mode = result.get('dedupe_mode', None)
                         try:
                             # Обратная совместимость: keep_first/keep_second → left/right
                             if dedupe_mode == 'keep_first':

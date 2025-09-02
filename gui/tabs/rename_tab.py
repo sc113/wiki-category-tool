@@ -832,13 +832,21 @@ class RenameTab(QWidget):
             
             # Отправляем результат обратно в worker
             # Если пользователь выбрал «Подтверждать все аналогичные» — пометим правило auto=approve
+            # dedupe_mode передаём только если действительно есть предупреждение о дублях
+            try:
+                if (payload.get('dup_warning') and payload.get('dup_idx1') and payload.get('dup_idx2')):
+                    dm_resp = dialog.get_dedupe_mode() if hasattr(dialog, 'get_dedupe_mode') else None
+                else:
+                    dm_resp = None
+            except Exception:
+                dm_resp = None
             response_data = {
                 'req_id': payload.get('request_id'),
                 'result': dialog.get_action(),
                 'auto_confirm': dialog.get_auto_confirm(),
                 'auto_skip': dialog.get_auto_skip(),
                 'edited_template': dialog.get_edited_template() if hasattr(dialog, 'get_edited_template') else '',
-                'dedupe_mode': dialog.get_dedupe_mode() if hasattr(dialog, 'get_dedupe_mode') else 'keep_both'
+                'dedupe_mode': dm_resp
             }
             
             debug(f'Отправляем ответ: {response_data}')
@@ -852,8 +860,14 @@ class RenameTab(QWidget):
                         before = payload.get('template') or ''
                         after = response_data.get('edited_template') or (payload.get('proposed_template') or '')
                         if before and after:
-                            # Нормализуем режим дедупликации к left/right для сохранения правила
+                            # dedupe сохраняем только если в диалоге действительно были дубли
                             dm = response_data.get('dedupe_mode', None)
+                            try:
+                                if not (payload.get('dup_warning') and payload.get('dup_idx1') and payload.get('dup_idx2')):
+                                    dm = None
+                            except Exception:
+                                dm = None
+                            # Нормализуем режим дедупликации к left/right при необходимости
                             if dm == 'keep_first':
                                 dm = 'left'
                             elif dm == 'keep_second':

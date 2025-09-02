@@ -10,10 +10,17 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QDialogButtonBox, QFrame, QGroupBox, QWidget,
     QRadioButton, QButtonGroup, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextOption
 import html
 import urllib.parse
+
+
+# UI/Animation constants
+ANIM_DURATION_MS = 250            # Длительность анимаций
+RESIZE_DELAY_MS = 50              # Задержка перед авто-изменением размера
+SHRINK_DELAY_MS = 250             # Задержка перед авто-сжатием после сворачивания
+MAX_WIDGET_HEIGHT = 16777215      # Практически «безлимитная» высота виджета в Qt
 
 
 class TemplateReviewDialog(QDialog):
@@ -59,6 +66,9 @@ class TemplateReviewDialog(QDialog):
         self.auto_skip_all = False
         self.edited_template = None
         
+        # Анимации для плавного сворачивания
+        self.animations = []
+        
         self.setup_ui()
         self.setup_connections()
     
@@ -70,6 +80,11 @@ class TemplateReviewDialog(QDialog):
         # Размер: 900x700 с возможностью изменения
         self.resize(900, 700)
         self.setSizeGripEnabled(True)
+        try:
+            # Минимальный размер окна
+            self.setMinimumSize(440, 260)
+        except Exception:
+            pass
         
         # Основной layout
         layout = QVBoxLayout(self)
@@ -104,11 +119,22 @@ class TemplateReviewDialog(QDialog):
             self.create_dedupe_section(layout)
         
         # Поле для ручного редактирования
-        layout.addSpacing(6)
-        layout.addWidget(QLabel('<b>Ручное редактирование:</b>'))
+        layout.addSpacing(2)
+        
+        # Заголовок с кнопкой сворачивания для редактора
+        header3_layout = QHBoxLayout()
+        header3_layout.setContentsMargins(0, 0, 0, 0)
+        header3_layout.addWidget(QLabel('<b>Ручное редактирование:</b>'))
+        self.btn_collapse_edit = QPushButton('−')
+        self.btn_collapse_edit.setFixedSize(20, 20)
+        self.btn_collapse_edit.setToolTip('Свернуть/развернуть блок')
+        header3_layout.addWidget(self.btn_collapse_edit)
+        header3_layout.addStretch()
+        layout.addLayout(header3_layout)
         
         self.edit_field = QPlainTextEdit()
         self.setup_edit_field()
+        self.btn_collapse_edit.clicked.connect(lambda: self._toggle_block(self.edit_field, self.btn_collapse_edit))
         layout.addWidget(self.edit_field)
         
         # Панель управления с кнопками
@@ -189,39 +215,21 @@ class TemplateReviewDialog(QDialog):
         # Строим URLs
         host = self.build_host(family, lang)
         
-        old_url = f"https://{host}/wiki/" + urllib.parse.quote(self.old_full.replace(' ', '_'))
-        old_hist = f"https://{host}/w/index.php?title=" + urllib.parse.quote(self.old_full.replace(' ', '_')) + "&action=history"
-        new_url = f"https://{host}/wiki/" + urllib.parse.quote(self.new_full.replace(' ', '_'))
-        new_hist = f"https://{host}/w/index.php?title=" + urllib.parse.quote(self.new_full.replace(' ', '_')) + "&action=history"
+        # Создаем ссылки для категорий
+        old_url, old_hist = self._build_page_urls(host, self.old_full)
+        new_url, new_hist = self._build_page_urls(host, self.new_full)
         
-        # Старая категория
-        move1 = QLabel(f"❌ {html.escape(self.old_full)} (<a href='{old_url}'>открыть</a> · <a href='{old_hist}'>история</a>)")
-        move1.setTextFormat(Qt.RichText)
-        move1.setWordWrap(True)
-        move1.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        move1.setOpenExternalLinks(True)
-        
-        # Новая категория
-        move2 = QLabel(f"✅ {html.escape(self.new_full)} (<a href='{new_url}'>открыть</a> · <a href='{new_hist}'>история</a>)")
-        move2.setTextFormat(Qt.RichText)
-        move2.setWordWrap(True)
-        move2.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        move2.setOpenExternalLinks(True)
+        # Старая и новая категории
+        move1 = self._create_link_label(f"❌ {html.escape(self.old_full)}", old_url, old_hist)
+        move2 = self._create_link_label(f"✅ {html.escape(self.new_full)}", new_url, new_hist)
         
         hlay.addWidget(move1)
         hlay.addWidget(move2)
         
         # Название страницы внутри карточки
-        page_url = f"https://{host}/wiki/" + urllib.parse.quote(self.page_title.replace(' ', '_'))
-        history_url = f"https://{host}/w/index.php?title=" + urllib.parse.quote(self.page_title.replace(' ', '_')) + "&action=history"
+        page_url, history_url = self._build_page_urls(host, self.page_title)
         
-        page_line = QLabel(
-            f"⚜️ {html.escape(self.page_title)} (<a href='{page_url}'>открыть</a> · <a href='{history_url}'>история</a>)"
-        )
-        page_line.setTextFormat(Qt.RichText)
-        page_line.setWordWrap(True)
-        page_line.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        page_line.setOpenExternalLinks(True)
+        page_line = self._create_link_label(f"⚜️ {html.escape(self.page_title)}", page_url, history_url)
         
         hlay.addSpacing(4)
         hlay.addWidget(page_line)
@@ -234,66 +242,14 @@ class TemplateReviewDialog(QDialog):
         # Подготавливаем highlighted версии
         highlighted_old, highlighted_new = self.prepare_highlighted_templates()
         # Вставляем мягкие переносы после разделителей, чтобы узкое окно не разъезжалось
-        def _soft_wrap(s: str) -> str:
-            try:
-                zwsp = '&#8203;'
-                return s.replace('|', '|' + zwsp)
-            except Exception:
-                return s
-        highlighted_old = _soft_wrap(highlighted_old)
-        highlighted_new = _soft_wrap(highlighted_new)
+        highlighted_old = self._add_soft_wraps(highlighted_old)
+        highlighted_new = self._add_soft_wraps(highlighted_new)
         
-        # Отступ перед блоком «Исходный вызов» (минимальный)
+        # Создаем блоки
         layout.addSpacing(4)
-
-        old_html = (
-            f"<div style='font-family:Consolas,\"Courier New\",monospace;background:#f6f8fa;"
-            f"border:1px solid #e1e4e8;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>"
-            f"{highlighted_old}</div>"
-        )
-        lbl_old = QLabel(old_html)
-        lbl_old.setTextFormat(Qt.RichText)
-        lbl_old.setWordWrap(True)
-        lbl_old.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        lbl_old.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        try:
-            lbl_old.setStyleSheet('margin:5')
-        except Exception:
-            pass
-
-        sec1 = QWidget()
-        sec1_l = QVBoxLayout(sec1)
-        sec1_l.setContentsMargins(0, 0, 0, 0)
-        sec1_l.setSpacing(0)  # заголовок вплотную к содержимому
-        sec1_l.addWidget(QLabel('<b>Исходный вызов:</b>'))
-        sec1_l.addWidget(lbl_old)
-        layout.addWidget(sec1)
-
-        # Отступ перед блоком «Предлагаемая замена» (минимальный)
+        self._create_template_block(layout, 'Исходный вызов', highlighted_old, '#f6f8fa', '#e1e4e8', 'old')
         layout.addSpacing(4)
-
-        new_html = (
-            f"<div style='font-family:Consolas,\"Courier New\",monospace;background:#ecfdf5;"
-            f"border:1px solid #d1fae5;border-radius:6px;padding:2px 8px 2px 8px;margin:0'>"
-            f"{highlighted_new}</div>"
-        )
-        lbl_new = QLabel(new_html)
-        lbl_new.setTextFormat(Qt.RichText)
-        lbl_new.setWordWrap(True)
-        lbl_new.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        lbl_new.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        try:
-            lbl_new.setStyleSheet('margin:5')
-        except Exception:
-            pass
-
-        sec2 = QWidget()
-        sec2_l = QVBoxLayout(sec2)
-        sec2_l.setContentsMargins(0, 0, 0, 0)
-        sec2_l.setSpacing(0)
-        sec2_l.addWidget(QLabel('<b>Предлагаемая замена:</b>'))
-        sec2_l.addWidget(lbl_new)
-        layout.addWidget(sec2)
+        self._create_template_block(layout, 'Предлагаемая замена', highlighted_new, '#ecfdf5', '#d1fae5', 'new')
     
     def prepare_highlighted_templates(self):
         """Подготовка highlighted версий шаблонов с подсветкой изменений"""
@@ -347,6 +303,230 @@ class TemplateReviewDialog(QDialog):
         
         return highlighted_old, highlighted_new
     
+    def _add_soft_wraps(self, text: str) -> str:
+        """Добавляет мягкие переносы после разделителей для корректного отображения в узких окнах"""
+        try:
+            zwsp = '&#8203;'
+            return text.replace('|', '|' + zwsp)
+        except Exception:
+            return text
+    
+    def _create_template_block(self, layout, title: str, content: str, bg_color: str, border_color: str, block_type: str):
+        """Создает блок с шаблоном и кнопкой сворачивания"""
+        html_content = (
+            f"<div style='font-family:Consolas,\"Courier New\",monospace;background:{bg_color};"
+            f"border:1px solid {border_color};border-radius:6px;padding:2px 8px 2px 8px;margin:0'>"
+            f"{content}</div>"
+        )
+        
+        lbl = QLabel(html_content)
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setWordWrap(True)
+        lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        try:
+            lbl.setStyleSheet('margin:5')
+        except Exception:
+            pass
+
+        # Создаем контейнер с заголовком и кнопкой
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        
+        # Заголовок с кнопкой сворачивания
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.addWidget(QLabel(f'<b>{title}:</b>'))
+        
+        btn = QPushButton('−')
+        btn.setFixedSize(20, 20)
+        btn.setToolTip('Свернуть/развернуть блок')
+        btn.clicked.connect(lambda: self._toggle_block(lbl, btn))
+        header_layout.addWidget(btn)
+        header_layout.addStretch()
+        
+        # Сохраняем ссылку на кнопку для доступа извне
+        setattr(self, f'btn_collapse_{block_type}', btn)
+        
+        container_layout.addLayout(header_layout)
+        container_layout.addWidget(lbl)
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(container)
+    
+    def _build_page_urls(self, host: str, page_title: str) -> tuple[str, str]:
+        """Строит URL для страницы и её истории"""
+        encoded_title = urllib.parse.quote(page_title.replace(' ', '_'))
+        page_url = f"https://{host}/wiki/{encoded_title}"
+        history_url = f"https://{host}/w/index.php?title={encoded_title}&action=history"
+        return page_url, history_url
+    
+    def _create_link_label(self, text: str, page_url: str, history_url: str) -> QLabel:
+        """Создает QLabel со ссылками на страницу и историю"""
+        label_text = f"{text} (<a href='{page_url}'>открыть</a> · <a href='{history_url}'>история</a>)"
+        label = QLabel(label_text)
+        label.setTextFormat(Qt.RichText)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        label.setOpenExternalLinks(True)
+        return label
+    
+    def _toggle_block(self, widget, button):
+        """Переключает видимость блока и меняет символ кнопки"""
+        try:
+            if widget.isVisible():
+                # Сворачиваем с анимацией
+                self._animate_collapse(widget, button)
+            else:
+                # Разворачиваем с анимацией
+                self._animate_expand(widget, button)
+        except Exception:
+            pass
+    
+    def _auto_resize_if_needed(self):
+        """Автоматически увеличивает размер окна, если содержимое не помещается"""
+        try:
+            # Получаем минимальный размер, необходимый для отображения всего содержимого
+            self.adjustSize()
+            current_size = self.size()
+            minimum_size = self.minimumSizeHint()
+            
+            # Если текущий размер меньше необходимого, увеличиваем окно
+            new_width = max(current_size.width(), minimum_size.width())
+            new_height = max(current_size.height(), minimum_size.height())
+            
+            if new_width > current_size.width() or new_height > current_size.height():
+                self.resize(new_width, new_height)
+        except Exception:
+            pass
+    
+    def _animate_height(self, widget, button, collapse=True):
+        """Универсальный метод для анимации высоты блока"""
+        try:
+            # Останавливаем существующие анимации для этого виджета
+            self._stop_animations_for_widget(widget)
+            
+            if collapse:
+                # Сворачивание
+                start_height = widget.height()
+                end_height = 0
+                final_button_text = '+'
+                final_tooltip = 'Развернуть блок'
+            else:
+                # Разворачивание
+                widget.show()
+                widget.adjustSize()
+                start_height = 0
+                end_height = widget.sizeHint().height()
+                final_button_text = '−'
+                final_tooltip = 'Свернуть блок'
+                widget.setMaximumHeight(0)
+                button.setText('−')
+                button.setToolTip('Свернуть блок')
+            
+            # Создаем анимацию
+            animation = QPropertyAnimation(widget, b"maximumHeight")
+            animation.setDuration(ANIM_DURATION_MS)
+            animation.setEasingCurve(QEasingCurve.InOutCubic)
+            animation.setStartValue(start_height)
+            animation.setEndValue(end_height)
+            
+            # Обновление геометрии на каждом кадре
+            def update_height(value):
+                widget.setMaximumHeight(value)
+                widget.updateGeometry()
+            
+            animation.valueChanged.connect(update_height)
+            
+            # Завершение анимации
+            def on_finished():
+                if collapse:
+                    # При сворачивании сначала скрываем, потом восстанавливаем высоту
+                    widget.hide()
+                    widget.setMaximumHeight(MAX_WIDGET_HEIGHT)  # Восстанавливаем максимальную высоту
+                    button.setText(final_button_text)
+                    button.setToolTip(final_tooltip)
+                    QTimer.singleShot(RESIZE_DELAY_MS, self._auto_shrink_if_needed)
+                else:
+                    # При разворачивании восстанавливаем высоту, потом обновляем
+                    widget.setMaximumHeight(MAX_WIDGET_HEIGHT)  # Восстанавливаем максимальную высоту
+                    button.setText(final_button_text)
+                    button.setToolTip(final_tooltip)
+                    widget.updateGeometry()
+                    QTimer.singleShot(RESIZE_DELAY_MS, self._auto_resize_if_needed)
+                
+                # Удаляем анимацию из списка
+                if animation in self.animations:
+                    self.animations.remove(animation)
+            
+            animation.finished.connect(on_finished)
+            self.animations.append(animation)
+            animation.start()
+            
+        except Exception:
+            # Fallback к мгновенному изменению
+            if collapse:
+                widget.hide()
+                button.setText('+')
+                button.setToolTip('Развернуть блок')
+                self._auto_shrink_if_needed()
+            else:
+                widget.show()
+                widget.setMaximumHeight(MAX_WIDGET_HEIGHT)
+                button.setText('−')
+                button.setToolTip('Свернуть блок')
+                self._auto_resize_if_needed()
+    
+    def _animate_collapse(self, widget, button):
+        """Анимированное сворачивание блока"""
+        self._animate_height(widget, button, collapse=True)
+    
+    def _animate_expand(self, widget, button):
+        """Анимированное разворачивание блока"""
+        self._animate_height(widget, button, collapse=False)
+    
+    def _stop_animations_for_widget(self, widget):
+        """Останавливает все анимации для указанного виджета"""
+        try:
+            animations_to_remove = []
+            for animation in self.animations:
+                if animation.targetObject() == widget:
+                    animation.stop()
+                    animations_to_remove.append(animation)
+            
+            for animation in animations_to_remove:
+                self.animations.remove(animation)
+        except Exception:
+            pass
+    
+    def _auto_shrink_if_needed(self):
+        """Автоматически уменьшает размер окна при сворачивании блоков"""
+        try:
+            # Небольшая задержка для корректного пересчета размеров после скрытия виджета
+            QTimer.singleShot(SHRINK_DELAY_MS, self._perform_shrink)  # Увеличили задержку для завершения анимации
+        except Exception:
+            pass
+    
+    def _perform_shrink(self):
+        """Выполняет уменьшение размера окна"""
+        try:
+            # Получаем оптимальный размер для текущего видимого содержимого
+            self.adjustSize()
+            optimal_size = self.sizeHint()
+            current_size = self.size()
+            
+            # Уменьшаем окно до оптимального размера, но не меньше минимального
+            min_size = self.minimumSize()
+            new_width = max(optimal_size.width(), min_size.width())
+            new_height = max(optimal_size.height(), min_size.height())
+            
+            # Уменьшаем только если новый размер меньше текущего
+            if new_width < current_size.width() or new_height < current_size.height():
+                self.resize(new_width, new_height)
+        except Exception:
+            pass
+    
     def setup_edit_field(self):
         """Настройка поля для ручного редактирования"""
         # Устанавливаем начальный текст
@@ -362,7 +542,12 @@ class TemplateReviewDialog(QDialog):
             )
         
         self.edit_field.setPlainText(initial_text)
-        self.edit_field.setMinimumHeight(160)
+        # Поле редактирования — сжимается последним, поэтому оставим минимум больше, чем у превью
+        self.edit_field.setMinimumHeight(110)
+        try:
+            self.edit_field.setMaximumHeight(260)
+        except Exception:
+            pass
         
         # Моноширинный шрифт
         mono = QFont('Consolas')
@@ -374,6 +559,8 @@ class TemplateReviewDialog(QDialog):
             self.edit_field.setLineWrapMode(QPlainTextEdit.WidgetWidth)
             self.edit_field.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
             self.edit_field.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            # Последний приоритет сжатия - сжимается только когда блоки превью уже сжались
+            self.edit_field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         except Exception:
             pass
     

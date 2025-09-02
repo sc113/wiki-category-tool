@@ -109,6 +109,77 @@ def normalize_username(name: str | None) -> str:
     return name.strip().replace('_', ' ').casefold()
 
 
+# ==============================
+# Нормализация пробелов/невидимых
+# ==============================
+def strip_invisible_marks(text: str | None) -> str:
+    """Удаляет невидимые маркеры (LRM/RLM/ZWSP и пр.) и BOM.
+
+    Возвращает исходную строку без символов:
+    \u200B-\u200F, \u202A-\u202E, \u2066-\u2069, \uFEFF
+    """
+    if text is None:
+        return ''
+    try:
+        import re as _re
+        return _re.sub(r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]", "", text)
+    except Exception:
+        return text
+
+
+def replace_unicode_spaces(text: str | None) -> str:
+    """Заменяет все варианты юникод‑пробелов на обычный пробел.
+
+    Включая: NBSP (\u00A0), NNBSP (\u202F), FIGURE SPACE (\u2007),
+    EN/EM/THIN/HAIR/… (\u2000-\u200A), \u205F, \u3000.
+    """
+    if text is None:
+        return ''
+    try:
+        import re as _re
+        return _re.sub(r"[\s\u00A0\u202F\u1680\u2000-\u200A\u2007\u205F\u3000]", " ", text)
+    except Exception:
+        return text
+
+
+def normalize_spaces_for_compare(text: str | None) -> str:
+    """Нормализует строку для сравнения:
+    1) убирает невидимые маркеры
+    2) приводит все пробелы к обычному пробелу
+    3) схлопывает повторные пробелы и обрезает края
+    """
+    if text is None:
+        return ''
+    try:
+        import re as _re
+        s = strip_invisible_marks(text)
+        s = replace_unicode_spaces(s)
+        s = _re.sub(r"\s+", " ", s)
+        return (s or '').strip()
+    except Exception:
+        return (text or '').strip()
+
+
+def build_ws_fuzzy_pattern(text: str) -> str:
+    """Строит regex-паттерн для текста с учётом всех видов пробелов и невидимых.
+
+    Используется для поиска фраз в вики‑ссылках/параметрах, где между словами
+    могут появляться NBSP/NNBSP и невидимые символы.
+    """
+    try:
+        import re as _re
+        tokens = [t for t in _re.split(r"\s+", (text or '').strip()) if t]
+        if not tokens:
+            return _re.escape((text or ''))
+        # Класс пробелов и невидимых между токенами
+        invis = r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]"
+        spaces = r"[\s\u00A0\u202F\u1680\u2000-\u200A\u2007\u205F\u3000]"
+        sep = rf"(?:{invis}*{spaces}{invis}*)+"
+        return sep.join(_re.escape(t) for t in tokens)
+    except Exception:
+        return text
+
+
 def default_summary(lang: str) -> str:
     """Возвращает стандартный комментарий для правок в зависимости от языка."""
     mapping = {

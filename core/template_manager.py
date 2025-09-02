@@ -547,13 +547,15 @@ class TemplateManager:
                 _, oldv, newv = unnamed_changes[0]
                 if (oldv or '').strip():
                     # Правило для одиночного безымянного параметра
-                    self._upsert_rule(bucket, {
+                    _rule = {
                         'type': 'unnamed_single',
                         'from': (oldv or '').strip(),
-                        'to': (newv or '').strip(),
-                        # Сохраняем пожелание пользователя для дедупликации, если передано
-                        'dedupe': str(dedupe_mode) if dedupe_mode else None
-                    }, rule_auto)
+                        'to': (newv or '').strip()
+                    }
+                    # Сохраняем пожелание пользователя для дедупликации, только если явно задано
+                    if dedupe_mode is not None and str(dedupe_mode).strip() != '':
+                        _rule['dedupe'] = str(dedupe_mode)
+                    self._upsert_rule(bucket, _rule, rule_auto)
             elif len(unnamed_changes) > 1:
                 # Save as sequence idx=>value
                 seq = []
@@ -610,12 +612,24 @@ class TemplateManager:
             
             # Старые маппинги больше не используются — применяем только rules
             
+            # Нормализация строк для устойчивых сравнений: удаляем невидимые символы/неразрывные пробелы
+            def _normalize_for_compare(s: str) -> str:
+                try:
+                    if s is None:
+                        return ''
+                    s2 = re.sub(r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]", "", s)
+                    s2 = s2.replace('\u00A0', ' ').replace('\u202F', ' ')
+                    s2 = re.sub(r"\s+", " ", s2)
+                    return (s2 or '').strip()
+                except Exception:
+                    return (s or '').strip()
+            
             # First try unnamed sequences
             applied_sequence = False
             for seq in (bucket.get('unnamed_sequence') or []):
                 ok = True
                 for idx1, oldv, newv in seq:
-                    if idx1 - 1 >= len(unnamed) or (unnamed[idx1 - 1] or '').strip() != (oldv or '').strip():
+                    if idx1 - 1 >= len(unnamed) or _normalize_for_compare(unnamed[idx1 - 1]) != _normalize_for_compare(oldv):
                         ok = False
                         break
                 if ok:
@@ -634,7 +648,7 @@ class TemplateManager:
                 # For each rule find EXACTLY one match
                 tmp = list(unnamed)
                 for oldv, newv in mapping.items():
-                    matches = [i for i, tok in enumerate(tmp) if (tok or '').strip() == (oldv or '').strip()]
+                    matches = [i for i, tok in enumerate(tmp) if _normalize_for_compare(tok) == _normalize_for_compare(oldv)]
                     if len(matches) == 1:
                         tmp[matches[0]] = newv
                         changed = True
@@ -655,7 +669,7 @@ class TemplateManager:
                         new_named2: List[Tuple[str, str, str]] = []
                         for left, eq, val in named:
                             left_cf = re.sub(r"[_\s]+", " ", (left or '').strip()).casefold()
-                            if left_cf == nm_cf and (val or '').strip() == src:
+                            if left_cf == nm_cf and _normalize_for_compare(val) == _normalize_for_compare(src):
                                 val = dst
                                 changed = True
                             new_named2.append((left, eq, val))
@@ -664,34 +678,43 @@ class TemplateManager:
                         src = (rule.get('from') or '').strip()
                         dst = (rule.get('to') or '').strip()
                         tmp = list(unnamed)
-                        matches = [i for i, tok in enumerate(tmp) if (tok or '').strip() == src]
+                        matches = [i for i, tok in enumerate(tmp) if _normalize_for_compare(tok) == _normalize_for_compare(src)]
                         if len(matches) == 1:
-                            tmp[matches[0]] = dst
-                            changed = True
-                            # Дедупликация по сохранённому правилу
+                            # Пробное применение для оценки дублей, если дедуп не задан
+                            trial_tmp = list(tmp)
+                            trial_tmp[matches[0]] = dst
+                            # Определим режим дедупликации, если сохранён
                             try:
                                 dedupe_mode = str(rule.get('dedupe') or '').strip()
                             except Exception:
                                 dedupe_mode = ''
-                            # Обратная совместимость: keep_first/keep_second → left/right
-                            if dedupe_mode == 'keep_first':
-                                dedupe_mode = 'left'
-                            elif dedupe_mode == 'keep_second':
-                                dedupe_mode = 'right'
-                            if dedupe_mode:
-                                # Найдём все индексы, где теперь присутствует dst
-                                dup_idx = [i for i, tok in enumerate(tmp) if (tok or '').strip() == dst]
+                            # Если дедуп не задан (unset) и создаются дубли — НЕ применяем автоматически (пусть отработает интерактивный диалог)
+                            if not dedupe_mode:
+                                dup_idx = [i for i, tok in enumerate(trial_tmp) if _normalize_for_compare(tok) == _normalize_for_compare(dst)]
+                                if len(dup_idx) >= 2:
+                                    # пропускаем авто‑замену этой позиции, чтобы диалог показался позже
+                                    pass
+                                else:
+                                    tmp = trial_tmp
+                                    changed = True
+                            else:
+                                # Обратная совместимость: keep_first/keep_second → left/right
+                                if dedupe_mode == 'keep_first':
+                                    dedupe_mode = 'left'
+                                elif dedupe_mode == 'keep_second':
+                                    dedupe_mode = 'right'
+                                tmp = trial_tmp
+                                changed = True
+                                # Применяем удаление дублей по политике, если они есть
+                                dup_idx = [i for i, tok in enumerate(tmp) if _normalize_for_compare(tok) == _normalize_for_compare(dst)]
                                 if len(dup_idx) >= 2:
                                     if dedupe_mode == 'left':
-                                        # Оставляем самый левый, остальные удаляем
                                         for i in dup_idx[1:]:
                                             drop_unnamed_indices.add(i)
                                     elif dedupe_mode == 'right':
-                                        # Оставляем самый правый, остальные удаляем
                                         for i in dup_idx[:-1]:
                                             drop_unnamed_indices.add(i)
                                     elif dedupe_mode == 'keep_both':
-                                        # Ничего не делаем
                                         pass
                         unnamed = tmp
                     elif rtype == 'unnamed_sequence':
@@ -700,7 +723,7 @@ class TemplateManager:
                         for item in seq:
                             idx1 = int(item.get('idx', 0))
                             src = (item.get('from') or '').strip()
-                            if idx1 - 1 >= len(unnamed) or (unnamed[idx1 - 1] or '').strip() != src:
+                            if idx1 - 1 >= len(unnamed) or _normalize_for_compare(unnamed[idx1 - 1]) != _normalize_for_compare(src):
                                 ok = False
                                 break
                         if ok:
