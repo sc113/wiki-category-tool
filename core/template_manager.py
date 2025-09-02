@@ -612,17 +612,10 @@ class TemplateManager:
             
             # Старые маппинги больше не используются — применяем только rules
             
-            # Нормализация строк для устойчивых сравнений: удаляем невидимые символы/неразрывные пробелы
+            # Нормализация через utils для единообразия по всему проекту
+            from ..utils import normalize_spaces_for_compare as _norm
             def _normalize_for_compare(s: str) -> str:
-                try:
-                    if s is None:
-                        return ''
-                    s2 = re.sub(r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]", "", s)
-                    s2 = s2.replace('\u00A0', ' ').replace('\u202F', ' ')
-                    s2 = re.sub(r"\s+", " ", s2)
-                    return (s2 or '').strip()
-                except Exception:
-                    return (s or '').strip()
+                return _norm(s)
             
             # First try unnamed sequences
             applied_sequence = False
@@ -656,11 +649,14 @@ class TemplateManager:
 
             # Дополнительно применяем независимые правила bucket['rules'] (поддержка множества правил на шаблон)
             # Применяем только те, для которых auto=approve
+            # bucket-level автофлаг
+            bucket_auto = str((bucket.get('auto') or '')).strip().casefold()
             for rule in (bucket.get('rules') or []):
                 try:
                     rtype = rule.get('type')
                     rule_auto = str(rule.get('auto', 'none')).strip().casefold()
-                    if rule_auto != 'approve':
+                    # Разрешаем применение, если auto=approve у правила ИЛИ у всего шаблона
+                    if not ((rule_auto == 'approve') or (bucket_auto == 'approve')):
                         continue
                     if rtype == 'named':
                         nm_cf = (rule.get('param') or '').strip().casefold()

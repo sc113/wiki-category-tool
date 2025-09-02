@@ -149,6 +149,12 @@ class RenameTab(QWidget):
             'Выбранные правила автоприменения сохраняются и доступны через «Открыть/Очистить правила».\n'
             'Префикс «Категория:» в параметрах обычно опускают — это учитывается.'
         )
+        locative_help = (
+            'Обработка локативов в параметрах шаблонов.\n'
+            'По умолчанию выключено; используйте, когда категории называются в одном падеже, но задаются в шаблоне через другой падеж (напр. {{МестоРождения|Москва}}).\n\n'
+            'Если прямая категоризация не найдена, но шаблон присваивает категории через склонение названий\n'
+            '(\"в Москве\" → категория \"Родившиеся в Москве\"), будет предложено правило замены для начальной формы (именительного падежа) значения параметра.\n'
+        )
         
         # Первая опция: прямые ссылки
         row_p1 = QHBoxLayout()
@@ -193,14 +199,25 @@ class RenameTab(QWidget):
             row_p2.addStretch(1)
         except Exception:
             pass
+
+        # Опция: Локативы
+        row_loc = QHBoxLayout()
+        self.locatives_cb = QCheckBox('Локативы (склонения в параметрах шаблонов)')
+        self.locatives_cb.setChecked(False)
+        try:
+            self.locatives_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        except Exception:
+            pass
+        row_loc.addWidget(self.locatives_cb)
+        add_info_button(self, row_loc, locative_help, inline=True)
+        try:
+            row_loc.addStretch(1)
+        except Exception:
+            pass
         
-        # Кнопки: открыть/очистить правила замен шаблонов
-        btn_rules_row = QHBoxLayout()
+        # Кнопки правил (будут прикреплены к правому заголовку)
         btn_show_rules = QPushButton('Показать правила замен')
         btn_clear_rules = QPushButton('Очистить правила')
-        btn_rules_row.addWidget(btn_show_rules)
-        btn_rules_row.addWidget(btn_clear_rules)
-        btn_rules_row.addStretch(1)
         
         # Подключаем обработчики кнопок правил
         btn_show_rules.clicked.connect(self._open_rules_dialog)
@@ -242,8 +259,19 @@ class RenameTab(QWidget):
         # Заголовки
         lbl_left = QLabel('<b>Переименование</b>')
         grid.addWidget(lbl_left, 0, 0)
-        lbl_right = QLabel('<b>Перенос содержимого категорий</b>')
-        grid.addWidget(lbl_right, 0, 1)
+        # Правый заголовок + кнопки правил справа
+        right_header = QWidget()
+        right_header_lay = QHBoxLayout(right_header)
+        try:
+            right_header_lay.setContentsMargins(0, 0, 0, 0)
+            right_header_lay.setSpacing(6)
+        except Exception:
+            pass
+        right_header_lay.addWidget(QLabel('<b>Перенос содержимого категорий</b>'))
+        right_header_lay.addStretch(1)
+        right_header_lay.addWidget(btn_show_rules)
+        right_header_lay.addWidget(btn_clear_rules)
+        grid.addWidget(right_header, 0, 1)
         
         # Утилита-обёртка для QHBoxLayout
         def _wrap(layout_obj):
@@ -271,7 +299,7 @@ class RenameTab(QWidget):
         # Правая колонка: 3 строки
         grid.addWidget(_wrap(row_p1), 1, 1)
         grid.addWidget(_wrap(row_p2), 2, 1)
-        grid.addLayout(btn_rules_row, 3, 1)
+        grid.addWidget(_wrap(row_loc), 3, 1)
         
         try:
             grid.setColumnStretch(0, 1)
@@ -671,7 +699,8 @@ class RenameTab(QWidget):
             self.phase1_enabled_cb.isChecked(),
             self.move_members_cb.isChecked(),
             (self.rename_comment_edit.text() or '').strip(),
-            title_regex
+            title_regex,
+            self.locatives_cb.isChecked()
         )
         
         # Подключаем сигналы

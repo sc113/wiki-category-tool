@@ -42,7 +42,7 @@ class RenameWorker(BaseWorker):
     def __init__(self, tsv_path, username, password, lang, family, ns_selection: str | int, 
                  leave_cat_redirect: bool, leave_other_redirect: bool, move_members: bool, 
                  find_in_templates: bool, phase1_enabled: bool, move_category: bool = True,
-                 override_comment: str = '', title_regex: str = ''):
+                 override_comment: str = '', title_regex: str = '', use_locatives: bool = False):
         """
         Инициализация RenameWorker.
         
@@ -85,6 +85,8 @@ class RenameWorker(BaseWorker):
         
         # Template manager for handling template rules
         self.template_manager = TemplateManager()
+        # Включение эвристики локативов
+        self.use_locatives = bool(use_locatives)
         
         # Dialog communication
         self._prompt_events: dict[int, Event] = {}
@@ -686,12 +688,6 @@ class RenameWorker(BaseWorker):
                 # В summary добавим конкретные имена шаблонов (через запятую)
                 try:
                     labels = self._extract_changed_template_labels(original_text, modified_text)
-                    # Помечаем частичные правки в подписи, если были
-                    try:
-                        if getattr(self, '_last_template_change_was_partial', False) and labels:
-                            labels = [f"{x} [частично]" for x in labels]
-                    except Exception:
-                        pass
                     label_str = ', '.join(labels)
                 except Exception:
                     label_str = ''
@@ -724,12 +720,18 @@ class RenameWorker(BaseWorker):
             # Сброс признака «были ли какие-либо взаимодействия в диалогах» для текущей страницы
             try:
                 self._last_template_interactions = False
+                self._last_template_change_was_locative = False
+                self._last_changed_template_name = None
             except Exception:
                 pass
             # Интерактивная обработка шаблонов с диалогами подтверждения
             modified_text, interactive_changes = self._process_templates_interactive(
                 modified_text, old_cat_full, new_cat_full, title
             )
+            # Если пользователь нажал «Отмена» — прерываем без сохранений и логов успеха
+            if self._stop:
+                debug('Остановлено пользователем во время интерактивной обработки — пропускаем сохранение')
+                return (original_text, 0)
             
             if interactive_changes > 0:
                 debug(f'Интерактивная обработка: {interactive_changes} изменений')
@@ -739,6 +741,26 @@ class RenameWorker(BaseWorker):
                 # Интерактивные изменения в шаблонах — добавим конкретные шаблоны в summary
                 try:
                     labels = self._extract_changed_template_labels(original_text, modified_text)
+                    # Добавим маркер режима к ярлыкам
+                    if getattr(self, '_last_template_change_was_locative', False) and labels:
+                        labels = [f"{x} [локатив]" for x in labels]
+                    elif getattr(self, '_last_template_change_was_partial', False) and labels:
+                        labels = [f"{x} [частично]" for x in labels]
+                    # Фолбэк: если ярлыков не удалось извлечь, но знаем последний шаблон — используем его
+                    if not labels:
+                        try:
+                            last_name = getattr(self, '_last_changed_template_name', '') or ''
+                        except Exception:
+                            last_name = ''
+                        if last_name:
+                            try:
+                                pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
+                            except Exception:
+                                pref = DEFAULT_EN_NS.get(10, 'Template:')
+                            if getattr(self, '_last_template_change_was_locative', False):
+                                labels = [f"{pref}{last_name} [локатив]"]
+                            elif getattr(self, '_last_template_change_was_partial', False):
+                                labels = [f"{pref}{last_name} [частично]"]
                     label_str = ', '.join(labels)
                 except Exception:
                     label_str = ''
@@ -751,11 +773,25 @@ class RenameWorker(BaseWorker):
                         typ = 'страница'
                     try:
                         tmpl_names = self._extract_changed_template_labels(original_text, modified_text)
-                        try:
-                            if getattr(self, '_last_template_change_was_partial', False) and tmpl_names:
-                                tmpl_names = [f"{x} [частично]" for x in tmpl_names]
-                        except Exception:
-                            pass
+                        # Добавим маркер к ярлыкам, либо применим фолбэк на последний шаблон
+                        if getattr(self, '_last_template_change_was_locative', False) and tmpl_names:
+                            tmpl_names = [f"{x} [локатив]" for x in tmpl_names]
+                        elif getattr(self, '_last_template_change_was_partial', False) and tmpl_names:
+                            tmpl_names = [f"{x} [частично]" for x in tmpl_names]
+                        if not tmpl_names:
+                            try:
+                                last_name = getattr(self, '_last_changed_template_name', '') or ''
+                            except Exception:
+                                last_name = ''
+                            if last_name:
+                                try:
+                                    pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
+                                except Exception:
+                                    pref = DEFAULT_EN_NS.get(10, 'Template:')
+                                if getattr(self, '_last_template_change_was_locative', False):
+                                    tmpl_names = [f"{pref}{last_name} [локатив]"]
+                                elif getattr(self, '_last_template_change_was_partial', False):
+                                    tmpl_names = [f"{pref}{last_name} [частично]"]
                         suffix = f" ({', '.join(tmpl_names)})" if tmpl_names else ''
                         self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена{suffix}')
                     except Exception:
@@ -764,6 +800,88 @@ class RenameWorker(BaseWorker):
                     # Ошибка уже залогирована внутри _save_with_retry; не дублируем сообщение
                     try:
                         self._last_template_interactions = True
+                    except Exception:
+                        pass
+            else:
+                # Финальный шаг: эвристика «локативы», если включена и прямых/частичных совпадений не найдено
+                try:
+                    if self.find_in_templates and self.use_locatives and not self._stop:
+                        modified_text2, loc_changes = self._process_locatives_heuristic(
+                            modified_text, old_cat_full, new_cat_full, title
+                        )
+                        # Если пользователь отменил в режиме локативов — немедленно прерываем без сохранений
+                        if self._stop:
+                            debug('Остановлено пользователем при обработке локативов — пропускаем сохранение')
+                            return (original_text, changes_made)
+                        if loc_changes > 0 and modified_text2 != modified_text:
+                            changes_made += loc_changes
+                            # Сохраняем изменения
+                            try:
+                                labels = self._extract_changed_template_labels(original_text, modified_text2)
+                                # Помечаем маркером режима для summary
+                                if getattr(self, '_last_template_change_was_locative', False) and labels:
+                                    labels = [f"{x} [локатив]" for x in labels]
+                                elif getattr(self, '_last_template_change_was_partial', False) and labels:
+                                    labels = [f"{x} [частично]" for x in labels]
+                                if not labels:
+                                    try:
+                                        last_name = getattr(self, '_last_changed_template_name', '') or ''
+                                    except Exception:
+                                        last_name = ''
+                                    if last_name:
+                                        try:
+                                            pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
+                                        except Exception:
+                                            pref = DEFAULT_EN_NS.get(10, 'Template:')
+                                        if getattr(self, '_last_template_change_was_locative', False):
+                                            labels = [f"{pref}{last_name} [локатив]"]
+                                        elif getattr(self, '_last_template_change_was_partial', False):
+                                            labels = [f"{pref}{last_name} [частично]"]
+                                label_str = ', '.join(labels)
+                            except Exception:
+                                label_str = ''
+                            summary = self._build_summary(old_cat_full, new_cat_full, mode='template', template_label=label_str)
+                            ok = self._save_with_retry(page, modified_text2, summary, True)
+                            if ok:
+                                try:
+                                    typ = self._page_kind(page)
+                                except Exception:
+                                    typ = 'страница'
+                                try:
+                                    tmpl_names = self._extract_changed_template_labels(original_text, modified_text2)
+                                    if getattr(self, '_last_template_change_was_locative', False) and tmpl_names:
+                                        tmpl_names = [f"{x} [локатив]" for x in tmpl_names]
+                                    elif getattr(self, '_last_template_change_was_partial', False) and tmpl_names:
+                                        tmpl_names = [f"{x} [частично]" for x in tmpl_names]
+                                    if not tmpl_names:
+                                        try:
+                                            last_name = getattr(self, '_last_changed_template_name', '') or ''
+                                        except Exception:
+                                            last_name = ''
+                                        if last_name:
+                                            try:
+                                                pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
+                                            except Exception:
+                                                pref = DEFAULT_EN_NS.get(10, 'Template:')
+                                            if getattr(self, '_last_template_change_was_locative', False):
+                                                tmpl_names = [f"{pref}{last_name} [локатив]"]
+                                            elif getattr(self, '_last_template_change_was_partial', False):
+                                                tmpl_names = [f"{pref}{last_name} [частично]"]
+                                    suffix = f" ({', '.join(tmpl_names)})" if tmpl_names else ''
+                                    self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена{suffix}')
+                                except Exception:
+                                    self.progress.emit(f'→ {new_cat_full} : "{title}" — перенесена')
+                                original_text = modified_text2
+                                modified_text = modified_text2
+                            else:
+                                try:
+                                    self._last_template_interactions = True
+                                except Exception:
+                                    pass
+                except Exception as _loc_e:
+                    try:
+                        from ..utils import debug as _dbg
+                        _dbg(f'Ошибка работы эвристики локативов: {_loc_e}')
                     except Exception:
                         pass
             
@@ -784,6 +902,316 @@ class RenameWorker(BaseWorker):
             return modified_text, changes_made
         except Exception:
             return ('', 0)
+
+    # ==============================
+    # Эвристика обработки локативов
+    # ==============================
+    def _loc_common_prefix(self, a: str, b: str) -> str:
+        try:
+            L = min(len(a), len(b))
+            i = 0
+            while i < L and a[i] == b[i]:
+                i += 1
+            return a[:i]
+        except Exception:
+            return ''
+
+    def _loc_common_suffix(self, a: str, b: str) -> str:
+        try:
+            a2 = a[::-1]
+            b2 = b[::-1]
+            L = min(len(a2), len(b2))
+            i = 0
+            while i < L and a2[i] == b2[i]:
+                i += 1
+            return a[len(a)-i:] if i > 0 else ''
+        except Exception:
+            return ''
+
+    def _loc_trim(self, s: str) -> str:
+        try:
+            import re as _re
+            return (_re.sub(r"^[\s,;:–—\-·()\[\]]+|[\s,;:–—\-·()\[\]]+$", "", s or '') or '').strip()
+        except Exception:
+            return (s or '').strip()
+
+    def _invert_locative_form(self, word: str) -> str:
+        """Грубая эвристика обратного преобразования из предложного падежа к именительному.
+
+        Параллельно срабатывает для пар: «Порт-Элизабете» → «Порт-Элизабет», «Грузии» → «Грузия»,
+        «Варшаве» → «Варшава», «Сочи» → «Сочи» (без изменений).
+        """
+        try:
+            w = (word or '').strip()
+            if not w:
+                return w
+            lower = w.casefold()
+            # 1) "…ии" → "…ия"
+            if lower.endswith('ии') and len(w) > 2:
+                return w[:-2] + ('ия' if w[-2:].islower() else 'ИЯ')
+            # 2) "…ле" → "…ль" (как в «Неаполь» → «в Неаполе»)
+            if lower.endswith('ле') and len(w) > 2:
+                return w[:-1].rstrip('е') + 'ь'
+            # 3) Для топонимов на -ге/-ке/-хе и перед ними гласная → -га/-ка/-ха
+            #    Примеры: Риге→Рига, Праге→Прага, Гцгебехе→Гцгебеха; но Гонконге→Гонконг (не меняем, перед 'ге' стоит согласная 'н')
+            vowels_set = set('аеёиоуыэюяAEIOUYАОЭИУЫЕЁЮЯ')
+            if len(w) >= 3 and (lower.endswith('ге') or lower.endswith('ке') or lower.endswith('хе')):
+                prev = w[-3]
+                if prev in vowels_set:
+                    base = w[:-2]
+                    first = w[-2]
+                    # Сохраняем регистр согласной
+                    if lower.endswith('ге'):
+                        cons = 'Г' if first.isupper() else 'г'
+                    elif lower.endswith('ке'):
+                        cons = 'К' if first.isupper() else 'к'
+                    else:
+                        cons = 'Х' if first.isupper() else 'х'
+                    a_char = 'А' if w[-1].isupper() else 'а'
+                    return base + cons + a_char
+            # 3) "…ве/…пе/…ре/…те/..." общее правило: «…е» → удалить «е», если перед ним согласная
+            vowels = set('аеёиоуыэюяAEIOUYАОЭИУЫЕЁЮЯ')
+            if lower.endswith('е') and len(w) > 1 and (w[-2] not in vowels):
+                return w[:-1]
+            # 4) "…и" → «…ь» для слов на мягкий знак в именительном (частично верно)
+            if lower.endswith('и') and len(w) > 1 and (w[-2] not in vowels):
+                return w[:-1] + 'ь'
+            # 5) Падежи прилагательных (минимум): «…ой» → «…ая»
+            if lower.endswith('ой') and len(w) > 2:
+                return w[:-2] + 'ая'
+            # 6) Безопасный фолбэк: вернуть как есть
+            return w
+        except Exception:
+            return word
+
+    def _process_locatives_heuristic(self, text: str, old_cat_full: str, new_cat_full: str, page_title: str) -> tuple[str, int]:
+        from ..utils import debug
+        try:
+            import re
+        except Exception:
+            re = None
+        try:
+            old_name = old_cat_full.split(':', 1)[-1] if ':' in old_cat_full else old_cat_full
+            new_name = new_cat_full.split(':', 1)[-1] if ':' in new_cat_full else new_cat_full
+            if not old_name or not new_name:
+                return text, 0
+            # Вычисляем различающиеся части
+            # Токен‑дифф по словам: не режем буквы, только целые токены по пробелам
+            import re as _re
+            def _split_tokens(s: str) -> list[str]:
+                try:
+                    return [t for t in _re.split(r"\s+", (s or '').strip()) if t]
+                except Exception:
+                    return [(s or '').strip()] if (s or '').strip() else []
+            old_t = _split_tokens(old_name)
+            new_t = _split_tokens(new_name)
+            i = 0
+            L = min(len(old_t), len(new_t))
+            while i < L and old_t[i] == new_t[i]:
+                i += 1
+            j = 0
+            while (j < (len(old_t)-i)) and (j < (len(new_t)-i)) and (old_t[-1-j] == new_t[-1-j]):
+                j += 1
+            old_mid = self._loc_trim(' '.join(old_t[i:len(old_t)-j if j else None]))
+            new_mid = self._loc_trim(' '.join(new_t[i:len(new_t)-j if j else None]))
+            if not old_mid or not new_mid:
+                return text, 0
+            inv_old = self._invert_locative_form(old_mid)
+            inv_new = self._invert_locative_form(new_mid)
+            # Диагностика: если инверсий несколько (разные эвристики) — пока просто логируем возможность неоднозначности
+            try:
+                from ..utils import debug as _dbg
+                if inv_old != old_mid or inv_new != new_mid:
+                    _dbg(f"Локативы: инверсия '{old_mid}'→'{inv_old}', '{new_mid}'→'{inv_new}'")
+            except Exception:
+                pass
+            if not inv_old or not inv_new or inv_old == inv_new:
+                return text, 0
+            debug(f"Локативы: diff '{old_mid}'→'{new_mid}', инверсия '{inv_old}'→'{inv_new}'")
+            # Ищем подходящий шаблон и параметр, где значение ровно inv_old
+            import html as _html
+            template_pattern = r'\{\{([^{}]+?)\}\}'
+            try:
+                templates = list(re.finditer(template_pattern, text, re.DOTALL)) if re else []
+            except Exception:
+                templates = []
+            changes = 0
+            modified_text = text
+            for m in templates:
+                if self._stop:
+                    break
+                inner = m.group(1)
+                full_template = m.group(0)
+                if '|' not in inner:
+                    continue
+                parts = inner.split('|')
+                template_name = parts[0].strip()
+                # Подсчёт числа непустых значений параметров (для автоприменения при единственном значении)
+                try:
+                    from ..utils import normalize_spaces_for_compare as _norm
+                except Exception:
+                    def _norm(x: str) -> str:
+                        return (x or '').strip()
+                non_empty_params = 0
+                try:
+                    for tok in parts[1:]:
+                        val_tok = tok
+                        if '=' in tok:
+                            try:
+                                val_tok = tok.split('=', 1)[1]
+                            except Exception:
+                                val_tok = tok
+                        try:
+                            val_plain = (val_tok or '').strip().strip('"\'')
+                        except Exception:
+                            val_plain = (val_tok or '').strip()
+                        if _norm(val_plain) != '':
+                            non_empty_params += 1
+                except Exception:
+                    non_empty_params = 0
+                # Автопропуск отмеченных шаблонов
+                try:
+                    if self.template_manager.is_template_auto_skip(template_name, self.family, self.lang):
+                        continue
+                except Exception:
+                    pass
+                for i, param in enumerate(parts[1:], 1):
+                    if self._stop:
+                        break
+                    param_clean = (param or '').strip()
+                    # Разобрать name=value
+                    try:
+                        if '=' in param_clean:
+                            _name, _val = param_clean.split('=', 1)
+                            value_part = (_val or '').strip()
+                        else:
+                            value_part = param_clean
+                    except Exception:
+                        value_part = param_clean
+                    try:
+                        value_plain = value_part.strip().strip('"\'')
+                    except Exception:
+                        value_plain = value_part.strip()
+                    # Проверяем точное совпадение с инверсией старого локатива
+                    if value_plain != inv_old and value_part != inv_old:
+                        # также проверим HTML-экранирование
+                        try:
+                            if value_plain != _html.escape(inv_old, quote=True):
+                                continue
+                        except Exception:
+                            continue
+                    # Построим предложение замены
+                    old_val = inv_old
+                    new_val = inv_new
+                    try:
+                        # Сохранить капитализацию первой буквы
+                        if old_val and new_val:
+                            of = old_val[:1]
+                            nf = new_val[:1]
+                            if of.islower() and nf.isupper():
+                                new_val = nf.lower() + new_val[1:]
+                            elif of.isupper() and nf.islower():
+                                new_val = nf.upper() + new_val[1:]
+                    except Exception:
+                        pass
+                    proposed_param = param_clean.replace(old_val, new_val, 1)
+                    new_parts = parts.copy()
+                    new_parts[i] = proposed_param
+                    proposed_template = '{{' + '|'.join(new_parts) + '}}'
+                    # Предупреждение о дублях позиционных параметров (как выше)
+                    dup_warning = False
+                    dup_idx1 = 0
+                    dup_idx2 = 0
+                    try:
+                        is_positional = ('=' not in param_clean)
+                        if is_positional:
+                            target_val = (new_val or '').strip().strip('"\'')
+                            inner2 = proposed_template[2:-2]
+                            parts2 = inner2.split('|') if inner2 else []
+                            pos_list = []
+                            for j, tok in enumerate(parts2[1:], 1):
+                                if '=' in tok:
+                                    continue
+                                if (tok or '').strip().strip('"\'') == target_val and target_val != '':
+                                    pos_list.append(j)
+                            if len(pos_list) >= 2:
+                                dup_warning = True
+                                dup_idx1 = pos_list[0]
+                                dup_idx2 = pos_list[-1]
+                    except Exception:
+                        pass
+                    # Всегда ручное подтверждение (локативы): массовые действия отключены
+                    loc_mass_disabled = True
+                    result = self._request_template_confirmation(
+                        page_title=page_title,
+                        template=full_template,
+                        old_full=old_cat_full,
+                        new_full=new_cat_full,
+                        mode='locative',
+                        proposed_template=proposed_template,
+                        old_direct=old_val,
+                        new_direct=new_val,
+                        dup_warning=dup_warning,
+                        dup_idx1=dup_idx1,
+                        dup_idx2=dup_idx2,
+                        disable_mass_actions=True
+                    )
+                    action = result.get('action', 'skip')
+                    if action == 'apply':
+                        edited_template = (result.get('edited_template') or '').strip()
+                        final_template = edited_template or proposed_template
+                        # Сохраняем правило без автофлага (auto=none)
+                        try:
+                            self.template_manager.update_template_cache_from_edit(
+                                self.family, self.lang, full_template, final_template, 'none', result.get('dedupe_mode')
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            self._last_template_change_was_locative = True
+                            self._last_changed_template_name = (template_name or '').strip()
+                        except Exception:
+                            pass
+                        modified_text = modified_text.replace(full_template, final_template, 1)
+                        changes += 1
+                        break
+                    elif action == 'skip':
+                        # Лог «пропущено пользователем (Шаблон:Имя)» — как в ветке direct/partial
+                        try:
+                            tmpl_label = self._format_template_label(template_name, False)
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label} [локатив])')
+                        except Exception:
+                            pass
+                        try:
+                            self._last_template_interactions = True
+                        except Exception:
+                            pass
+                        continue
+                    elif action == 'cancel':
+                        try:
+                            self._last_template_interactions = True
+                        except Exception:
+                            pass
+                        # Логируем пропуск текущей статьи аналогично partial, с пометкой локативов
+                        try:
+                            tmpl_label = self._format_template_label(template_name, False)
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label} [локатив])')
+                        except Exception:
+                            pass
+                        # Жёсткая остановка процесса: поднимем флаг и вернём сразу
+                        self._stop = True
+                        try:
+                            self.progress.emit("Процесс остановлен пользователем.")
+                        except Exception:
+                            pass
+                        return modified_text, changes
+                if changes > 0:
+                    break
+            return modified_text, changes
+        except Exception as e:
+            from ..utils import debug
+            debug(f'Ошибка обработки локативов: {e}')
+            return text, 0
 
     def _replace_category_links_in_text(self, text: str, family: str, lang: str, old_cat_full: str, new_cat_full: str) -> tuple[str, int]:
         """
@@ -889,6 +1317,7 @@ class RenameWorker(BaseWorker):
         # Сбросим флаг «последние изменения были частичными» для логирования
         try:
             self._last_template_change_was_partial = False
+            self._last_template_change_was_locative = False
         except Exception:
             pass
         
@@ -906,9 +1335,9 @@ class RenameWorker(BaseWorker):
                 new_s = (_new or '').strip()
                 if not old_s or not new_s or old_s == new_s:
                     return pairs
-                # Токенизируем по пробелам и распространённым разделителям
-                tokens_old = re.split(r"[\s:\-–—]+", old_s)
-                tokens_new = re.split(r"[\s:\-–—]+", new_s)
+                # Токенизация только по пробелам и двоеточию — дефисы считаем частью слова
+                tokens_old = re.split(r"[\s:]+", old_s)
+                tokens_new = re.split(r"[\s:]+", new_s)
                 # Индекс первого различия по токенам
                 diff_i = 0
                 L = min(len(tokens_old), len(tokens_new))
@@ -935,19 +1364,9 @@ class RenameWorker(BaseWorker):
         partial_pairs = _generate_partial_pairs(old_cat_name, new_cat_name)
         
         # Нормализация строк для сравнения: удаляем невидимые спецсимволы и нормализуем пробелы
+        from ..utils import normalize_spaces_for_compare as _norm
         def _normalize_for_compare(s: str) -> str:
-            try:
-                if s is None:
-                    return ''
-                # Удаляем ZWSP/ZWJ/ZWNJ, LRM/RLM и прочие маркеры направления, BOM и т.п.
-                s2 = re.sub(r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]", "", s)
-                # NBSP/NNBSP → обычный пробел
-                s2 = s2.replace('\u00A0', ' ').replace('\u202F', ' ')
-                # Схлопываем повторные пробелы
-                s2 = re.sub(r"\s+", " ", s2)
-                return (s2 or '').strip()
-            except Exception:
-                return (s or '').strip()
+            return _norm(s)
         
         # Предрассчитанные нормализованные формы искомых названий категорий
         old_cat_name_norm = _normalize_for_compare(old_cat_name)
@@ -1257,6 +1676,7 @@ class RenameWorker(BaseWorker):
                         try:
                             if is_partial:
                                 self._last_template_change_was_partial = True
+                            self._last_changed_template_name = (template_name or '').strip()
                         except Exception:
                             pass
                         debug(f'Применено изменение в шаблоне {template_name}')
@@ -1294,10 +1714,10 @@ class RenameWorker(BaseWorker):
                         except Exception:
                             pass
                         # Лог: укажем шаблон и тип совпадения (полное/частичное), чтобы в
-                        # «Источник» корректно показалась иконка 🧪 для частичных совпадений
+                        # «Источник» корректно показалась иконка #️⃣ для частичных совпадений
                         try:
                             tmpl_label = self._format_template_label(template_name, is_partial)
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — отменено пользователем ({tmpl_label})')
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label})')
                         except Exception:
                             pass
                         self._stop = True
@@ -1317,7 +1737,8 @@ class RenameWorker(BaseWorker):
     def _request_template_confirmation(self, page_title: str, template: str, old_full: str, new_full: str, 
                                      mode: str, proposed_template: str = '', old_direct: str = '', 
                                      new_direct: str = '', old_sub: str = '', new_sub: str = '',
-                                     dup_warning: bool = False, dup_idx1: int = 0, dup_idx2: int = 0) -> dict:
+                                     dup_warning: bool = False, dup_idx1: int = 0, dup_idx2: int = 0,
+                                     disable_mass_actions: bool = False) -> dict:
         """
         Запрос подтверждения изменения в шаблоне через диалог.
         
@@ -1352,6 +1773,8 @@ class RenameWorker(BaseWorker):
                 'dup_warning': bool(dup_warning),
                 'dup_idx1': int(dup_idx1),
                 'dup_idx2': int(dup_idx2),
+                # Блокировка массовых действий (для многопараметричных локативов)
+                'disable_mass_actions': bool(disable_mass_actions),
             })
             
             # Ждем ответа от диалога

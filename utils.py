@@ -122,7 +122,8 @@ def strip_invisible_marks(text: str | None) -> str:
         return ''
     try:
         import re as _re
-        return _re.sub(r"[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]", "", text)
+        # Удаляем невидимые форматные символы, включая WORD JOINER (\u2060) и SOFT HYPHEN (\u00AD)
+        return _re.sub(r"[\u00AD\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]", "", text)
     except Exception:
         return text
 

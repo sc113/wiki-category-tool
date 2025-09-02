@@ -77,7 +77,7 @@ class TemplateReviewDialog(QDialog):
         # Заголовок: "Замена по параметрам шаблона"
         self.setWindowTitle("Замена по параметрам шаблона")
         
-        # Размер: 900x700 с возможностью изменения
+        # Размер по умолчанию; дальнейшее распределение свободного места — в пользу редактора
         self.resize(900, 700)
         self.setSizeGripEnabled(True)
         try:
@@ -88,31 +88,93 @@ class TemplateReviewDialog(QDialog):
         
         # Основной layout
         layout = QVBoxLayout(self)
+        try:
+            layout.setContentsMargins(10, 8, 10, 10)
+            layout.setSpacing(6)
+        except Exception:
+            pass
         
         # Создаем header с информацией о переименовании (если есть page_title)
         if self.page_title:
             self.create_header_section(layout)
         
-        # Добавляем отступ
-        layout.addSpacing(6)
+        # Компактный отступ
+        layout.addSpacing(4)
         
-        # Сообщение о типе замены
-        layout.addWidget(QLabel('<b>Сообщение:</b>'))
-        
+        # Сообщение о типе замены (плотный блок: заголовок + сообщение без промежутков)
         is_direct = (self.mode == 'direct')
-        message_text = (
-            "Категория на странице не найдена напрямую. Обнаружено совпадение в параметрах шаблона."
-            if is_direct else
-            "Категория на странице не найдена напрямую. Обнаружены совпадения по частям в параметрах шаблона. "
-            "Проверьте и при необходимости подредактируйте."
-        )
-        
-        msg_label = QLabel(message_text)
-        msg_label.setWordWrap(True)
-        layout.addWidget(msg_label)
+        is_partial = (self.mode == 'partial')
+        is_locative = (self.mode == 'locative')
+
+        msg_wrap = QWidget()
+        msg_box = QVBoxLayout(msg_wrap)
+        msg_box.setContentsMargins(0, 0, 0, 0)
+        msg_box.setSpacing(0)
+
+        _msg_title = QLabel('<b>Сообщение:</b>')
+        try:
+            _msg_title.setStyleSheet('margin:0')
+        except Exception:
+            pass
+        msg_box.addWidget(_msg_title)
+
+        if is_locative:
+            # Красная крупная строка + пояснение
+            red = QLabel("<span style='color:#b91c1c;font-weight:bold;font-size:16px'>Обнаружено применение локативов в параметрах шаблона</span>")
+            red.setWordWrap(True)
+            try:
+                red.setStyleSheet('margin:0')
+            except Exception:
+                pass
+            msg_box.addWidget(red)
+            msg_box.addSpacing(6)
+            desc = QLabel("С высокой вероятностью <b>нужны исправления вручную</b>. Ниже предлагается замена через автоматический подбор эвристик (логика на основе Шаблон:Локатив); проверьте корректность и при необходимости внесите исправления.")
+            desc.setWordWrap(True)
+            try:
+                desc.setStyleSheet('margin:0')
+            except Exception:
+                pass
+            msg_box.addWidget(desc)
+        elif is_partial:
+            amber = QLabel("<b>Обнаружены совпадения по частям</b>")
+            amber.setWordWrap(True)
+            try:
+                amber.setStyleSheet('margin:0')
+            except Exception:
+                pass
+            msg_box.addWidget(amber)
+            msg_box.addSpacing(6)
+            desc = QLabel("Категория на странице не найдена напрямую. Проверьте и при необходимости подредактируйте предложенную замену.")
+            desc.setWordWrap(True)
+            try:
+                desc.setStyleSheet('margin:0')
+            except Exception:
+                pass
+            msg_box.addWidget(desc)
+        else:
+            basic = QLabel("Категория на странице не найдена напрямую. Обнаружено совпадение в параметрах шаблона.")
+            basic.setWordWrap(True)
+            try:
+                basic.setStyleSheet('margin:0')
+            except Exception:
+                pass
+            msg_box.addWidget(basic)
+
+        layout.addWidget(msg_wrap)
+        layout.addSpacing(6)
         
         # Создаем блоки с исходным и предлагаемым вызовом
         self.create_template_sections(layout)
+        try:
+            # Блоки превью занимают минимум, остальное вверх не растягивается — всю высоту отдаём редактору
+            layout.setStretch(0, 0)  # header
+            layout.setStretch(1, 0)  # spacing
+            layout.setStretch(2, 0)  # "Сообщение:" label
+            layout.setStretch(3, 0)  # текст сообщения
+            layout.setStretch(4, 0)  # превью 1
+            layout.setStretch(5, 0)  # превью 2
+        except Exception:
+            pass
 
         # Блок предупреждения о дублях позиционных параметров
         if self.dup_warning and self.dup_idx1 and self.dup_idx2:
@@ -136,6 +198,11 @@ class TemplateReviewDialog(QDialog):
         self.setup_edit_field()
         self.btn_collapse_edit.clicked.connect(lambda: self._toggle_block(self.edit_field, self.btn_collapse_edit))
         layout.addWidget(self.edit_field)
+        try:
+            # Свободное место отдаём под редактор
+            layout.setStretchFactor(self.edit_field, 1)
+        except Exception:
+            pass
         
         # Панель управления с кнопками
         self.create_control_panel(layout)
@@ -209,8 +276,8 @@ class TemplateReviewDialog(QDialog):
         )
         
         hlay = QVBoxLayout(header)
-        hlay.setContentsMargins(12, 10, 12, 10)
-        hlay.setSpacing(4)
+        hlay.setContentsMargins(10, 8, 10, 8)
+        hlay.setSpacing(2)
         
         # Строим URLs
         host = self.build_host(family, lang)
@@ -235,7 +302,7 @@ class TemplateReviewDialog(QDialog):
         hlay.addWidget(page_line)
         
         layout.addWidget(header)
-        layout.addSpacing(6)
+        layout.addSpacing(4)
     
     def create_template_sections(self, layout):
         """Создание секций с исходным и предлагаемым шаблоном"""
@@ -255,7 +322,7 @@ class TemplateReviewDialog(QDialog):
         """Подготовка highlighted версий шаблонов с подсветкой изменений"""
         esc_tmpl = html.escape(self.template_str)
         
-        if self.mode == 'direct':
+        if self.mode in ('direct', 'locative'):
             # Прямые совпадения
             old_direct = self.old_direct
             new_direct = self.new_direct
@@ -315,7 +382,7 @@ class TemplateReviewDialog(QDialog):
         """Создает блок с шаблоном и кнопкой сворачивания"""
         html_content = (
             f"<div style='font-family:Consolas,\"Courier New\",monospace;background:{bg_color};"
-            f"border:1px solid {border_color};border-radius:6px;padding:2px 8px 2px 8px;margin:0'>"
+            f"border:1px solid {border_color};border-radius:6px;padding:2px 8px 2px 8px;margin:2px 0 0 0'>"
             f"{content}</div>"
         )
         
@@ -530,7 +597,7 @@ class TemplateReviewDialog(QDialog):
     def setup_edit_field(self):
         """Настройка поля для ручного редактирования"""
         # Устанавливаем начальный текст
-        if self.mode == 'direct':
+        if self.mode in ('direct', 'locative'):
             initial_text = self.template_str.replace(
                 self.old_direct or self.old_full, 
                 self.new_direct or self.new_full, 1
@@ -623,6 +690,16 @@ class TemplateReviewDialog(QDialog):
         self.btn_confirm_all.clicked.connect(self.on_confirm_all)
         self.btn_skip_all.clicked.connect(self.on_skip_all)
         
+        # При запуске диалога можем отключить массовые действия через request_data
+        try:
+            if bool(self.request_data.get('disable_mass_actions', False)):
+                self.btn_confirm_all.setEnabled(False)
+                self.btn_skip_all.setEnabled(False)
+                self.btn_confirm_all.setToolTip('Недоступно для данного случая')
+                self.btn_skip_all.setToolTip('Недоступно для данного случая')
+        except Exception:
+            pass
+        
         # Обработка закрытия диалога выполняется через переопределённый reject()
     
     def on_confirm(self):
@@ -661,6 +738,7 @@ class TemplateReviewDialog(QDialog):
     
     def reject(self):
         """Безопасное закрытие диалога как отмены без рекурсии."""
+        # Закрытие окна (крестик) трактуем как явную отмену процесса
         self.result_action = 'cancel'
         try:
             return super().reject()
