@@ -1511,14 +1511,61 @@ class RenameWorker(BaseWorker):
                 # Если прямых совпадений не найдено — пробуем частичные пары
                 if not matched_this_param and partial_pairs:
                     try:
+                        # Вспомогательная проверка «подстрока с границами слова»
+                        def _has_sub_with_boundaries(text: str, sub: str) -> bool:
+                            try:
+                                if not text or not sub:
+                                    return False
+                                idx = text.find(sub)
+                                if idx == -1:
+                                    return False
+                                before = text[idx - 1] if idx > 0 else ''
+                                after = text[idx + len(sub)] if (idx + len(sub)) < len(text) else ''
+                                def _is_word_char(ch: str) -> bool:
+                                    try:
+                                        return ch.isalnum() or ch == '_'
+                                    except Exception:
+                                        return False
+                                if before and _is_word_char(before):
+                                    return False
+                                if after and _is_word_char(after):
+                                    return False
+                                return True
+                            except Exception:
+                                # Фолбэк: простая подстрока
+                                try:
+                                    return sub in (text or '')
+                                except Exception:
+                                    return False
+
                         for old_sub, new_sub in partial_pairs:
                             old_sub = (old_sub or '').strip()
                             new_sub = (new_sub or '').strip()
                             if not old_sub or not new_sub:
                                 continue
                             old_sub_enc = html.escape(old_sub, quote=True)
-                            # Проверяем строгое равенство значению параметра (с учётом кавычек/экранирования)
-                            if value_plain == old_sub or value_norm == old_sub or value_plain == old_sub_enc or value_norm == old_sub_enc:
+                            # 2c.1) Строгое равенство значению параметра (с учётом кавычек/экранирования)
+                            if (
+                                value_plain == old_sub or value_norm == old_sub or
+                                (old_sub_enc and (value_plain == old_sub_enc or value_norm == old_sub_enc))
+                            ):
+                                found_matches.append({
+                                    'type': 'partial',
+                                    'param_index': i,
+                                    'param_value': param_clean,
+                                    'old_sub': old_sub,
+                                    'new_sub': new_sub
+                                })
+                                break
+                            # 2c.2) Подстрочное совпадение внутри значения параметра
+                            elif (
+                                _has_sub_with_boundaries(value_plain, old_sub) or
+                                _has_sub_with_boundaries(value_norm, old_sub) or
+                                (old_sub_enc and (
+                                    _has_sub_with_boundaries(value_plain, old_sub_enc) or
+                                    _has_sub_with_boundaries(value_norm, old_sub_enc)
+                                ))
+                            ):
                                 found_matches.append({
                                     'type': 'partial',
                                     'param_index': i,
