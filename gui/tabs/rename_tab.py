@@ -159,7 +159,7 @@ class RenameTab(QWidget):
         
         # Первая опция: прямые ссылки
         row_p1 = QHBoxLayout()
-        self.phase1_enabled_cb = QCheckBox('Обычное перемещение содержимого (категории прямо указаны на странице)')
+        self.phase1_enabled_cb = QCheckBox('Обычный перенос (категории указаны текстом)')
         self.phase1_enabled_cb.setChecked(True)
         try:
             self.phase1_enabled_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -174,7 +174,7 @@ class RenameTab(QWidget):
         
         # Опция: переименовывать саму категорию
         row_move_cat = QHBoxLayout()
-        self.move_members_cb = QCheckBox('Переименовывать страницы')
+        self.move_members_cb = QCheckBox('Переименовывать')
         self.move_members_cb.setChecked(True)
         try:
             self.move_members_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -188,7 +188,7 @@ class RenameTab(QWidget):
         
         # Вторая опция: параметры шаблонов
         row_p2 = QHBoxLayout()
-        self.find_in_templates_cb = QCheckBox('Поиск и исправление категоризации через параметры шаблонов')
+        self.find_in_templates_cb = QCheckBox('Категоризация через шаблоны (название категории указано в параметрах)')
         self.find_in_templates_cb.setChecked(True)
         try:
             self.find_in_templates_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -203,7 +203,7 @@ class RenameTab(QWidget):
 
         # Опция: Локативы
         row_loc = QHBoxLayout()
-        self.locatives_cb = QCheckBox('Локативы (склонения в параметрах шаблонов)')
+        self.locatives_cb = QCheckBox('Категоризация через шаблоны: локативы (склонения падежей в параметрах)')
         self.locatives_cb.setChecked(False)
         try:
             self.locatives_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
