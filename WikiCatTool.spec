@@ -2,13 +2,12 @@
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('icon.ico', '.')]
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('wiki_cat_tool')
 tmp_ret = collect_all('pywikibot')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-datas += [('icon.ico', '.')]
 
 
 a = Analysis(
