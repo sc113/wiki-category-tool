@@ -743,12 +743,7 @@ class RenameWorker(BaseWorker):
                 # Интерактивные изменения в шаблонах — добавим конкретные шаблоны в summary
                 try:
                     labels = self._extract_changed_template_labels(original_text, modified_text)
-                    # Добавим маркер режима к ярлыкам
-                    if getattr(self, '_last_template_change_was_locative', False) and labels:
-                        labels = [f"{x} [локатив]" for x in labels]
-                    elif getattr(self, '_last_template_change_was_partial', False) and labels:
-                        labels = [f"{x} [частично]" for x in labels]
-                    # Фолбэк: если ярлыков не удалось извлечь, но знаем последний шаблон — используем его
+                    # Фолбэк: если ярлыков не удалось извлечь, но знаем последний шаблон — используем его (без меток)
                     if not labels:
                         try:
                             last_name = getattr(self, '_last_changed_template_name', '') or ''
@@ -759,10 +754,7 @@ class RenameWorker(BaseWorker):
                                 pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
                             except Exception:
                                 pref = DEFAULT_EN_NS.get(10, 'Template:')
-                            if getattr(self, '_last_template_change_was_locative', False):
-                                labels = [f"{pref}{last_name} [локатив]"]
-                            elif getattr(self, '_last_template_change_was_partial', False):
-                                labels = [f"{pref}{last_name} [частично]"]
+                            labels = [f"{pref}{last_name}"]
                     label_str = ', '.join(labels)
                 except Exception:
                     label_str = ''
@@ -775,11 +767,6 @@ class RenameWorker(BaseWorker):
                         typ = 'страница'
                     try:
                         tmpl_names = self._extract_changed_template_labels(original_text, modified_text)
-                        # Добавим маркер к ярлыкам, либо применим фолбэк на последний шаблон
-                        if getattr(self, '_last_template_change_was_locative', False) and tmpl_names:
-                            tmpl_names = [f"{x} [локатив]" for x in tmpl_names]
-                        elif getattr(self, '_last_template_change_was_partial', False) and tmpl_names:
-                            tmpl_names = [f"{x} [частично]" for x in tmpl_names]
                         if not tmpl_names:
                             try:
                                 last_name = getattr(self, '_last_changed_template_name', '') or ''
@@ -790,10 +777,7 @@ class RenameWorker(BaseWorker):
                                     pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
                                 except Exception:
                                     pref = DEFAULT_EN_NS.get(10, 'Template:')
-                                if getattr(self, '_last_template_change_was_locative', False):
-                                    tmpl_names = [f"{pref}{last_name} [локатив]"]
-                                elif getattr(self, '_last_template_change_was_partial', False):
-                                    tmpl_names = [f"{pref}{last_name} [частично]"]
+                                tmpl_names = [f"{pref}{last_name}"]
                         suffix = f" ({', '.join(tmpl_names)})" if tmpl_names else ''
                         self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена{suffix}')
                     except Exception:
@@ -820,11 +804,6 @@ class RenameWorker(BaseWorker):
                             # Сохраняем изменения
                             try:
                                 labels = self._extract_changed_template_labels(original_text, modified_text2)
-                                # Помечаем маркером режима для summary
-                                if getattr(self, '_last_template_change_was_locative', False) and labels:
-                                    labels = [f"{x} [локатив]" for x in labels]
-                                elif getattr(self, '_last_template_change_was_partial', False) and labels:
-                                    labels = [f"{x} [частично]" for x in labels]
                                 if not labels:
                                     try:
                                         last_name = getattr(self, '_last_changed_template_name', '') or ''
@@ -835,10 +814,7 @@ class RenameWorker(BaseWorker):
                                             pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
                                         except Exception:
                                             pref = DEFAULT_EN_NS.get(10, 'Template:')
-                                        if getattr(self, '_last_template_change_was_locative', False):
-                                            labels = [f"{pref}{last_name} [локатив]"]
-                                        elif getattr(self, '_last_template_change_was_partial', False):
-                                            labels = [f"{pref}{last_name} [частично]"]
+                                        labels = [f"{pref}{last_name}"]
                                 label_str = ', '.join(labels)
                             except Exception:
                                 label_str = ''
@@ -851,10 +827,6 @@ class RenameWorker(BaseWorker):
                                     typ = 'страница'
                                 try:
                                     tmpl_names = self._extract_changed_template_labels(original_text, modified_text2)
-                                    if getattr(self, '_last_template_change_was_locative', False) and tmpl_names:
-                                        tmpl_names = [f"{x} [локатив]" for x in tmpl_names]
-                                    elif getattr(self, '_last_template_change_was_partial', False) and tmpl_names:
-                                        tmpl_names = [f"{x} [частично]" for x in tmpl_names]
                                     if not tmpl_names:
                                         try:
                                             last_name = getattr(self, '_last_changed_template_name', '') or ''
@@ -865,10 +837,7 @@ class RenameWorker(BaseWorker):
                                                 pref = self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))
                                             except Exception:
                                                 pref = DEFAULT_EN_NS.get(10, 'Template:')
-                                            if getattr(self, '_last_template_change_was_locative', False):
-                                                tmpl_names = [f"{pref}{last_name} [локатив]"]
-                                            elif getattr(self, '_last_template_change_was_partial', False):
-                                                tmpl_names = [f"{pref}{last_name} [частично]"]
+                                            tmpl_names = [f"{pref}{last_name}"]
                                     suffix = f" ({', '.join(tmpl_names)})" if tmpl_names else ''
                                     self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена{suffix}')
                                 except Exception:
@@ -1181,7 +1150,7 @@ class RenameWorker(BaseWorker):
                         # Лог «пропущено пользователем (Шаблон:Имя)» — как в ветке direct/partial
                         try:
                             tmpl_label = self._format_template_label(template_name, False)
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label} [локатив])')
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label})')
                         except Exception:
                             pass
                         try:
@@ -1197,7 +1166,7 @@ class RenameWorker(BaseWorker):
                         # Логируем пропуск текущей статьи аналогично partial, с пометкой локативов
                         try:
                             tmpl_label = self._format_template_label(template_name, False)
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label} [локатив])')
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label})')
                         except Exception:
                             pass
                         # Жёсткая остановка процесса: поднимем флаг и вернём сразу
@@ -1538,7 +1507,9 @@ class RenameWorker(BaseWorker):
                                 except Exception:
                                     return False
 
-                        for old_sub, new_sub in partial_pairs:
+                        # Сначала рассматриваем более длинные подстроки, чтобы не портить контекст (напр. "Витории (Испания)" раньше, чем "Витории")
+                        ppairs = sorted(partial_pairs, key=lambda p: len((p[0] or '').strip()), reverse=True)
+                        for old_sub, new_sub in ppairs:
                             old_sub = (old_sub or '').strip()
                             new_sub = (new_sub or '').strip()
                             if not old_sub or not new_sub:
@@ -1584,6 +1555,94 @@ class RenameWorker(BaseWorker):
                     
                 debug(f'Найдено совпадение в шаблоне {template_name}: {match_info["param_value"]}')
                 
+                # Попытка автоприменения по сохранённым правилам (auto=approve) без показа диалога
+                # для случая частичного совпадения unnamed_single
+                try:
+                    auto_applied = False
+                    if (match_info.get('type') == 'partial'):
+                        tm = self.template_manager
+                        # Сформировать ключ шаблона и найти правило
+                        tmpl_key = tm._norm_tmpl_key(template_name, self.family, self.lang)
+                        bucket = (tm.template_auto_cache or {}).get(tmpl_key) or {}
+                        bucket_auto = str(bucket.get('auto') or '').strip().casefold()
+                        rules = list(bucket.get('rules') or [])
+                        # Ищем правило unnamed_single с from == old_sub
+                        old_sub_val = (match_info.get('old_sub') or '').strip()
+                        param_val = (match_info.get('param_value') or '').strip()
+                        rule = None
+                        from ..utils import normalize_spaces_for_compare as _norm
+                        def _has_sub_with_boundaries(text: str, sub: str) -> bool:
+                            try:
+                                if not text or not sub:
+                                    return False
+                                idx = text.find(sub)
+                                while idx != -1:
+                                    before = text[idx - 1] if idx > 0 else ''
+                                    after = text[idx + len(sub)] if (idx + len(sub)) < len(text) else ''
+                                    def _is_word_char(ch: str) -> bool:
+                                        try:
+                                            return ch.isalnum() or ch == '_'
+                                        except Exception:
+                                            return False
+                                    if (not before or not _is_word_char(before)) and (not after or not _is_word_char(after)):
+                                        return True
+                                    idx = text.find(sub, idx + 1)
+                                return False
+                            except Exception:
+                                return False
+                        for r in rules:
+                            try:
+                                if r.get('type') != 'unnamed_single':
+                                    continue
+                                rf = (r.get('from') or '').strip()
+                                # Совпадение по «старой подстроке» ИЛИ по полному значению параметра
+                                if _norm(rf) == _norm(old_sub_val) or _norm(rf) == _norm(param_val) or _has_sub_with_boundaries(param_val, rf):
+                                    rule = r
+                                    break
+                            except Exception:
+                                continue
+                        rule_auto = str((rule or {}).get('auto') or '').strip().casefold() if rule else 'none'
+                        if rule and (rule_auto == 'approve' or bucket_auto == 'approve'):
+                            # Построим итоговый шаблон как при ручном подтверждении
+                            is_partial = True
+                            old_val = match_info.get('old_sub') or ''
+                            new_val = match_info.get('new_sub') or ''
+                            try:
+                                if old_val and new_val:
+                                    new_val = align_first_letter_case(old_val, new_val)
+                            except Exception:
+                                pass
+                            proposed_param = match_info['param_value'].replace(old_val, new_val, 1)
+                            new_parts = parts.copy()
+                            new_parts[match_info['param_index']] = proposed_param
+                            final_template = '{{' + '|'.join(new_parts) + '}}'
+                            # Дедупликация позиционных параметров, если задана в правиле
+                            try:
+                                dedupe_mode = tm.normalize_dedupe_mode(rule.get('dedupe')) if rule else ''
+                            except Exception:
+                                dedupe_mode = ''
+                            try:
+                                if dedupe_mode in ('left', 'right'):
+                                    final_template = tm.apply_positional_dedupe(final_template, new_val, dedupe_mode)
+                            except Exception:
+                                pass
+                            # Применяем изменение
+                            modified_text = modified_text.replace(full_template, final_template, 1)
+                            changes += 1
+                            try:
+                                self._last_template_change_was_partial = True
+                                self._last_changed_template_name = (template_name or '').strip()
+                            except Exception:
+                                pass
+                            debug(f'Автоприменено по правилу (auto=approve) для шаблона {template_name}')
+                            auto_applied = True
+                    if auto_applied:
+                        # Переходим к следующему шаблону без показа диалога
+                        break
+                except Exception:
+                    # Любая ошибка автоприменения — игнор, пойдём обычным путём через диалог
+                    pass
+
                 # Создаем предложение замены
                 # Требование: предлагать значение с точно такой же капитализацией,
                 # как в исходном параметре. Если исходное значение начиналось с
@@ -1710,13 +1769,11 @@ class RenameWorker(BaseWorker):
                         debug(f'Пропущено изменение в шаблоне {template_name}')
                         # Лог в стиле оригинала (пропуск пользователем)
                         try:
-                            tmpl_label = self._format_template_label(template_name, is_partial)
-                            # Фикс: если есть совпадение только по частям (is_partial=True),
-                            # не вводим в заблуждение, что это «Категории».
+                            tmpl_label = self._format_template_label(template_name, False)
                             src_label = tmpl_label
                             self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({src_label})')
                         except Exception:
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({DEFAULT_EN_NS.get(10, 'Template:')}{template_name}{" [частично]" if is_partial else ""})')
+                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({DEFAULT_EN_NS.get(10, 'Template:')}{template_name})')
                         # Отметим, что было взаимодействие (диалог) — чтобы не выводить общий «пропущено, без изменений»
                         try:
                             self._last_template_interactions = True
