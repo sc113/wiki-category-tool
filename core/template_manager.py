@@ -763,7 +763,7 @@ class TemplateManager:
                         src = (rule.get('from') or '').strip()
                         dst = (rule.get('to') or '').strip()
                         tmp = list(unnamed)
-                        # Сопоставление также учитывает вариант со снятыми внешними кавычками
+                        # Сопоставление допускает точное совпадение и совпадение со снятыми внешними кавычками
                         def _strip_quotes(s: str) -> str:
                             try:
                                 ss = (s or '').strip()
@@ -772,34 +772,13 @@ class TemplateManager:
                                 return ss
                             except Exception:
                                 return s
-                        def _has_sub_with_boundaries(text: str, sub: str) -> int:
-                            """Возвращает индекс первого вхождения sub в text с проверкой границ слова; -1 если нет."""
-                            try:
-                                if not text or not sub:
-                                    return -1
-                                idx = text.find(sub)
-                                while idx != -1:
-                                    before = text[idx - 1] if idx > 0 else ''
-                                    after = text[idx + len(sub)] if (idx + len(sub)) < len(text) else ''
-                                    def _is_word_char(ch: str) -> bool:
-                                        try:
-                                            return ch.isalnum() or ch == '_'
-                                        except Exception:
-                                            return False
-                                    if (not before or not _is_word_char(before)) and (not after or not _is_word_char(after)):
-                                        return idx
-                                    idx = text.find(sub, idx + 1)
-                                return -1
-                            except Exception:
-                                return -1
-
                         src_norm = _normalize_for_compare(src)
-                        matches: list[tuple[int, bool, str, bool, int]] = []  # (index, had_quotes, quote_char, is_substring, sub_idx)
+                        matches: list[tuple[int, bool, str]] = []  # (index, had_quotes, quote_char)
                         for i, tok in enumerate(tmp):
                             try:
                                 t_norm = _normalize_for_compare(tok)
                                 if t_norm == src_norm:
-                                    matches.append((i, False, '', False, -1))
+                                    matches.append((i, False, ''))
                                     continue
                                 # Сравнить со снятыми кавычками
                                 t_plain = _strip_quotes(tok)
@@ -808,44 +787,14 @@ class TemplateManager:
                                     st = (tok or '').strip()
                                     if len(st) >= 2 and st[0] == st[-1] and st[0] in ('"', "'"):
                                         qc = st[0]
-                                    matches.append((i, True, qc, False, -1))
-                                    continue
-                                # Подстрочное совпадение (с границами слова) для авто-аппрув правил
-                                sub_idx = _has_sub_with_boundaries(t_plain, src)
-                                if sub_idx == -1:
-                                    # также проверим HTML-экранированный вариант
-                                    try:
-                                        import html as _html
-                                        sub_idx = _has_sub_with_boundaries(t_plain, _html.escape(src, quote=True))
-                                    except Exception:
-                                        sub_idx = -1
-                                if sub_idx != -1:
-                                    qc = ''
-                                    st = (tok or '').strip()
-                                    if len(st) >= 2 and st[0] == st[-1] and st[0] in ('"', "'"):
-                                        qc = st[0]
-                                    matches.append((i, True if qc else False, qc, True, sub_idx))
+                                    matches.append((i, True, qc))
                             except Exception:
                                 continue
                         if len(matches) == 1:
                             # Пробное применение для оценки дублей, если дедуп не задан
                             trial_tmp = list(tmp)
-                            idx, had_quotes, qch, is_substring, sub_idx = matches[0]
-                            if is_substring and sub_idx >= 0:
-                                # заменяем только одно вхождение src внутри значения
-                                t_plain0 = _strip_quotes(tmp[idx])
-                                try:
-                                    import html as _html
-                                    # предпочтительно заменить неэкранированный src, иначе экранированный
-                                    if t_plain0.find(src) != -1:
-                                        t_plain_new = t_plain0.replace(src, dst, 1)
-                                    else:
-                                        t_plain_new = t_plain0.replace(_html.escape(src, quote=True), dst, 1)
-                                except Exception:
-                                    t_plain_new = t_plain0.replace(src, dst, 1)
-                                new_val = (f"{qch}{t_plain_new}{qch}") if (had_quotes and qch) else t_plain_new
-                            else:
-                                new_val = (f"{qch}{dst}{qch}") if (had_quotes and qch) else dst
+                            idx, had_quotes, qch = matches[0]
+                            new_val = (f"{qch}{dst}{qch}") if (had_quotes and qch) else dst
                             trial_tmp[idx] = new_val
                             # Определим режим дедупликации, если сохранён
                             try:
