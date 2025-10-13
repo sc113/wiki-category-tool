@@ -85,6 +85,22 @@ class ParseWorker(BaseWorker):
                     except Exception:
                         pass
 
+                # Если не нашли — попробуем сопоставить с нормализованным названием (с выбранным NS)
+                if lines is None:
+                    try:
+                        from ..core.namespace_manager import normalize_title_by_selection
+                        norm = normalize_title_by_selection(original, self.family, self.lang, self.ns_sel)
+                        if norm in title_to_lines:
+                            lines = title_to_lines.get(norm)
+                        else:
+                            # Регистронезависимый и пробелы/подчёркивания
+                            norm_variants = {norm, norm.replace('_', ' '), norm.replace(' ', '_')}
+                            key2 = next((k for k in title_to_lines.keys() if any(k.casefold() == v.casefold() for v in norm_variants)), None)
+                            if key2 is not None:
+                                lines = title_to_lines.get(key2)
+                    except Exception:
+                        pass
+
                 if lines is None:
                     # Ничего не вернулось для этого заголовка (missing/ошибка)
                     self.progress.emit(f"{original}: не найдено")
