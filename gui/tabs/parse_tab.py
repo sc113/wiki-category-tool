@@ -19,7 +19,7 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QComboBox, QPushButton, QToolButton, QTextEdit, QProgressBar, 
-    QGroupBox, QMessageBox
+    QGroupBox, QMessageBox, QSpinBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -87,7 +87,7 @@ class ParseTab(QWidget):
             pass
         # (i) будет добавлена в строку «Префиксы» справа — без влияния на вертикальные отступы
         
-        # Префиксы пространства имён
+        # Префиксы пространства имён и глубина
         prefix_layout = QHBoxLayout()
         prefix_label = QLabel('Префиксы:')
         prefix_label.setToolTip(PREFIX_TOOLTIP)
@@ -96,8 +96,28 @@ class ParseTab(QWidget):
         self.ns_combo_parse.setEditable(False)
         # Заполнение будет происходить через метод update_namespace_combo
         prefix_layout.addWidget(self.ns_combo_parse)
+        
+        # Добавляем stretch, чтобы отодвинуть глубину к середине
+        prefix_layout.addStretch(1)
+        
+        # Глубина получения подкатегорий (от середины)
+        depth_label = QLabel('Глубина:')
+        depth_label.setToolTip('Глубина рекурсивного получения подкатегорий (0 = только прямые подкатегории, 1 = подкатегории + их подкатегории и т.д.)')
+        prefix_layout.addWidget(depth_label)
+        
+        self.depth_spin = QSpinBox()
+        self.depth_spin.setMinimum(0)
+        self.depth_spin.setMaximum(10)
+        self.depth_spin.setValue(0)
+        self.depth_spin.setToolTip('Глубина рекурсивного получения подкатегорий')
+        try:
+            self.depth_spin.setFixedWidth(60)
+        except Exception:
+            pass
+        prefix_layout.addWidget(self.depth_spin)
+        
         # Толкаем (i) к правому краю в этой же строке
-        prefix_layout.addStretch()
+        prefix_layout.addStretch(1)
         add_info_button(self, prefix_layout, parse_help_left, inline=True)
         left_layout.addLayout(prefix_layout)
         
@@ -344,39 +364,19 @@ class ParseTab(QWidget):
         else:
             cat_full = ('Категория:' if lang == 'ru' else 'Category:') + category
 
+        # Получаем глубину из спинбокса
+        depth = self.depth_spin.value() if hasattr(self, 'depth_spin') else 0
+        
         api_client = WikimediaAPIClient()
-        api_url = api_client._build_api_url(fam, lang)
-        params = {
-            'action': 'query',
-            'list': 'categorymembers',
-            'cmtitle': cat_full,
-            'cmtype': 'subcat',
-            'cmlimit': 'max',
-            'format': 'json'
-        }
         subcats = []
         try:
-            while True:
-                _rate_wait()
-                r = REQUEST_SESSION.get(api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
-                if r.status_code != 200:
-                    raise RuntimeError(f"HTTP {r.status_code} при запросе {api_url}")
-                try:
-                    resp = r.json()
-                except Exception:
-                    snippet = (r.text or '')[:200].replace('\n', ' ')
-                    ct = r.headers.get('Content-Type')
-                    raise RuntimeError(f"Не удалось распарсить JSON: Content-Type={ct}, тело[:200]={snippet!r}")
-                debug(f"API GET subcats len={len(resp.get('query',{}).get('categorymembers',[]))}")
-                subcats.extend(m['title'] for m in resp.get('query', {}).get('categorymembers', []))
-                if 'continue' in resp:
-                    params.update(resp['continue'])
-                else:
-                    break
+            # Рекурсивное получение подкатегорий с заданной глубиной
+            subcats = self._fetch_subcats_recursive(api_client, cat_full, lang, fam, depth, 0, set())
+            
             if subcats:
                 subcats_sorted = sorted(subcats, key=lambda s: s.casefold())
                 self.manual_list.setPlainText('\n'.join(subcats_sorted))
-                log_message(self.parse_log, f"Получено {format_russian_subcategories_nominative(len(subcats_sorted))} (отсортировано)", debug)
+                log_message(self.parse_log, f"Получено {format_russian_subcategories_nominative(len(subcats_sorted))} (глубина: {depth}, отсортировано)", debug)
             else:
                 log_message(self.parse_log, 'Подкатегории не найдены.', debug)
         except Exception as e:
@@ -385,6 +385,81 @@ class ParseTab(QWidget):
         self.petscan_btn.setEnabled(True)
 
         # Если нужно открыть ссылку вручную, скопируйте URL из логов
+    
+    def _fetch_subcats_recursive(self, api_client, category, lang, fam, max_depth, current_depth, visited):
+        """
+        Рекурсивно получает подкатегории с заданной глубиной.
+        
+        Args:
+            api_client: Клиент API
+            category: Полное название категории (с префиксом)
+            lang: Язык
+            fam: Семейство (wikipedia, commons и т.д.)
+            max_depth: Максимальная глубина рекурсии
+            current_depth: Текущая глубина
+            visited: Множество уже посещённых категорий (для избежания циклов)
+            
+        Returns:
+            Список подкатегорий
+        """
+        if current_depth > max_depth:
+            return []
+            
+        # Избегаем циклов
+        cat_lower = category.casefold()
+        if cat_lower in visited:
+            return []
+        visited.add(cat_lower)
+        
+        api_url = api_client._build_api_url(fam, lang)
+        params = {
+            'action': 'query',
+            'list': 'categorymembers',
+            'cmtitle': category,
+            'cmtype': 'subcat',
+            'cmlimit': 'max',
+            'format': 'json'
+        }
+        
+        direct_subcats = []
+        try:
+            while True:
+                _rate_wait()
+                r = REQUEST_SESSION.get(api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
+                if r.status_code != 200:
+                    debug(f"HTTP {r.status_code} при запросе подкатегорий для {category}")
+                    break
+                try:
+                    resp = r.json()
+                except Exception:
+                    debug(f"Не удалось распарсить JSON для {category}")
+                    break
+                    
+                batch = [m['title'] for m in resp.get('query', {}).get('categorymembers', [])]
+                direct_subcats.extend(batch)
+                
+                if 'continue' in resp:
+                    params.update(resp['continue'])
+                else:
+                    break
+                    
+            debug(f"Глубина {current_depth}: {category} → {len(direct_subcats)} подкатегорий")
+            
+        except Exception as e:
+            debug(f"Ошибка получения подкатегорий для {category}: {e}")
+            return []
+        
+        # Если достигли максимальной глубины, возвращаем только прямые подкатегории
+        if current_depth >= max_depth:
+            return direct_subcats
+        
+        # Иначе рекурсивно получаем подкатегории следующего уровня
+        all_subcats = list(direct_subcats)
+        for subcat in direct_subcats:
+            deeper = self._fetch_subcats_recursive(api_client, subcat, lang, fam, max_depth, current_depth + 1, visited)
+            all_subcats.extend(deeper)
+        
+        return all_subcats
     
     def start_parse(self):
         """Запуск процесса чтения страниц"""
