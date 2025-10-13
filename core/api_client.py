@@ -197,10 +197,7 @@ class WikimediaAPIClient:
                 result: dict[str, List[str]] = {}
                 for p in pages.values():
                     if "missing" in p:
-                        # Missing titles are simply omitted
-                        title = p.get("title") or ""
-                        if title:
-                            result[title] = []
+                        # Missing titles are NOT added to result - they should be detected as not found
                         continue
                     title = p.get("title") or ""
                     text = p.get("revisions", [{}])[0].get("*", "")

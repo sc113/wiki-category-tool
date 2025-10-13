@@ -74,41 +74,52 @@ class ParseWorker(BaseWorker):
                     break
                 # API возвращает каноничное имя; попробуем найти по точному совпадению, иначе пропустим
                 lines = None
+                found_key = None  # Реальное название, которое вернул API
+                
                 if original in title_to_lines:
                     lines = title_to_lines.get(original)
+                    found_key = original
                 else:
                     # Попробуем найти регистронезависимо среди ключей
                     try:
                         key = next((k for k in title_to_lines.keys() if k.casefold() == original.casefold()), None)
                         if key is not None:
                             lines = title_to_lines.get(key)
+                            found_key = key
                     except Exception:
                         pass
 
-                # Если не нашли — попробуем сопоставить с нормализованным названием (с выбранным NS)
+                # Если не нашли и NS не 'auto' — попробуем сопоставить с нормализованным названием (с выбранным NS)
                 if lines is None:
                     try:
-                        from ..core.namespace_manager import normalize_title_by_selection
-                        norm = normalize_title_by_selection(original, self.family, self.lang, self.ns_sel)
-                        if norm in title_to_lines:
-                            lines = title_to_lines.get(norm)
-                        else:
-                            # Регистронезависимый и пробелы/подчёркивания
-                            norm_variants = {norm, norm.replace('_', ' '), norm.replace(' ', '_')}
-                            key2 = next((k for k in title_to_lines.keys() if any(k.casefold() == v.casefold() for v in norm_variants)), None)
-                            if key2 is not None:
-                                lines = title_to_lines.get(key2)
+                        # Проверяем, что NS не 'auto'
+                        is_auto = isinstance(self.ns_sel, str) and self.ns_sel.strip().lower() == 'auto'
+                        if not is_auto:
+                            from ..core.namespace_manager import normalize_title_by_selection
+                            norm = normalize_title_by_selection(original, self.family, self.lang, self.ns_sel)
+                            if norm in title_to_lines:
+                                lines = title_to_lines.get(norm)
+                                found_key = norm
+                            else:
+                                # Регистронезависимый и пробелы/подчёркивания
+                                norm_variants = {norm, norm.replace('_', ' '), norm.replace(' ', '_')}
+                                key2 = next((k for k in title_to_lines.keys() if any(k.casefold() == v.casefold() for v in norm_variants)), None)
+                                if key2 is not None:
+                                    lines = title_to_lines.get(key2)
+                                    found_key = key2
                     except Exception:
                         pass
 
                 if lines is None:
                     # Ничего не вернулось для этого заголовка (missing/ошибка)
                     self.progress.emit(f"{original}: не найдено")
-                    self._write_result_immediately((original, []))
+                    # В файл не пишем пустые результаты
                     processed_count += 1
                 else:
+                    # Записываем с тем названием, которое вернул API (found_key), а не с original
+                    title_to_write = found_key if found_key else original
                     self.progress.emit(f"{original}: {len(lines)} строк(и)")
-                    self._write_result_immediately((original, lines))
+                    self._write_result_immediately((title_to_write, lines))
                     processed_count += 1
         
         # Закрываем файл
