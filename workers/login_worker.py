@@ -3,8 +3,6 @@ Login worker for authenticating with Wikimedia projects.
 """
 
 from PySide6.QtCore import QThread, Signal
-import pywikibot
-from pywikibot import config as pwb_config
 
 from ..core.pywikibot_config import write_pwb_credentials, apply_pwb_config, _delete_all_cookies, reset_pywikibot_session
 
@@ -75,6 +73,10 @@ class LoginWorker(QThread):
             debug('LoginWorker: сбрасываем сессию pywikibot')
             reset_pywikibot_session(self.lang)
             
+            # Импортируем pywikibot только после применения конфигурации
+            import pywikibot
+            from pywikibot import config as pwb_config
+
             # Ограничиваем таймауты сетевых запросов pywikibot
             debug('LoginWorker: настраиваем таймауты')
             try:
@@ -124,7 +126,24 @@ class LoginWorker(QThread):
         except Exception as e:
             # Авторизация не удалась
             debug(f'LoginWorker: ошибка авторизации: {type(e).__name__}: {e}')
-            self.failure.emit(f"{type(e).__name__}: {e}")
+            # Дружественное сообщение при требовании смены пароля/доп.запросах аутентификации
+            try:
+                emsg = str(e)
+            except Exception:
+                emsg = ''
+            if (
+                'PasswordAuthenticationRequest' in emsg or
+                'Новый пароль' in emsg or
+                'retype' in emsg
+            ):
+                friendly = (
+                    'Требуется смена пароля аккаунта. Зайдите на сайт через браузер и смените пароль, '
+                    'либо (рекомендовано) создайте BotPassword на странице Special:BotPasswords и авторизуйтесь '
+                    'как "Имя@Метка" с паролем бота.'
+                )
+                self.failure.emit(friendly)
+            else:
+                self.failure.emit(f"{type(e).__name__}: {e}")
         finally:
             # Гарантируем корректное завершение потока
             debug('LoginWorker: завершение работы')
