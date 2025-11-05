@@ -172,11 +172,6 @@ def main():
     from .gui.main_window import MainWindow
     
     window = MainWindow()
-    # Загрузка сохраненных учетных данных через auth_tab
-    try:
-        window.auth_tab.load_creds()
-    except Exception:
-        pass
     window.show()
     
     # Запуск проверки обновлений в фоновом потоке
