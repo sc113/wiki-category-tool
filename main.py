@@ -15,7 +15,7 @@ import os
 import ctypes
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QThread, Signal
 
 # Настройка путей и окружения
 def setup_environment():
@@ -88,37 +88,65 @@ def setup_application_icon(app: QApplication):
         except Exception:
             pass
 
-def check_for_updates_async(window):
-    """Проверяет наличие обновлений в фоновом режиме"""
+class UpdateCheckerThread(QThread):
+    """Поток для проверки обновлений в фоновом режиме"""
+    update_found = Signal(str, str)  # new_version, download_url
+    
+    def run(self):
+        """Выполняется в фоновом потоке"""
+        try:
+            from .core.update_checker import check_for_updates
+            from .core.update_settings import UpdateSettings
+            from .utils import resource_path, debug
+            from .constants import APP_VERSION
+            
+            debug(f"Проверка обновлений... (текущая версия: {APP_VERSION})")
+            
+            # Получаем путь к директории настроек
+            settings_dir = resource_path('configs')
+            update_settings = UpdateSettings(settings_dir)
+            
+            # Проверяем наличие обновлений
+            update_info = check_for_updates()
+            
+            if update_info:
+                new_version, download_url = update_info
+                
+                # Проверяем, не пропущена ли эта версия
+                if not update_settings.is_version_skipped(new_version):
+                    debug(f"Найдена новая версия: {new_version}")
+                    # Отправляем сигнал в главный поток
+                    self.update_found.emit(new_version, download_url)
+                else:
+                    debug(f"Новая версия {new_version} найдена, но пропущена пользователем")
+            else:
+                debug("Обновлений не найдено")
+        except Exception as e:
+            # Если проверка не удалась, просто игнорируем
+            debug(f"Ошибка при проверке обновлений: {e}")
+            pass
+
+def show_update_dialog(window, new_version, download_url):
+    """Показывает диалог обновления (вызывается в главном потоке)"""
     try:
-        from .core.update_checker import check_for_updates
-        from .core.update_settings import UpdateSettings
         from .gui.dialogs import UpdateDialog
+        from .core.update_settings import UpdateSettings
         from .constants import APP_VERSION
-        from .utils import resource_path
+        from .utils import resource_path, debug
         
-        # Получаем путь к директории настроек
         settings_dir = resource_path('configs')
         update_settings = UpdateSettings(settings_dir)
         
-        # Проверяем наличие обновлений
-        update_info = check_for_updates()
+        # Показываем диалог
+        dialog = UpdateDialog(APP_VERSION, new_version, download_url, window)
+        result = dialog.exec()
         
-        if update_info:
-            new_version, download_url = update_info
-            
-            # Проверяем, не пропущена ли эта версия
-            if not update_settings.is_version_skipped(new_version):
-                # Показываем диалог
-                dialog = UpdateDialog(APP_VERSION, new_version, download_url, window)
-                result = dialog.exec()
-                
-                # Если пользователь выбрал пропустить версию
-                if dialog.skip_version:
-                    update_settings.skip_version(new_version)
-    except Exception:
-        # Если проверка не удалась, просто игнорируем
-        pass
+        # Если пользователь выбрал пропустить версию
+        if dialog.skip_version:
+            update_settings.skip_version(new_version)
+            debug(f"Версия {new_version} добавлена в пропущенные")
+    except Exception as e:
+        debug(f"Ошибка при показе диалога обновления: {e}")
 
 def main():
     """Главная функция приложения"""
@@ -151,8 +179,13 @@ def main():
         pass
     window.show()
     
-    # Проверка обновлений через 1 секунду после запуска (неблокирующая)
-    QTimer.singleShot(1000, lambda: check_for_updates_async(window))
+    # Запуск проверки обновлений в фоновом потоке
+    update_thread = UpdateCheckerThread()
+    update_thread.update_found.connect(lambda v, u: show_update_dialog(window, v, u))
+    update_thread.start()
+    
+    # Сохраняем ссылку на поток, чтобы он не был удален сборщиком мусора
+    window._update_thread = update_thread
     
     # Запуск приложения
     sys.exit(app.exec())
