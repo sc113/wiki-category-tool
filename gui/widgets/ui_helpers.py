@@ -44,8 +44,11 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
             return
         if et == 'destination_exists':
             dst = (event.get('title') or '').strip()
+            # Определяем тип объекта для правильного отображения
+            obj_type = _detect_object_type_by_ns(tree, dst)
+            # В колонку «Страница» помещаем название (независимо от типа)
             title_txt = f"Страница назначения {dst} уже существует."
-            log_tree_add(tree, ts, dst, title_txt, 'manual', status or 'info', None, 'article', True)
+            log_tree_add(tree, ts, dst, title_txt, 'manual', status or 'info', None, obj_type, True)
             return
     except Exception:
         pass
@@ -559,9 +562,10 @@ OBJ_INFO = {
 
 # ====== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ NS (без хардкода языков) ======
 def _resolve_ns_context_from_tree(tree: QTreeWidget):
-    """Пытается достать NamespaceManager и текущие family/lang из дерева.
+    """Пытается достать NamespaceManager, текущие family/lang и выбранное NS из дерева.
 
-    Возвращает кортеж (ns_manager, family, lang) либо (None, None, None).
+    Возвращает кортеж (ns_manager, family, lang, selected_ns) либо (None, None, None, None).
+    selected_ns может быть: int (конкретное NS), 'auto', или None.
     """
     try:
         parent = tree.parent()
@@ -570,15 +574,34 @@ def _resolve_ns_context_from_tree(tree: QTreeWidget):
         ns_manager = getattr(mw, 'namespace_manager', None)
         family = getattr(mw, 'current_family', None)
         lang = getattr(mw, 'current_lang', None)
+        
+        # Пытаемся получить выбранное пространство имён из комбобокса вкладки
+        selected_ns = None
+        try:
+            # parent это вкладка (RenameTab, CreateTab, ParseTab, ReplaceTab)
+            # Ищем комбобокс с именем, содержащим 'ns_combo'
+            ns_combo = (getattr(parent, 'rename_ns_combo', None) or 
+                       getattr(parent, 'create_ns_combo', None) or
+                       getattr(parent, 'parse_ns_combo', None) or
+                       getattr(parent, 'rep_ns_combo', None) or
+                       getattr(parent, 'replace_ns_combo', None))
+            if ns_combo and hasattr(ns_combo, 'currentData'):
+                selected_ns = ns_combo.currentData()
+                # Нормализуем: если строка 'auto', оставляем как есть; если int - оставляем
+                if isinstance(selected_ns, str):
+                    selected_ns = selected_ns.strip().lower() if selected_ns else 'auto'
+        except Exception:
+            selected_ns = None
+            
         if ns_manager is None:
             try:
                 from ...core.namespace_manager import get_namespace_manager
                 ns_manager = get_namespace_manager()
             except Exception:
                 ns_manager = None
-        return ns_manager, family, lang
+        return ns_manager, family, lang, selected_ns
     except Exception:
-        return None, None, None
+        return None, None, None, None
 
 
 def _detect_object_type_by_ns(tree: QTreeWidget, title: str) -> str:
@@ -587,7 +610,7 @@ def _detect_object_type_by_ns(tree: QTreeWidget, title: str) -> str:
     Возвращает 'template' | 'file' | 'category' | 'article'.
     """
     try:
-        ns_manager, family, lang = _resolve_ns_context_from_tree(tree)
+        ns_manager, family, lang, _ = _resolve_ns_context_from_tree(tree)
         if ns_manager and family and lang:
             txt = (title or '').strip()
             # Template (10) и Module (828)
@@ -617,7 +640,7 @@ def _is_template_like_source(tree: QTreeWidget, source: str) -> bool:
     try:
         if not source:
             return False
-        ns_manager, family, lang = _resolve_ns_context_from_tree(tree)
+        ns_manager, family, lang, _ = _resolve_ns_context_from_tree(tree)
         if ns_manager and family and lang:
             return ns_manager.has_prefix_by_policy(family, lang, source, {10, 828})
     except Exception:
@@ -638,9 +661,9 @@ def init_log_tree(parent_widget) -> QTreeWidget:
     """
     tree = QTreeWidget(parent_widget)
     try:
-        # Добавляем колонку «Категория» между Заголовком и Источником
+        # Добавляем колонку «Страница» между Заголовком и Источником
         tree.setColumnCount(6)
-        tree.setHeaderLabels(['Время', 'Тип', 'Статус', 'Действие или заголовок', 'Категория', 'Источник'])
+        tree.setHeaderLabels(['Время', 'Тип', 'Статус', 'Действие или заголовок', 'Страница', 'Источник'])
         # Плоская таблица: без древовидности и индикаторов
         tree.setRootIsDecorated(False)
         tree.setAlternatingRowColors(True)
@@ -736,7 +759,7 @@ def init_log_tree(parent_widget) -> QTreeWidget:
     return tree
 
 
-def log_tree_add(tree: QTreeWidget, timestamp: str, category: str | None, title: str,
+def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str,
                  mode: str, status: str, source: str | None = None,
                  object_type: str | None = None, system: bool = False) -> None:
     """Добавить запись в лог-таблицу (плоский режим, 6 колонок).
@@ -744,12 +767,12 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, category: str | None, title:
     Args:
         tree: целевое дерево
         timestamp: строка времени HH:MM:SS
-        category: строка категории (как в логе) или None/'' для системных
-        title: заголовок страницы/элемента
+        page: обрабатываемая страница (статья, категория, шаблон и т.д.) или None для системных
+        title: заголовок/описание действия
         mode: 'auto' | 'manual'
         status: 'success' | 'skipped' | 'error' | 'not_found' | 'info'
         source: строка источника (например, 'Шаблон:Категории')
-        object_type: 'article' | 'template' | 'file' | None
+        object_type: 'article' | 'template' | 'file' | 'category' | None
         system: True для служебных записей вне группировки
     """
     try:
@@ -824,15 +847,26 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, category: str | None, title:
         except Exception:
             src_cell = source or ''
             src_tooltip = ''
-        # Категория с эмодзи 📁 и без префикса
+        # Колонка «Страница» — отображение с иконкой и коротким префиксом по типу объекта
         try:
-            cat_txt = (category or '').strip()
-            cat_disp = cat_txt.split(':', 1)[-1] if ':' in cat_txt else cat_txt
-            # Добавляем префикс «К:» без пробела
-            category_cell = f"{OBJ_INFO['category']['emoji']} К:{cat_disp}" if cat_disp else ''
+            page_txt = (page or '').strip()
+            if not page_txt:
+                page_cell = ''
+            else:
+                # Убираем префикс пространства имён из полного названия
+                page_disp = page_txt.split(':', 1)[-1] if ':' in page_txt else page_txt
+                # Определяем эмодзи и короткий префикс по object_type
+                if object_type == 'category':
+                    page_cell = f"{OBJ_INFO['category']['emoji']} К:{page_disp}"
+                elif object_type == 'template':
+                    page_cell = f"{OBJ_INFO['template']['emoji']} Ш:{page_disp}"
+                elif object_type == 'file':
+                    page_cell = f"{OBJ_INFO['file']['emoji']} Ф:{page_disp}"
+                else:  # article
+                    page_cell = f"{OBJ_INFO['article']['emoji']} {page_disp}"
         except Exception:
-            category_cell = category or ''
-        row = QTreeWidgetItem([timestamp, action_cell, status_text, title_cell, category_cell, src_cell])
+            page_cell = page or ''
+        row = QTreeWidgetItem([timestamp, action_cell, status_text, title_cell, page_cell, src_cell])
         # Цвет статуса
         try:
             from PySide6.QtGui import QBrush, QColor
@@ -914,17 +948,24 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
                     _LAST_RENAME_NEW = (m_begin.group('new') or '').strip()
                 except Exception:
                     pass
-                # В колонку «Категория» — старое имя; строка — служебная, без открытия по клику
+                # Определяем тип объекта для правильного отображения
+                obj_type = _detect_object_type_by_ns(tree, _LAST_RENAME_OLD)
+                # В колонку «Страница» помещаем старое имя (независимо от типа)
                 title_txt = f"Начинаем переименование: {_LAST_RENAME_OLD} → {_LAST_RENAME_NEW}"
-                log_tree_add(tree, ts, _LAST_RENAME_OLD, title_txt, 'manual', 'success', None, 'article', True)
+                log_tree_add(tree, ts, _LAST_RENAME_OLD, title_txt, 'manual', 'success', None, obj_type, True)
                 return
             # Завершение: «Переименовано успешно — …»
             if plain.startswith('Переименовано успешно'):
                 try:
-                    new_cat = _LAST_RENAME_NEW or ''
+                    new_name = _LAST_RENAME_NEW or ''
+                    old_name = _LAST_RENAME_OLD or ''
                 except Exception:
-                    new_cat = ''
-                log_tree_add(tree, ts, new_cat, plain, 'manual', 'success', None, 'article', True)
+                    new_name = ''
+                    old_name = ''
+                # Определяем тип по старому имени (которое мы запомнили при начале переименования)
+                obj_type = _detect_object_type_by_ns(tree, old_name) if old_name else 'article'
+                # В колонку «Страница» помещаем новое имя (независимо от типа)
+                log_tree_add(tree, ts, new_name, plain, 'manual', 'success', None, obj_type, True)
                 return
         except Exception:
             pass
@@ -1153,12 +1194,12 @@ def enable_tree_copy_shortcut(tree: QTreeWidget) -> None:
 
 
 def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
-    """Контекстное меню «Открыть» на колонках: Заголовок(3), Категория(4), Источник(5).
+    """Контекстное меню «Открыть» на колонках: Заголовок(3), Страница(4), Источник(5).
 
     - Разрешаем только для реальных страниц (не для статуса Инфо/Остановлено и т.п.).
-    - Для «Заголовок» распознаём тип по эмодзи (📄/🧩/🖼️/📁) и подставляем префикс.
-    - Для «Категория» добавляем локальный префикс NS-14.
-    - Для «Источник» открываем как есть (удалив эмодзи), если похоже на название с префиксом.
+    - Для «Заголовок» распознаём тип с учетом выбранного пространства имён.
+    - Для «Страница» используем тип из эмодзи (📄/⚛️/🖼️/📁) и применяем логику приоритета NS.
+    - Для «Источник» открываем как шаблон (удалив эмодзи и префикс «Ш:»).
     """
     try:
         from PySide6.QtWidgets import QMenu
@@ -1219,8 +1260,8 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                 act_open = QAction('Открыть', m)
                 def _open():
                     try:
-                        # Пытаемся собрать URL из текущих family/lang главного окна
-                        ns_manager, family, lang = _resolve_ns_context_from_tree(tree)
+                        # Пытаемся собрать URL из текущих family/lang и selected_ns главного окна
+                        ns_manager, family, lang, selected_ns = _resolve_ns_context_from_tree(tree)
                         if not (ns_manager and family and lang):
                             return
                         try:
@@ -1263,24 +1304,51 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                                 if txt[:2] in ('🌐 ', '#️⃣ '):
                                     txt = txt[2:].strip()
 
-                        # Колонка 3: заголовок с эмодзи — определяем ns
+                        # Колонка 3: заголовок — определяем ns с учетом приоритета выбранного пространства имён
                         if col == 3:
                             ns_id = None
-                            if (item.text(3) or '').startswith('⚛️ '):
-                                ns_id = 10
-                            elif (item.text(3) or '').startswith('🖼️ '):
-                                ns_id = 6
-                            elif (item.text(3) or '').startswith('📁 '):
-                                ns_id = 14
-                            # 📄 — статья (ns_id None)
+                            # Приоритет 1: Если в комбобоксе выбрано конкретное NS (не "Авто"), используем его
+                            if selected_ns is not None and isinstance(selected_ns, int):
+                                ns_id = selected_ns
+                            # Приоритет 2: Если "Авто" или не определено - автоматически по содержимому
+                            elif not selected_ns or (isinstance(selected_ns, str) and selected_ns in ('auto', '')):
+                                # Определяем тип объекта по самому заголовку через NamespaceManager
+                                obj_type_detected = _detect_object_type_by_ns(tree, txt)
+                                if obj_type_detected == 'template':
+                                    ns_id = 10
+                                elif obj_type_detected == 'file':
+                                    ns_id = 6
+                                elif obj_type_detected == 'category':
+                                    ns_id = 14
+                                # 'article' — обычная статья (ns_id None)
                             full_title = _add_prefix(txt, ns_id)
                         elif col == 4:
-                            # Категория (колонка 4): убираем наш отображаемый префикс «К:» и добавляем локальный NS-14
-                            if txt.startswith('К:'):
-                                txt_base = txt[2:].strip()
-                            else:
-                                txt_base = txt
-                            full_title = _add_prefix(txt_base, 14)
+                            # Страница (колонка 4): определяем тип по эмодзи и убираем префикс
+                            txt_base = txt
+                            detected_ns = None
+                            # Удаляем эмодзи и короткий префикс, определяя тип
+                            if txt.startswith('📁 К:'):
+                                txt_base = txt[4:].strip()  # "📁 К:Имя" → "Имя"
+                                detected_ns = 14  # категория
+                            elif txt.startswith('⚛️ Ш:'):
+                                txt_base = txt[4:].strip()  # "⚛️ Ш:Имя" → "Имя"
+                                detected_ns = 10  # шаблон
+                            elif txt.startswith('🖼️ Ф:'):
+                                txt_base = txt[4:].strip()  # "🖼️ Ф:Имя" → "Имя"
+                                detected_ns = 6  # файл
+                            elif txt.startswith('📄 '):
+                                txt_base = txt[2:].strip()  # "📄 Имя" → "Имя"
+                                detected_ns = None  # статья
+                            
+                            # Применяем логику приоритета
+                            ns_id = None
+                            # Приоритет 1: Если в комбобоксе выбрано конкретное NS (не "Авто"), используем его
+                            if selected_ns is not None and isinstance(selected_ns, int):
+                                ns_id = selected_ns
+                            # Приоритет 2: Если "Авто" - используем определённый тип из эмодзи
+                            elif not selected_ns or (isinstance(selected_ns, str) and selected_ns in ('auto', '')):
+                                ns_id = detected_ns
+                            full_title = _add_prefix(txt_base, ns_id)
                         else:
                             # Источник: если отображается как «Ш:Имя», убираем «Ш:» и подставляем локальный префикс NS-10
                             if txt.startswith('Ш:'):
