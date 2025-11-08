@@ -203,7 +203,7 @@ class RenameTab(QWidget):
 
         # Опция: Локативы
         row_loc = QHBoxLayout()
-        self.locatives_cb = QCheckBox('Категоризация через шаблоны: локативы (склонения падежей в параметрах)')
+        self.locatives_cb = QCheckBox('Ручной режим изменения в параметрах падежей у гео-объектов')
         self.locatives_cb.setChecked(False)
         try:
             self.locatives_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)

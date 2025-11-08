@@ -940,7 +940,13 @@ class RenameWorker(BaseWorker):
                         cons = 'Х' if first.isupper() else 'х'
                     a_char = 'А' if w[-1].isupper() else 'а'
                     return base + cons + a_char
-            # 3) "…ве/…пе/…ре/…те/..." общее правило: «…е» → удалить «е», если перед ним согласная
+            # 3.1) "…ае" → "…ай" (Аксае → Аксай, Шанхае → Шанхай)
+            if lower.endswith('ае') and len(w) > 2:
+                return w[:-1] + ('й' if w[-1].islower() else 'Й')
+            # 3.2) "…ое" → "…ой" (для прилагательных)
+            if lower.endswith('ое') and len(w) > 2:
+                return w[:-1] + ('й' if w[-1].islower() else 'Й')
+            # 3.3) "…ве/…пе/…ре/…те/..." общее правило: «…е» → удалить «е», если перед ним согласная
             vowels = set('аеёиоуыэюяAEIOUYАОЭИУЫЕЁЮЯ')
             if lower.endswith('е') and len(w) > 1 and (w[-2] not in vowels):
                 return w[:-1]
@@ -985,10 +991,54 @@ class RenameWorker(BaseWorker):
                 j += 1
             old_mid = self._loc_trim(' '.join(old_t[i:len(old_t)-j if j else None]))
             new_mid = self._loc_trim(' '.join(new_t[i:len(new_t)-j if j else None]))
+            
+            # ИСПРАВЛЕНИЕ: если old_mid пустой (расширение категории), используем последний токен старой категории
+            # Например: "Родившиеся в Аксае" → "Родившиеся в Аксае (Дагестан)"
+            # old_t=["Родившиеся","в","Аксае"], new_t=["Родившиеся","в","Аксае","(Дагестан)"]
+            # old_mid="" → берем "Аксае", new_mid="(Дагестан)" → берем "Аксае (Дагестан)"
+            if not old_mid and old_t:
+                debug(f"Локативы: old_mid пустой, расширение категории. Используем последний токен старой категории.")
+                # Берем последний значимый токен (обычно это географическое название)
+                old_mid = self._loc_trim(old_t[-1])
+                # Для новой категории берем последние N токенов (где N - количество добавленных токенов + 1)
+                # ВАЖНО: не применяем _loc_trim к new_mid, чтобы сохранить скобки!
+                added_tokens = len(new_t) - len(old_t)
+                if added_tokens > 0:
+                    new_mid = ' '.join(new_t[-(added_tokens+1):])
+                else:
+                    new_mid = new_t[-1]
+                debug(f"Локативы: скорректированные части - old_mid='{old_mid}', new_mid='{new_mid}'")
+            
             if not old_mid or not new_mid:
                 return text, 0
-            inv_old = self._invert_locative_form(old_mid)
-            inv_new = self._invert_locative_form(new_mid)
+            
+            # Инверсия локативов - нужно обрабатывать составные названия пословно
+            # Например: "Аксае (Дагестан)" → нужно инвертировать только "Аксае" → "Аксай (Дагестан)"
+            def invert_compound_locative(text: str) -> str:
+                """Инвертирует локатив в составных названиях, обрабатывая каждое слово отдельно"""
+                try:
+                    import re as _re2
+                    result = []
+                    i = 0
+                    while i < len(text):
+                        # Пытаемся найти слово (буквы и дефисы)
+                        match = _re2.match(r'[а-яёА-ЯЁa-zA-Z\-]+', text[i:])
+                        if match:
+                            word = match.group(0)
+                            # Инвертируем локатив для слова
+                            result.append(self._invert_locative_form(word))
+                            i += len(word)
+                        else:
+                            # Иначе это разделитель (пробел, скобка и т.д.) - берем один символ
+                            result.append(text[i])
+                            i += 1
+                    return ''.join(result)
+                except Exception as e:
+                    debug(f"Ошибка в invert_compound_locative: {e}")
+                    return self._invert_locative_form(text)
+            
+            inv_old = invert_compound_locative(old_mid)
+            inv_new = invert_compound_locative(new_mid)
             # Диагностика: если инверсий несколько (разные эвристики) — пока просто логируем возможность неоднозначности
             try:
                 from ..utils import debug as _dbg
@@ -999,20 +1049,52 @@ class RenameWorker(BaseWorker):
             if not inv_old or not inv_new or inv_old == inv_new:
                 return text, 0
             debug(f"Локативы: diff '{old_mid}'→'{new_mid}', инверсия '{inv_old}'→'{inv_new}'")
+            
             # Ищем подходящий шаблон и параметр, где значение ровно inv_old
             import html as _html
-            template_pattern = r'\{\{([^{}]+?)\}\}'
+            
+            # Функция для поиска шаблонов с учетом вложенности
+            def find_templates_nested(text: str) -> list[tuple[str, str]]:
+                """Находит все шаблоны верхнего уровня с учетом вложенности.
+                Возвращает список (full_match, content)"""
+                templates = []
+                i = 0
+                while i < len(text):
+                    if i < len(text) - 1 and text[i:i+2] == '{{':
+                        start = i
+                        depth = 1
+                        j = i + 2
+                        while j < len(text) - 1 and depth > 0:
+                            if text[j:j+2] == '{{':
+                                depth += 1
+                                j += 2
+                            elif text[j:j+2] == '}}':
+                                depth -= 1
+                                j += 2
+                            else:
+                                j += 1
+                        if depth == 0:
+                            end = j
+                            full_match = text[start:end]
+                            content = text[start+2:end-2]
+                            templates.append((full_match, content))
+                            i = end
+                        else:
+                            i += 1
+                    else:
+                        i += 1
+                return templates
+            
             try:
-                templates = list(re.finditer(template_pattern, text, re.DOTALL)) if re else []
+                templates = find_templates_nested(text)
+                debug(f"Локативы: найдено {len(templates)} шаблонов на странице")
             except Exception:
                 templates = []
             changes = 0
             modified_text = text
-            for m in templates:
+            for full_template, inner in templates:
                 if self._stop:
                     break
-                inner = m.group(1)
-                full_template = m.group(0)
                 if '|' not in inner:
                     continue
                 parts = inner.split('|')
@@ -1063,6 +1145,18 @@ class RenameWorker(BaseWorker):
                         value_plain = value_part.strip().strip('"\'')
                     except Exception:
                         value_plain = value_part.strip()
+                    
+                    # ОТЛАДКА: логируем каждый параметр, если он похож на искомое значение
+                    try:
+                        if value_plain and inv_old and (
+                            value_plain.lower() == inv_old.lower() or 
+                            inv_old.lower() in value_plain.lower() or
+                            value_plain.lower() in inv_old.lower()
+                        ):
+                            debug(f"  Локативы: проверяем параметр {i} шаблона {template_name}: '{value_plain}' vs '{inv_old}'")
+                    except Exception:
+                        pass
+                    
                     # Проверяем точное совпадение с инверсией старого локатива
                     if value_plain != inv_old and value_part != inv_old:
                         # также проверим HTML-экранирование
@@ -1314,6 +1408,29 @@ class RenameWorker(BaseWorker):
                 L = min(len(tokens_old), len(tokens_new))
                 while diff_i < L and tokens_old[diff_i] == tokens_new[diff_i]:
                     diff_i += 1
+                
+                # СПЕЦИАЛЬНЫЙ СЛУЧАЙ: расширение категории (все старые токены совпадают)
+                # Например: "Родившиеся в Аксае" → "Родившиеся в Аксае (Дагестан)"
+                if diff_i >= len(tokens_old) and len(tokens_new) > len(tokens_old):
+                    debug(f'Частичные пары: расширение категории (все старые токены совпадают)')
+                    # Берем последний токен старой категории и расширяем его
+                    # "Аксае" → "Аксае (Дагестан)"
+                    old_last = tokens_old[-1] if tokens_old else ""
+                    # Для новой берем последние N+1 токенов (где N - количество добавленных)
+                    added = len(tokens_new) - len(tokens_old)
+                    new_extended = " ".join(tokens_new[-(added+1):]) if added > 0 else tokens_new[-1]
+                    if old_last and new_extended and old_last != new_extended:
+                        pairs.append((old_last, new_extended))
+                        debug(f'  Пара расширения: "{old_last}" → "{new_extended}"')
+                    # Также добавляем пары с предлогом: "в Аксае" → "в Аксае (Дагестан)"
+                    if len(tokens_old) >= 2:
+                        old_with_prep = " ".join(tokens_old[-2:])
+                        new_with_prep = " ".join(tokens_new[-(added+2):]) if len(tokens_new) >= added+2 else new_extended
+                        if old_with_prep and new_with_prep and (old_with_prep, new_with_prep) not in pairs:
+                            pairs.append((old_with_prep, new_with_prep))
+                            debug(f'  Пара с предлогом: "{old_with_prep}" → "{new_with_prep}"')
+                    return pairs
+                
                 # Пара 1: минимальная разница по токену
                 if diff_i < len(tokens_old) and diff_i < len(tokens_new):
                     pairs.append((tokens_old[diff_i], tokens_new[diff_i]))
@@ -1333,6 +1450,9 @@ class RenameWorker(BaseWorker):
             return pairs
 
         partial_pairs = _generate_partial_pairs(old_cat_name, new_cat_name)
+        debug(f'Сгенерировано пар для частичной замены: {len(partial_pairs)}')
+        for idx, (old_p, new_p) in enumerate(partial_pairs, 1):
+            debug(f'  Пара {idx}: "{old_p}" → "{new_p}"')
         
         # Нормализация строк для сравнения: удаляем невидимые спецсимволы и нормализуем пробелы
         from ..utils import normalize_spaces_for_compare as _norm
@@ -1520,6 +1640,15 @@ class RenameWorker(BaseWorker):
                                 value_plain == old_sub or value_norm == old_sub or
                                 (old_sub_enc and (value_plain == old_sub_enc or value_norm == old_sub_enc))
                             ):
+                                # ЗАЩИТА ОТ ПОВТОРНОЙ ЗАМЕНЫ: проверяем, что значение уже не содержит новую подстроку
+                                try:
+                                    already_replaced = (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
+                                    if already_replaced:
+                                        debug(f'    Пропускаем (строгое равенство): значение "{value_plain}" уже содержит новую подстроку "{new_sub}"')
+                                        continue
+                                except Exception:
+                                    pass
+                                
                                 found_matches.append({
                                     'type': 'partial',
                                     'param_index': i,
@@ -1537,6 +1666,17 @@ class RenameWorker(BaseWorker):
                                     _has_sub_with_boundaries(value_norm, old_sub_enc)
                                 ))
                             ):
+                                # ЗАЩИТА ОТ ПОВТОРНОЙ ЗАМЕНЫ: проверяем, что значение уже не содержит новую подстроку
+                                # Например, если old_sub="в Аксае", new_sub="в Аксае (Дагестан)", 
+                                # то не заменяем в "в Аксае (Дагестан)", иначе получится "в Аксае (Дагестан) (Дагестан)"
+                                try:
+                                    already_replaced = (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
+                                    if already_replaced:
+                                        debug(f'    Пропускаем: значение "{value_plain}" уже содержит новую подстроку "{new_sub}"')
+                                        continue
+                                except Exception:
+                                    pass
+                                
                                 found_matches.append({
                                     'type': 'partial',
                                     'param_index': i,

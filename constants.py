@@ -12,7 +12,7 @@
 """
 
 # ===== Версия приложения и URL-адреса =====
-APP_VERSION = "1.05"
+APP_VERSION = "1.06"
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'
 GITHUB_API_RELEASES = 'https://api.github.com/repos/sc113/wiki-category-tool/releases'
 

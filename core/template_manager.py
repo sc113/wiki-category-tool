@@ -777,12 +777,20 @@ class TemplateManager:
                         for i, tok in enumerate(tmp):
                             try:
                                 t_norm = _normalize_for_compare(tok)
+                                t_plain = _strip_quotes(tok)
+                                t_plain_norm = _normalize_for_compare(t_plain)
+                                
+                                # ЗАЩИТА ОТ ПОВТОРНОЙ ЗАМЕНЫ: пропускаем, если значение уже содержит целевую подстроку
+                                # Например, если src="в Аксае", dst="в Аксае (Дагестан)",
+                                # то "в Аксае (Дагестан)" не должно считаться совпадением
+                                if dst and (dst in tok or dst in t_plain):
+                                    continue
+                                
                                 if t_norm == src_norm:
                                     matches.append((i, False, ''))
                                     continue
                                 # Сравнить со снятыми кавычками
-                                t_plain = _strip_quotes(tok)
-                                if _normalize_for_compare(t_plain) == src_norm:
+                                if t_plain_norm == src_norm:
                                     qc = ''
                                     st = (tok or '').strip()
                                     if len(st) >= 2 and st[0] == st[-1] and st[0] in ('"', "'"):

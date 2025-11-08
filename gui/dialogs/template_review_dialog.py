@@ -69,8 +69,17 @@ class TemplateReviewDialog(QDialog):
         # Анимации для плавного сворачивания
         self.animations = []
         
+        self._search_text_to_highlight = None
+        
         self.setup_ui()
         self.setup_connections()
+    
+    def showEvent(self, event):
+        """Переопределяем showEvent для повторного вызова подсветки после полной отрисовки"""
+        super().showEvent(event)
+        # Еще один отложенный вызов после показа диалога
+        if hasattr(self, '_search_text_to_highlight') and self._search_text_to_highlight:
+            QTimer.singleShot(150, lambda: self.highlight_and_focus_replacement(self._search_text_to_highlight))
     
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
@@ -594,6 +603,51 @@ class TemplateReviewDialog(QDialog):
         except Exception:
             pass
     
+    def highlight_and_focus_replacement(self, search_text):
+        """Перемещает курсор к месту замены и выделяет измененный текст"""
+        try:
+            from PySide6.QtGui import QTextCursor
+            
+            # Проверяем, что виджет существует и видим
+            if not self.edit_field or not self.edit_field.isVisible():
+                return
+            
+            # Получаем текст из поля
+            full_text = self.edit_field.toPlainText()
+            
+            if not search_text or not full_text:
+                return
+            
+            # Ищем позицию измененного текста
+            pos = full_text.find(search_text)
+            if pos == -1:
+                # Если не нашли точное совпадение, попробуем без учета регистра
+                search_lower = search_text.lower()
+                full_lower = full_text.lower()
+                pos = full_lower.find(search_lower)
+            
+            if pos != -1:
+                # Создаем новый курсор
+                cursor = QTextCursor(self.edit_field.document())
+                
+                # Перемещаем курсор к началу найденного текста
+                cursor.setPosition(pos)
+                
+                # Выделяем текст (перемещаем конец выделения)
+                cursor.setPosition(pos + len(search_text), QTextCursor.KeepAnchor)
+                
+                # Устанавливаем курсор в поле
+                self.edit_field.setTextCursor(cursor)
+                
+                # Прокручиваем поле, чтобы курсор был видим
+                self.edit_field.ensureCursorVisible()
+                
+                # Устанавливаем фокус на поле редактирования
+                QTimer.singleShot(10, self.edit_field.setFocus)
+        except Exception:
+            # Если что-то пошло не так, просто пропускаем
+            pass
+    
     def setup_edit_field(self):
         """Настройка поля для ручного редактирования"""
         # Устанавливаем начальный текст
@@ -602,13 +656,25 @@ class TemplateReviewDialog(QDialog):
                 self.old_direct or self.old_full, 
                 self.new_direct or self.new_full, 1
             )
+            # Для режима локативов запоминаем, что искать
+            search_text = self.new_direct or self.new_full
         else:
             initial_text = self.proposed_template or (
                 self.template_str.replace(self.old_sub, self.new_sub, 1) 
                 if self.old_sub and self.new_sub else self.template_str
             )
+            # Для частичной замены ищем новую подстроку
+            search_text = self.new_sub
         
         self.edit_field.setPlainText(initial_text)
+        
+        # Сохраняем search_text для отложенного вызова
+        self._search_text_to_highlight = search_text
+        
+        # Перемещаем курсор к месту замены и выделяем измененный фрагмент
+        # Используем QTimer для отложенного вызова, чтобы виджет успел отрисоваться
+        if search_text:
+            QTimer.singleShot(100, lambda: self.highlight_and_focus_replacement(search_text))
         # Поле редактирования — сжимается последним, поэтому оставим минимум больше, чем у превью
         self.edit_field.setMinimumHeight(110)
         try:
