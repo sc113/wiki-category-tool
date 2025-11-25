@@ -55,7 +55,7 @@ class NSLoadThread(QThread):
 class MainWindow(QMainWindow):
     """Основное окно приложения"""
     ns_update_finished = Signal(str, str, bool)  # family, lang, ok
-    
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Wiki Category Tool')
@@ -76,10 +76,13 @@ class MainWindow(QMainWindow):
                         IMAGE_ICON = 1
                         LR_LOADFROMFILE = 0x0010
                         LR_DEFAULTSIZE = 0x0040
-                        hicon = ctypes.windll.user32.LoadImageW(None, icon_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+                        hicon = ctypes.windll.user32.LoadImageW(
+                            None, icon_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
                         if hicon:
-                            ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
-                            ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+                            ctypes.windll.user32.SendMessageW(
+                                hwnd, WM_SETICON, ICON_SMALL, hicon)
+                            ctypes.windll.user32.SendMessageW(
+                                hwnd, WM_SETICON, ICON_BIG, hicon)
                             debug('WM_SETICON applied for small and big icons')
                 except Exception as _e:
                     try:
@@ -90,12 +93,11 @@ class MainWindow(QMainWindow):
                 debug("MainWindow icon not found: icon.ico")
         except Exception:
             pass
-        
 
         # Стартовый размер как раньше, но можно сжимать до меньшего минимума
         self.resize(1200, 700)
         self.setMinimumSize(900, 540)
-        
+
         # Создание центрального виджета с вкладками
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -108,23 +110,24 @@ class MainWindow(QMainWindow):
         self.prev_lang = 'ru'
         self._secret_buffer = ''
         self._stay_on_top_active = False
-        
+
         # Запоминание флага «автоподтверждать прямые совпадения» между диалогами
         self._auto_confirm_direct_all_ui: bool = False
 
         # Инициализация core компонентов
         self.init_core_components()
 
-        # Инициализация вкладок
-        self.init_tabs()
-        
-        # Установка начальных значений
+        # Установка начальных значений ДО init_tabs, чтобы load_creds мог их перезаписать
         self.current_lang = 'ru'
         self.current_family = 'wikipedia'
-        
+
+        # Инициализация вкладок (load_creds может обновить current_lang/current_family)
+        self.init_tabs()
+
         # Не создаём файл правил заранее — он появится только при первом сохранении правил
         try:
-            self._rules_file_path = os.path.join(self.config_manager._dist_configs_dir(), 'template_rules.json')
+            self._rules_file_path = os.path.join(
+                self.config_manager._dist_configs_dir(), 'template_rules.json')
         except Exception:
             self._rules_file_path = None
 
@@ -132,13 +135,13 @@ class MainWindow(QMainWindow):
         """Инициализация всех core компонентов"""
         # Создание API клиента
         self.api_client = WikimediaAPIClient()
-        
+
         # Создание менеджера пространств имен
         self.namespace_manager = NamespaceManager(self.api_client)
-        
+
         # Создание менеджера конфигурации Pywikibot
         self.config_manager = PywikibotConfigManager()
-        
+
         # Создание менеджера шаблонов
         self.template_manager = TemplateManager()
 
@@ -150,7 +153,7 @@ class MainWindow(QMainWindow):
         self.replace_tab = ReplaceTab(self)
         self.create_tab = CreateTab(self)
         self.rename_tab = RenameTab(self)
-        
+
         # Передача core компонентов во вкладки
         for tab in [self.auth_tab, self.parse_tab, self.replace_tab, self.create_tab, self.rename_tab]:
             if hasattr(tab, 'set_core_components'):
@@ -160,41 +163,43 @@ class MainWindow(QMainWindow):
                     config_manager=self.config_manager,
                     template_manager=self.template_manager
                 )
-        
+
         # Добавление вкладок в TabWidget
         self.tabs.addTab(self.auth_tab, "Авторизация")
         self.tabs.addTab(self.parse_tab, "Чтение")
         self.tabs.addTab(self.replace_tab, "Перезапись")
         self.tabs.addTab(self.create_tab, "Создание")
         self.tabs.addTab(self.rename_tab, "Переименование")
-        
+
         # Подключение сигналов для передачи данных между вкладками
         self.auth_tab.login_success.connect(self._on_login_success)
         self.auth_tab.logout_success.connect(self._on_logout_success)
         self.auth_tab.lang_changed.connect(self._on_lang_change)
-        
+
         # Обновление семейства проекта по выбору в AuthTab (без тяжёлых операций)
         if hasattr(self.auth_tab, 'family_combo') and self.auth_tab.family_combo:
             try:
-                self.auth_tab.family_combo.currentTextChanged.connect(self.update_family)
+                self.auth_tab.family_combo.currentTextChanged.connect(
+                    self.update_family)
             except Exception:
                 pass
-        
+
         # Обновление только при потере фокуса (если lineEdit доступен)
-        if (hasattr(self.auth_tab, 'family_combo') and 
-            self.auth_tab.family_combo and 
+        if (hasattr(self.auth_tab, 'family_combo') and
+            self.auth_tab.family_combo and
             hasattr(self.auth_tab.family_combo, 'lineEdit') and
-            self.auth_tab.family_combo.lineEdit()):
+                self.auth_tab.family_combo.lineEdit()):
             self.auth_tab.family_combo.lineEdit().editingFinished.connect(
-                lambda: self.update_family(self.auth_tab.family_combo.currentText())
+                lambda: self.update_family(
+                    self.auth_tab.family_combo.currentText())
             )
-        
+
         # Загрузка сохраненных учетных данных
         try:
             self.auth_tab.load_creds()
         except Exception:
             pass
-            
+
         # Связать выпадающие списки namespace между вкладками
         QTimer.singleShot(150, self._link_ns_combos)
 
@@ -210,18 +215,21 @@ class MainWindow(QMainWindow):
         self.current_password = password
         self.current_lang = lang
         self.current_family = family
-        
+
         # Передача данных авторизации во все вкладки
         for tab in self.content_tabs():
             if hasattr(tab, 'set_auth_data'):
                 tab.set_auth_data(username, lang, family)
-        
+
         # При авторизации обновляем namespace только если нет кэша для текущей пары
         try:
-            cache_path = self.namespace_manager._ns_cache_file(family or 'wikipedia', lang or 'ru')
+            cache_path = self.namespace_manager._ns_cache_file(
+                family or 'wikipedia', lang or 'ru')
             if not os.path.isfile(cache_path):
-                debug(f'Авторизация: кэш namespace отсутствует — выполняем форс-загрузку для {family}:{lang}')
-                QTimer.singleShot(0, lambda: self.update_namespace_combos(family, lang, force=True))
+                debug(
+                    f'Авторизация: кэш namespace отсутствует — выполняем форс-загрузку для {family}:{lang}')
+                QTimer.singleShot(0, lambda: self.update_namespace_combos(
+                    family, lang, force=True))
             else:
                 debug('Авторизация: кэш namespace найден — форс-загрузка не требуется')
         except Exception:
@@ -233,7 +241,7 @@ class MainWindow(QMainWindow):
         self.current_password = None
         self.current_lang = None
         self.current_family = None
-        
+
         # Очистка данных авторизации во всех вкладках
         for tab in self.content_tabs():
             if hasattr(tab, 'clear_auth_data'):
@@ -249,16 +257,17 @@ class MainWindow(QMainWindow):
     def _on_lang_change(self, new_lang: str):
         """Обработка изменения языка"""
         self.current_lang = new_lang
-        
+
         # Обновление summary полей в зависимости от языка
         edits = []
-        
+
         # Собираем все summary поля из вкладок
         if hasattr(self.replace_tab, 'summary_edit'):
             edits.append((self.replace_tab.summary_edit, default_summary))
         if hasattr(self.create_tab, 'summary_edit_create'):
-            edits.append((self.create_tab.summary_edit_create, default_create_summary))
-        
+            edits.append(
+                (self.create_tab.summary_edit_create, default_create_summary))
+
         # Обновляем текст в полях summary
         for widget, func in edits:
             if widget is None:
@@ -266,16 +275,17 @@ class MainWindow(QMainWindow):
             cur = widget.text().strip()
             if cur == '' or cur == func(self.prev_lang):
                 widget.setText(func(new_lang))
-        
+
         self.prev_lang = new_lang
-        
+
         # Обновление namespace комбобоксов во всех вкладках
         family = getattr(self.auth_tab, 'family_combo', None)
         if family:
             family_text = family.currentText() or 'wikipedia'
             self.current_family = family_text
-            debug(f'Пропускаем обновление namespace при изменении языка на {new_lang}')
-        
+            debug(
+                f'Пропускаем обновление namespace при изменении языка на {new_lang}')
+
         # Уведомление вкладок об изменении языка
         for tab in self.content_tabs():
             if hasattr(tab, 'update_language'):
@@ -291,7 +301,8 @@ class MainWindow(QMainWindow):
             combos = self._gather_ns_combos()
             for combo in combos:
                 try:
-                    self.namespace_manager.populate_ns_combo(combo, family, lang)
+                    self.namespace_manager.populate_ns_combo(
+                        combo, family, lang)
                     self.namespace_manager._adjust_combo_popup_width(combo)
                 except Exception:
                     pass
@@ -306,13 +317,15 @@ class MainWindow(QMainWindow):
             lang: язык проекта
             force: зарезервировано для принудительного обновления (для совместимости)
         """
-        debug(f'update_namespace_combos вызван с параметрами: family={family}, lang={lang}, force={force}')
+        debug(
+            f'update_namespace_combos вызван с параметрами: family={family}, lang={lang}, force={force}')
         try:
             combos = self._gather_ns_combos()
             for combo in combos:
                 try:
                     # Если force=True — разрешаем сетевую загрузку и обновление кэша
-                    self.namespace_manager.populate_ns_combo(combo, family, lang, force_load=force)
+                    self.namespace_manager.populate_ns_combo(
+                        combo, family, lang, force_load=force)
                     self.namespace_manager._adjust_combo_popup_width(combo)
                 except Exception:
                     pass
@@ -336,18 +349,20 @@ class MainWindow(QMainWindow):
                 lang = self.current_lang or 'ru'
                 force_needed = False
                 try:
-                    cache_path = self.namespace_manager._ns_cache_file(fam, lang)
+                    cache_path = self.namespace_manager._ns_cache_file(
+                        fam, lang)
                     force_needed = not os.path.isfile(cache_path)
                 except Exception:
                     force_needed = False
-                debug(f'Открыта вкладка {index}: обновление namespace (force={force_needed})')
+                debug(
+                    f'Открыта вкладка {index}: обновление namespace (force={force_needed})')
                 self.update_namespace_combos(fam, lang, force=force_needed)
         except Exception as e:
             try:
                 debug(f'Ошибка в _on_tab_changed: {e}')
             except Exception:
                 pass
-    
+
     def force_update_namespace_combos(self, family: str, lang: str):
         """Асинхронная загрузка NS в кэш и обновление комбобоксов после завершения."""
         try:
@@ -392,8 +407,9 @@ class MainWindow(QMainWindow):
     def update_family(self, new_family: str):
         """Обновление семейства проектов"""
         self.current_family = new_family
-        
-        debug(f'Пропускаем обновление namespace при изменении семейства на {new_family}')
+
+        debug(
+            f'Пропускаем обновление namespace при изменении семейства на {new_family}')
 
         # Уведомление вкладок об изменении семейства
         for tab in self.content_tabs():
@@ -497,7 +513,8 @@ class MainWindow(QMainWindow):
                 btn.setText('❔')
                 btn.setAutoRaise(True)
                 btn.setToolTip(text)
-                btn.clicked.connect(lambda _=None, t=text: QMessageBox.information(self, 'Справка', t))
+                btn.clicked.connect(
+                    lambda _=None, t=text: QMessageBox.information(self, 'Справка', t))
                 if hasattr(host_layout, 'addWidget'):
                     host_layout.addWidget(btn)
                 return btn
@@ -521,7 +538,7 @@ class MainWindow(QMainWindow):
     def show_debug(self):
         """Показать/скрыть окно отладки (singleton поведение)"""
         from .dialogs.debug_dialog import DebugDialog
-        
+
         # Проверяем, есть ли уже открытое окно debug
         if hasattr(self, '_debug_dialog') and self._debug_dialog is not None:
             if self._debug_dialog.isVisible():
@@ -538,7 +555,7 @@ class MainWindow(QMainWindow):
             # Подключаем сигнал закрытия для сброса ссылки
             self._debug_dialog.finished.connect(self._on_debug_dialog_closed)
             self._debug_dialog.show()
-    
+
     def _on_debug_dialog_closed(self):
         """Обработка закрытия debug диалога"""
         self._debug_dialog = None
@@ -569,21 +586,21 @@ class MainWindow(QMainWindow):
         running_threads = []
         tab_workers = [
             ('parse', self.parse_tab, 'worker'),
-            ('replace', self.replace_tab, 'rworker'), 
+            ('replace', self.replace_tab, 'rworker'),
             ('create', self.create_tab, 'cworker'),
             ('rename', self.rename_tab, 'mrworker'),
             ('auth', self.auth_tab, '_login_worker')
         ]
-        
+
         for tab_name, tab, worker_attr in tab_workers:
             worker = getattr(tab, worker_attr, None)
             if worker and hasattr(worker, 'isRunning') and worker.isRunning():
                 running_threads.append(tab_name)
-        
+
         if running_threads:
             res = QMessageBox.question(
-                self, 
-                'Внимание', 
+                self,
+                'Внимание',
                 f'Операции ещё выполняются в вкладках: {", ".join(running_threads)}. Закрыть программу?',
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
@@ -591,10 +608,10 @@ class MainWindow(QMainWindow):
             if res != QMessageBox.Yes:
                 event.ignore()
                 return
-        
+
         # Не пытаемся сохранять/валидировать учётные данные при закрытии, чтобы не появлялись диалоги
         # (раньше вызывался save_creds(), что могло запрашивать ввод пароля при закрытии окна)
-        
+
         # Точечная остановка LoginWorker, чтобы избежать предупреждения QThread при выходе
         try:
             login_worker = getattr(self.auth_tab, '_login_worker', None)
@@ -616,5 +633,5 @@ class MainWindow(QMainWindow):
                     pass
         except Exception:
             pass
-        
+
         super().closeEvent(event)
