@@ -93,7 +93,8 @@ class ReplaceTab(QWidget):
             btn_browse_rep.setToolTip('Выбрать файл')
         except Exception:
             pass
-        btn_browse_rep.clicked.connect(lambda: pick_file(self, self.rep_file_edit, '*.tsv'))
+        btn_browse_rep.clicked.connect(
+            lambda: pick_file(self, self.rep_file_edit, '*.tsv'))
         h.addWidget(btn_browse_rep)
 
         # Кнопка "Открыть"
@@ -206,7 +207,8 @@ class ReplaceTab(QWidget):
             from PySide6.QtWidgets import QGridLayout
             grid = rep_wrap.layout() if isinstance(rep_wrap.layout(), QGridLayout) else None
             if grid:
-                grid.addWidget(btn_extra, grid.rowCount()-1, 0, Qt.AlignBottom | Qt.AlignRight)
+                grid.addWidget(btn_extra, grid.rowCount()-1, 0,
+                               Qt.AlignBottom | Qt.AlignRight)
         except Exception:
             pass
 
@@ -288,7 +290,8 @@ class ReplaceTab(QWidget):
         try:
             left, right, count = tsv_preview_from_path(path)
         except Exception as e:
-            QMessageBox.critical(self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+            QMessageBox.critical(
+                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
             return
 
         self.rep_preview_titles.setPlainText('\n'.join(left))
@@ -306,16 +309,18 @@ class ReplaceTab(QWidget):
         if not self.rep_file_edit.text():
             QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
             return
-        
+
         # Подсчитываем количество страниц для замены
         try:
             page_count = count_non_empty_titles(self.rep_file_edit.text())
         except Exception as e:
-            QMessageBox.critical(self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+            QMessageBox.critical(
+                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
             return
-        
+
         if page_count == 0:
-            QMessageBox.warning(self, 'Ошибка', 'В файле нет страниц для замены.')
+            QMessageBox.warning(
+                self, 'Ошибка', 'В файле нет страниц для замены.')
             return
 
         # Получаем данные авторизации от родительского окна
@@ -337,8 +342,6 @@ class ReplaceTab(QWidget):
         apply_pwb_config(lang, fam)
 
         summary = self.summary_edit.text().strip()
-        if not summary:
-            summary = default_summary(lang)
 
         minor = self.minor_checkbox.isChecked()
 
@@ -355,7 +358,8 @@ class ReplaceTab(QWidget):
         self.rworker = ReplaceWorker(
             self.rep_file_edit.text(), user, pwd, lang, fam, ns_sel, summary, minor
         )
-        self.rworker.progress.connect(lambda m: [inc_progress(self.replace_label, self.replace_bar), log_message(self.rep_log, m)])
+        self.rworker.progress.connect(lambda m: [inc_progress(
+            self.replace_label, self.replace_bar), log_message(self.rep_log, m)])
         self.rworker.finished.connect(self._on_replace_finished)
         self.rworker.start()
 
@@ -378,7 +382,8 @@ class ReplaceTab(QWidget):
             val = self.replace_bar.value() + 1
             self.replace_bar.setValue(val)
             try:
-                self.replace_label.setText(f'Обработано {val}/{self.replace_bar.maximum()}')
+                self.replace_label.setText(
+                    f'Обработано {val}/{self.replace_bar.maximum()}')
             except Exception:
                 pass
         except Exception:
@@ -393,7 +398,8 @@ class ReplaceTab(QWidget):
         # Обновляем комбобокс пространств имен
         if self.parent_window:
             family = getattr(self.parent_window, 'current_family', None) or (
-                getattr(getattr(self.parent_window, 'auth_tab', None), 'family_combo', None).currentText()
+                getattr(getattr(self.parent_window, 'auth_tab', None),
+                        'family_combo', None).currentText()
                 if getattr(getattr(self.parent_window, 'auth_tab', None), 'family_combo', None) else 'wikipedia'
             )
             try:
@@ -407,7 +413,8 @@ class ReplaceTab(QWidget):
         """Обновляет семейство проектов"""
         if self.parent_window:
             lang = getattr(self.parent_window, 'current_lang', None) or (
-                getattr(getattr(self.parent_window, 'auth_tab', None), 'lang_combo', None).currentText()
+                getattr(getattr(self.parent_window, 'auth_tab', None),
+                        'lang_combo', None).currentText()
                 if getattr(getattr(self.parent_window, 'auth_tab', None), 'lang_combo', None) else 'ru'
             )
             try:
@@ -428,7 +435,7 @@ class ReplaceTab(QWidget):
         self.current_user = None
         self.current_lang = None
         self.current_family = None
-    
+
     def update_namespace_combo(self, family: str, lang: str):
         """Обновление комбобокса пространств имен для текущего языка/проекта"""
         try:
@@ -437,7 +444,7 @@ class ReplaceTab(QWidget):
                 nm.populate_ns_combo(self.rep_ns_combo, family, lang)
         except Exception:
             pass
-    
+
     def update_summary(self, lang: str):
         """Автообновление summary при смене языка"""
         self.update_language(lang)
