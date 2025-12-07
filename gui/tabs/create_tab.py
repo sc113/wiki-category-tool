@@ -189,12 +189,9 @@ class CreateTab(QWidget):
             except Exception:
                 pass
             try:
-                self.create_btn.clicked.disconnect()
-            except Exception:
-                pass
-            try:
-                self.create_btn.setText('Предпросмотр')
-                self.create_btn.clicked.connect(self.preview_create)
+                # Возвращаем кнопку "Создать" в исходное состояние
+                self.create_btn.setEnabled(False)
+                self.create_btn.setText('Создать')
             except Exception:
                 pass
 
