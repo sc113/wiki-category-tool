@@ -21,11 +21,14 @@ try:
     from PySide6.QtCore import QObject, Signal
 except Exception:  # PySide6 может быть недоступен при импорт-тестах
     QObject = object  # type: ignore
+
     class Signal:  # type: ignore
         def __init__(self, *_, **__):
             pass
+
         def connect(self, *_args, **_kwargs):
             pass
+
         def emit(self, *_args, **_kwargs):
             pass
 
@@ -36,6 +39,8 @@ DEBUG_VIEW = None
 # Блокировка для записи в файлы
 write_lock = Lock()
 _DBG_TLS = local()
+
+
 class _DebugBridge(QObject):
     """Потокобезопасный мост для передачи debug-сообщений в GUI через сигнал."""
     try:
@@ -52,7 +57,6 @@ DEBUG_BRIDGE = _DebugBridge()
 def get_debug_bridge():
     """Вернуть глобальный мост для debug-сообщений."""
     return DEBUG_BRIDGE
-
 
 
 class GuiStdWriter(io.TextIOBase):
@@ -93,6 +97,7 @@ def tool_base_dir() -> str:
         return os.path.dirname(__file__)
     except NameError:
         return os.getcwd()
+
 
 def write_row(title, lines, writer):
     """Записывает строку в TSV файл с блокировкой потоков."""
@@ -184,6 +189,7 @@ def align_first_letter_case(source: str, target: str) -> str:
     except Exception:
         return target
 
+
 def build_ws_fuzzy_pattern(text: str) -> str:
     """Строит regex-паттерн для текста с учётом всех видов пробелов и невидимых.
 
@@ -207,29 +213,29 @@ def build_ws_fuzzy_pattern(text: str) -> str:
 def default_summary(lang: str) -> str:
     """Возвращает стандартный комментарий для правок в зависимости от языка."""
     mapping = {
-        'ru': 'Замена содержимого страницы на единообразное наполнение',
-        'uk': 'Заміна вмісту сторінки на одноманітне наповнення',
-        'be': 'Замена зместу старонкі на адзіную структуру',
-        'en': 'Replacement of the page content with uniform filling',
-        'fr': 'Remplacement du contenu pour cohérence',
-        'es': 'Sustitución del contenido para uniformidad',
-        'de': 'Ersetzung des Seiteninhalts für Konsistenz'
+        'ru': 'Замена содержимого страницы на единообразное наполнение: $1',
+        'uk': 'Заміна вмісту сторінки на одноманітне наповнення: $1',
+        'be': 'Замена зместу старонкі на адзіную структуру: $1',
+        'en': 'Replacement of the page content with uniform filling: $1',
+        'fr': 'Remplacement du contenu pour cohérence: $1',
+        'es': 'Sustitución del contenido para uniformidad: $1',
+        'de': 'Ersetzung des Seiteninhalts für Konsistenz: $1'
     }
-    return mapping.get(lang, 'Consistency content replacement')
+    return mapping.get(lang, 'Consistency content replacement: $1')
 
 
 def default_create_summary(lang: str) -> str:
     """Возвращает стандартный комментарий для создания страниц в зависимости от языка."""
     mapping = {
-        'ru': 'Создание новой категории с заготовленным содержимым',
-        'uk': 'Створення нової категорії з уніфікованим наповненням',
-        'be': 'Стварэнне новай катэгорыі з адзінай структурай',
-        'en': 'Creation of a new category with prepared content',
-        'fr': 'Création d\'une nouvelle catégorie avec contenu préparé',
-        'es': 'Creación de una nueva categoría con contenido preparado',
-        'de': 'Erstellung einer neuen Kategorie mit vorbereitetem Inhalt'
+        'ru': 'Создание новой категории с заготовленным содержимым: $1',
+        'uk': 'Створення нової категорії з уніфікованим наповненням: $1',
+        'be': 'Стварэнне новай катэгорыі з адзінай структурай: $1',
+        'en': 'Creation of a new category with prepared content: $1',
+        'fr': 'Création d\'une nouvelle catégorie avec contenu préparé: $1',
+        'es': 'Creación de una nueva categoría con contenido preparado: $1',
+        'de': 'Erstellung einer neuen Kategorie mit vorbereitetem Inhalt: $1'
     }
-    return mapping.get(lang, 'Category creation with prepared content')
+    return mapping.get(lang, 'Category creation with prepared content: $1')
 
 
 def adjust_combo_popup_width(combo) -> None:
@@ -250,7 +256,6 @@ def adjust_combo_popup_width(combo) -> None:
             pass
     except Exception:
         pass
-
 
 
 def debug(msg: str):

@@ -26,18 +26,18 @@ MAX_WIDGET_HEIGHT = 16777215      # Практически «безлимитн�
 class TemplateReviewDialog(QDialog):
     """
     Диалог для проверки изменений в шаблонах при переименовании категорий.
-    
+
     Поддерживает два режима:
     - direct: прямые совпадения в параметрах шаблона
     - partial: частичные замены в параметрах шаблона
     """
-    
+
     # Сигналы для взаимодействия с worker'ом
     response_ready = Signal(dict)
-    
+
     def __init__(self, parent=None, request_data=None):
         super().__init__(parent)
-        
+
         # Данные запроса
         self.request_data = request_data or {}
         self.request_id = self.request_data.get('request_id', '')
@@ -45,7 +45,8 @@ class TemplateReviewDialog(QDialog):
         self.template_str = self.request_data.get('template', '')
         self.old_full = self.request_data.get('old_full', '')
         self.new_full = self.request_data.get('new_full', '')
-        self.mode = self.request_data.get('mode', 'direct')  # 'direct' или 'partial'
+        self.mode = self.request_data.get(
+            'mode', 'direct')  # 'direct' или 'partial'
         self.proposed_template = self.request_data.get('proposed_template', '')
         self.old_sub = self.request_data.get('old_sub', '')
         self.new_sub = self.request_data.get('new_sub', '')
@@ -59,33 +60,34 @@ class TemplateReviewDialog(QDialog):
         except Exception:
             self.dup_idx1, self.dup_idx2 = 0, 0
         self.selected_dedupe_mode = 'keep_both'
-        
+
         # Результат диалога
         self.result_action = 'cancel'
         self.auto_confirm_all = False
         self.auto_skip_all = False
         self.edited_template = None
-        
+
         # Анимации для плавного сворачивания
         self.animations = []
-        
+
         self._search_text_to_highlight = None
-        
+
         self.setup_ui()
         self.setup_connections()
-    
+
     def showEvent(self, event):
         """Переопределяем showEvent для повторного вызова подсветки после полной отрисовки"""
         super().showEvent(event)
         # Еще один отложенный вызов после показа диалога
         if hasattr(self, '_search_text_to_highlight') and self._search_text_to_highlight:
-            QTimer.singleShot(150, lambda: self.highlight_and_focus_replacement(self._search_text_to_highlight))
-    
+            QTimer.singleShot(150, lambda: self.highlight_and_focus_replacement(
+                self._search_text_to_highlight))
+
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
         # Заголовок: "Замена по параметрам шаблона"
         self.setWindowTitle("Замена по параметрам шаблона")
-        
+
         # Размер по умолчанию; дальнейшее распределение свободного места — в пользу редактора
         self.resize(900, 700)
         self.setSizeGripEnabled(True)
@@ -94,7 +96,7 @@ class TemplateReviewDialog(QDialog):
             self.setMinimumSize(440, 260)
         except Exception:
             pass
-        
+
         # Основной layout
         layout = QVBoxLayout(self)
         try:
@@ -102,14 +104,14 @@ class TemplateReviewDialog(QDialog):
             layout.setSpacing(6)
         except Exception:
             pass
-        
+
         # Создаем header с информацией о переименовании (если есть page_title)
         if self.page_title:
             self.create_header_section(layout)
-        
+
         # Компактный отступ
         layout.addSpacing(4)
-        
+
         # Сообщение о типе замены (плотный блок: заголовок + сообщение без промежутков)
         is_direct = (self.mode == 'direct')
         is_partial = (self.mode == 'partial')
@@ -129,7 +131,8 @@ class TemplateReviewDialog(QDialog):
 
         if is_locative:
             # Красная крупная строка + пояснение
-            red = QLabel("<span style='color:#b91c1c;font-weight:bold;font-size:16px'>Обнаружено применение локативов в параметрах шаблона</span>")
+            red = QLabel(
+                "<span style='color:#b91c1c;font-weight:bold;font-size:16px'>Обнаружено применение локативов в параметрах шаблона</span>")
             red.setWordWrap(True)
             try:
                 red.setStyleSheet('margin:0')
@@ -153,7 +156,8 @@ class TemplateReviewDialog(QDialog):
                 pass
             msg_box.addWidget(amber)
             msg_box.addSpacing(6)
-            desc = QLabel("Категория на странице не найдена напрямую. Проверьте и при необходимости подредактируйте предложенную замену.")
+            desc = QLabel(
+                "Категория на странице не найдена напрямую. Проверьте и при необходимости подредактируйте предложенную замену.")
             desc.setWordWrap(True)
             try:
                 desc.setStyleSheet('margin:0')
@@ -161,7 +165,8 @@ class TemplateReviewDialog(QDialog):
                 pass
             msg_box.addWidget(desc)
         else:
-            basic = QLabel("Категория на странице не найдена напрямую. Обнаружено совпадение в параметрах шаблона.")
+            basic = QLabel(
+                "Категория на странице не найдена напрямую. Обнаружено совпадение в параметрах шаблона.")
             basic.setWordWrap(True)
             try:
                 basic.setStyleSheet('margin:0')
@@ -171,7 +176,7 @@ class TemplateReviewDialog(QDialog):
 
         layout.addWidget(msg_wrap)
         layout.addSpacing(6)
-        
+
         # Создаем блоки с исходным и предлагаемым вызовом
         self.create_template_sections(layout)
         try:
@@ -188,10 +193,10 @@ class TemplateReviewDialog(QDialog):
         # Блок предупреждения о дублях позиционных параметров
         if self.dup_warning and self.dup_idx1 and self.dup_idx2:
             self.create_dedupe_section(layout)
-        
+
         # Поле для ручного редактирования
         layout.addSpacing(2)
-        
+
         # Заголовок с кнопкой сворачивания для редактора
         header3_layout = QHBoxLayout()
         header3_layout.setContentsMargins(0, 0, 0, 0)
@@ -202,17 +207,18 @@ class TemplateReviewDialog(QDialog):
         header3_layout.addWidget(self.btn_collapse_edit)
         header3_layout.addStretch()
         layout.addLayout(header3_layout)
-        
+
         self.edit_field = QPlainTextEdit()
         self.setup_edit_field()
-        self.btn_collapse_edit.clicked.connect(lambda: self._toggle_block(self.edit_field, self.btn_collapse_edit))
+        self.btn_collapse_edit.clicked.connect(
+            lambda: self._toggle_block(self.edit_field, self.btn_collapse_edit))
         layout.addWidget(self.edit_field)
         try:
             # Свободное место отдаём под редактор
             layout.setStretchFactor(self.edit_field, 1)
         except Exception:
             pass
-        
+
         # Панель управления с кнопками
         self.create_control_panel(layout)
 
@@ -231,7 +237,8 @@ class TemplateReviewDialog(QDialog):
         except Exception:
             pass
         v = QVBoxLayout(box)
-        msg = QLabel(f"<b>Обнаружено два одинаковых значения</b> в параметрах {self.dup_idx1} и {self.dup_idx2}.")
+        msg = QLabel(
+            f"<b>Обнаружено два одинаковых значения</b> в параметрах {self.dup_idx1} и {self.dup_idx2}.")
         msg.setWordWrap(True)
         v.addWidget(msg)
 
@@ -251,9 +258,12 @@ class TemplateReviewDialog(QDialog):
         rb_keep_first = QRadioButton('Оставлять параметр слева')
         rb_keep_second = QRadioButton('Оставлять параметр справа')
         try:
-            rb_keep_both.setToolTip('Ничего не удалять: оба одинаковых значения останутся')
-            rb_keep_first.setToolTip('Удалить правый дубликат и оставить левый (первый)')
-            rb_keep_second.setToolTip('Удалить левый дубликат и оставить правый (последний)')
+            rb_keep_both.setToolTip(
+                'Ничего не удалять: оба одинаковых значения останутся')
+            rb_keep_first.setToolTip(
+                'Удалить правый дубликат и оставить левый (первый)')
+            rb_keep_second.setToolTip(
+                'Удалить левый дубликат и оставить правый (последний)')
         except Exception:
             pass
         rb_keep_both.setChecked(True)
@@ -268,13 +278,13 @@ class TemplateReviewDialog(QDialog):
         v.addWidget(rb_keep_second)
 
         layout.addWidget(box)
-    
+
     def create_header_section(self, layout):
         """Создание header секции с информацией о переименовании"""
         # Определяем family и lang из контекста (можно передать в request_data)
         family = self.request_data.get('family', 'wikipedia')
         lang = self.request_data.get('lang', 'ru')
-        
+
         # Верхний блок-«карточка» с информацией о переименовании категории
         header = QFrame()
         header.setObjectName('reviewHeader')
@@ -283,36 +293,39 @@ class TemplateReviewDialog(QDialog):
             "background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; "
             "} QLabel { font-size:13px; }"
         )
-        
+
         hlay = QVBoxLayout(header)
         hlay.setContentsMargins(10, 8, 10, 8)
         hlay.setSpacing(2)
-        
+
         # Строим URLs
         host = self.build_host(family, lang)
-        
+
         # Создаем ссылки для категорий
         old_url, old_hist = self._build_page_urls(host, self.old_full)
         new_url, new_hist = self._build_page_urls(host, self.new_full)
-        
+
         # Старая и новая категории
-        move1 = self._create_link_label(f"❌ {html.escape(self.old_full)}", old_url, old_hist)
-        move2 = self._create_link_label(f"✅ {html.escape(self.new_full)}", new_url, new_hist)
-        
+        move1 = self._create_link_label(
+            f"❌ {html.escape(self.old_full)}", old_url, old_hist)
+        move2 = self._create_link_label(
+            f"✅ {html.escape(self.new_full)}", new_url, new_hist)
+
         hlay.addWidget(move1)
         hlay.addWidget(move2)
-        
+
         # Название страницы внутри карточки
         page_url, history_url = self._build_page_urls(host, self.page_title)
-        
-        page_line = self._create_link_label(f"⚜️ {html.escape(self.page_title)}", page_url, history_url)
-        
+
+        page_line = self._create_link_label(
+            f"⚜️ {html.escape(self.page_title)}", page_url, history_url)
+
         hlay.addSpacing(4)
         hlay.addWidget(page_line)
-        
+
         layout.addWidget(header)
         layout.addSpacing(4)
-    
+
     def create_template_sections(self, layout):
         """Создание секций с исходным и предлагаемым шаблоном"""
         # Подготавливаем highlighted версии
@@ -320,65 +333,68 @@ class TemplateReviewDialog(QDialog):
         # Вставляем мягкие переносы после разделителей, чтобы узкое окно не разъезжалось
         highlighted_old = self._add_soft_wraps(highlighted_old)
         highlighted_new = self._add_soft_wraps(highlighted_new)
-        
+
         # Создаем блоки
         layout.addSpacing(4)
-        self._create_template_block(layout, 'Исходный вызов', highlighted_old, '#f6f8fa', '#e1e4e8', 'old')
+        self._create_template_block(
+            layout, 'Исходный вызов', highlighted_old, '#f6f8fa', '#e1e4e8', 'old')
         layout.addSpacing(4)
-        self._create_template_block(layout, 'Предлагаемая замена', highlighted_new, '#ecfdf5', '#d1fae5', 'new')
-    
+        self._create_template_block(
+            layout, 'Предлагаемая замена', highlighted_new, '#ecfdf5', '#d1fae5', 'new')
+
     def prepare_highlighted_templates(self):
         """Подготовка highlighted версий шаблонов с подсветкой изменений"""
         esc_tmpl = html.escape(self.template_str)
-        
+
         if self.mode in ('direct', 'locative'):
             # Прямые совпадения
             old_direct = self.old_direct
             new_direct = self.new_direct
-            
+
             esc_old_direct = html.escape(old_direct)
             esc_new_direct = html.escape(new_direct)
-            
+
             # Подсветка изменений: зеленый цвет для новых значений
             highlighted_old = esc_tmpl.replace(
-                esc_old_direct, 
+                esc_old_direct,
                 f"<span style='color:#8b0000;font-weight:bold'>{esc_old_direct}</span>"
             )
-            
+
             proposed_raw = self.template_str.replace(old_direct, new_direct, 1)
             highlighted_new = html.escape(proposed_raw).replace(
-                esc_new_direct, 
+                esc_new_direct,
                 f"<span style='color:#0b6623;font-weight:bold'>{esc_new_direct}</span>"
             )
         else:
             # Частичные замены
             old_sub = self.old_sub
             new_sub = self.new_sub
-            
+
             esc_old_sub = html.escape(old_sub)
             esc_new_sub = html.escape(new_sub)
-            
+
             highlighted_old = esc_tmpl
             if esc_old_sub:
                 highlighted_old = highlighted_old.replace(
-                    esc_old_sub, 
+                    esc_old_sub,
                     f"<span style='color:#8b0000;font-weight:bold'>{esc_old_sub}</span>"
                 )
-            
+
             proposed_template = self.proposed_template or (
-                self.template_str.replace(old_sub, new_sub, 1) if old_sub and new_sub else self.template_str
+                self.template_str.replace(
+                    old_sub, new_sub, 1) if old_sub and new_sub else self.template_str
             )
             esc_prop = html.escape(proposed_template)
             highlighted_new = esc_prop
-            
+
             if esc_new_sub:
                 highlighted_new = highlighted_new.replace(
-                    esc_new_sub, 
+                    esc_new_sub,
                     f"<span style='color:#0b6623;font-weight:bold'>{esc_new_sub}</span>"
                 )
-        
+
         return highlighted_old, highlighted_new
-    
+
     def _add_soft_wraps(self, text: str) -> str:
         """Добавляет мягкие переносы после разделителей для корректного отображения в узких окнах"""
         try:
@@ -386,7 +402,7 @@ class TemplateReviewDialog(QDialog):
             return text.replace('|', '|' + zwsp)
         except Exception:
             return text
-    
+
     def _create_template_block(self, layout, title: str, content: str, bg_color: str, border_color: str, block_type: str):
         """Создает блок с шаблоном и кнопкой сворачивания"""
         html_content = (
@@ -394,7 +410,7 @@ class TemplateReviewDialog(QDialog):
             f"border:1px solid {border_color};border-radius:6px;padding:2px 8px 2px 8px;margin:2px 0 0 0'>"
             f"{content}</div>"
         )
-        
+
         lbl = QLabel(html_content)
         lbl.setTextFormat(Qt.RichText)
         lbl.setWordWrap(True)
@@ -410,34 +426,34 @@ class TemplateReviewDialog(QDialog):
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
-        
+
         # Заголовок с кнопкой сворачивания
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.addWidget(QLabel(f'<b>{title}:</b>'))
-        
+
         btn = QPushButton('−')
         btn.setFixedSize(20, 20)
         btn.setToolTip('Свернуть/развернуть блок')
         btn.clicked.connect(lambda: self._toggle_block(lbl, btn))
         header_layout.addWidget(btn)
         header_layout.addStretch()
-        
+
         # Сохраняем ссылку на кнопку для доступа извне
         setattr(self, f'btn_collapse_{block_type}', btn)
-        
+
         container_layout.addLayout(header_layout)
         container_layout.addWidget(lbl)
         container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout.addWidget(container)
-    
+
     def _build_page_urls(self, host: str, page_title: str) -> tuple[str, str]:
         """Строит URL для страницы и её истории"""
         encoded_title = urllib.parse.quote(page_title.replace(' ', '_'))
         page_url = f"https://{host}/wiki/{encoded_title}"
         history_url = f"https://{host}/w/index.php?title={encoded_title}&action=history"
         return page_url, history_url
-    
+
     def _create_link_label(self, text: str, page_url: str, history_url: str) -> QLabel:
         """Создает QLabel со ссылками на страницу и историю"""
         label_text = f"{text} (<a href='{page_url}'>открыть</a> · <a href='{history_url}'>история</a>)"
@@ -447,7 +463,7 @@ class TemplateReviewDialog(QDialog):
         label.setTextInteractionFlags(Qt.TextBrowserInteraction)
         label.setOpenExternalLinks(True)
         return label
-    
+
     def _toggle_block(self, widget, button):
         """Переключает видимость блока и меняет символ кнопки"""
         try:
@@ -459,7 +475,7 @@ class TemplateReviewDialog(QDialog):
                 self._animate_expand(widget, button)
         except Exception:
             pass
-    
+
     def _auto_resize_if_needed(self):
         """Автоматически увеличивает размер окна, если содержимое не помещается"""
         try:
@@ -467,22 +483,22 @@ class TemplateReviewDialog(QDialog):
             self.adjustSize()
             current_size = self.size()
             minimum_size = self.minimumSizeHint()
-            
+
             # Если текущий размер меньше необходимого, увеличиваем окно
             new_width = max(current_size.width(), minimum_size.width())
             new_height = max(current_size.height(), minimum_size.height())
-            
+
             if new_width > current_size.width() or new_height > current_size.height():
                 self.resize(new_width, new_height)
         except Exception:
             pass
-    
+
     def _animate_height(self, widget, button, collapse=True):
         """Универсальный метод для анимации высоты блока"""
         try:
             # Останавливаем существующие анимации для этого виджета
             self._stop_animations_for_widget(widget)
-            
+
             if collapse:
                 # Сворачивание
                 start_height = widget.height()
@@ -500,46 +516,50 @@ class TemplateReviewDialog(QDialog):
                 widget.setMaximumHeight(0)
                 button.setText('−')
                 button.setToolTip('Свернуть блок')
-            
+
             # Создаем анимацию
             animation = QPropertyAnimation(widget, b"maximumHeight")
             animation.setDuration(ANIM_DURATION_MS)
             animation.setEasingCurve(QEasingCurve.InOutCubic)
             animation.setStartValue(start_height)
             animation.setEndValue(end_height)
-            
+
             # Обновление геометрии на каждом кадре
             def update_height(value):
                 widget.setMaximumHeight(value)
                 widget.updateGeometry()
-            
+
             animation.valueChanged.connect(update_height)
-            
+
             # Завершение анимации
             def on_finished():
                 if collapse:
                     # При сворачивании сначала скрываем, потом восстанавливаем высоту
                     widget.hide()
-                    widget.setMaximumHeight(MAX_WIDGET_HEIGHT)  # Восстанавливаем максимальную высоту
+                    # Восстанавливаем максимальную высоту
+                    widget.setMaximumHeight(MAX_WIDGET_HEIGHT)
                     button.setText(final_button_text)
                     button.setToolTip(final_tooltip)
-                    QTimer.singleShot(RESIZE_DELAY_MS, self._auto_shrink_if_needed)
+                    QTimer.singleShot(
+                        RESIZE_DELAY_MS, self._auto_shrink_if_needed)
                 else:
                     # При разворачивании восстанавливаем высоту, потом обновляем
-                    widget.setMaximumHeight(MAX_WIDGET_HEIGHT)  # Восстанавливаем максимальную высоту
+                    # Восстанавливаем максимальную высоту
+                    widget.setMaximumHeight(MAX_WIDGET_HEIGHT)
                     button.setText(final_button_text)
                     button.setToolTip(final_tooltip)
                     widget.updateGeometry()
-                    QTimer.singleShot(RESIZE_DELAY_MS, self._auto_resize_if_needed)
-                
+                    QTimer.singleShot(
+                        RESIZE_DELAY_MS, self._auto_resize_if_needed)
+
                 # Удаляем анимацию из списка
                 if animation in self.animations:
                     self.animations.remove(animation)
-            
+
             animation.finished.connect(on_finished)
             self.animations.append(animation)
             animation.start()
-            
+
         except Exception:
             # Fallback к мгновенному изменению
             if collapse:
@@ -553,15 +573,15 @@ class TemplateReviewDialog(QDialog):
                 button.setText('−')
                 button.setToolTip('Свернуть блок')
                 self._auto_resize_if_needed()
-    
+
     def _animate_collapse(self, widget, button):
         """Анимированное сворачивание блока"""
         self._animate_height(widget, button, collapse=True)
-    
+
     def _animate_expand(self, widget, button):
         """Анимированное разворачивание блока"""
         self._animate_height(widget, button, collapse=False)
-    
+
     def _stop_animations_for_widget(self, widget):
         """Останавливает все анимации для указанного виджета"""
         try:
@@ -570,20 +590,21 @@ class TemplateReviewDialog(QDialog):
                 if animation.targetObject() == widget:
                     animation.stop()
                     animations_to_remove.append(animation)
-            
+
             for animation in animations_to_remove:
                 self.animations.remove(animation)
         except Exception:
             pass
-    
+
     def _auto_shrink_if_needed(self):
         """Автоматически уменьшает размер окна при сворачивании блоков"""
         try:
             # Небольшая задержка для корректного пересчета размеров после скрытия виджета
-            QTimer.singleShot(SHRINK_DELAY_MS, self._perform_shrink)  # Увеличили задержку для завершения анимации
+            # Увеличили задержку для завершения анимации
+            QTimer.singleShot(SHRINK_DELAY_MS, self._perform_shrink)
         except Exception:
             pass
-    
+
     def _perform_shrink(self):
         """Выполняет уменьшение размера окна"""
         try:
@@ -591,33 +612,33 @@ class TemplateReviewDialog(QDialog):
             self.adjustSize()
             optimal_size = self.sizeHint()
             current_size = self.size()
-            
+
             # Уменьшаем окно до оптимального размера, но не меньше минимального
             min_size = self.minimumSize()
             new_width = max(optimal_size.width(), min_size.width())
             new_height = max(optimal_size.height(), min_size.height())
-            
+
             # Уменьшаем только если новый размер меньше текущего
             if new_width < current_size.width() or new_height < current_size.height():
                 self.resize(new_width, new_height)
         except Exception:
             pass
-    
+
     def highlight_and_focus_replacement(self, search_text):
         """Перемещает курсор к месту замены и выделяет измененный текст"""
         try:
             from PySide6.QtGui import QTextCursor
-            
+
             # Проверяем, что виджет существует и видим
             if not self.edit_field or not self.edit_field.isVisible():
                 return
-            
+
             # Получаем текст из поля
             full_text = self.edit_field.toPlainText()
-            
+
             if not search_text or not full_text:
                 return
-            
+
             # Ищем позицию измененного текста
             pos = full_text.find(search_text)
             if pos == -1:
@@ -625,129 +646,135 @@ class TemplateReviewDialog(QDialog):
                 search_lower = search_text.lower()
                 full_lower = full_text.lower()
                 pos = full_lower.find(search_lower)
-            
+
             if pos != -1:
                 # Создаем новый курсор
                 cursor = QTextCursor(self.edit_field.document())
-                
+
                 # Перемещаем курсор к началу найденного текста
                 cursor.setPosition(pos)
-                
+
                 # Выделяем текст (перемещаем конец выделения)
-                cursor.setPosition(pos + len(search_text), QTextCursor.KeepAnchor)
-                
+                cursor.setPosition(pos + len(search_text),
+                                   QTextCursor.KeepAnchor)
+
                 # Устанавливаем курсор в поле
                 self.edit_field.setTextCursor(cursor)
-                
+
                 # Прокручиваем поле, чтобы курсор был видим
                 self.edit_field.ensureCursorVisible()
-                
+
                 # Устанавливаем фокус на поле редактирования
                 QTimer.singleShot(10, self.edit_field.setFocus)
         except Exception:
             # Если что-то пошло не так, просто пропускаем
             pass
-    
+
     def setup_edit_field(self):
         """Настройка поля для ручного редактирования"""
         # Устанавливаем начальный текст
         if self.mode in ('direct', 'locative'):
             initial_text = self.template_str.replace(
-                self.old_direct or self.old_full, 
+                self.old_direct or self.old_full,
                 self.new_direct or self.new_full, 1
             )
             # Для режима локативов запоминаем, что искать
             search_text = self.new_direct or self.new_full
         else:
             initial_text = self.proposed_template or (
-                self.template_str.replace(self.old_sub, self.new_sub, 1) 
+                self.template_str.replace(self.old_sub, self.new_sub, 1)
                 if self.old_sub and self.new_sub else self.template_str
             )
             # Для частичной замены ищем новую подстроку
             search_text = self.new_sub
-        
+
         self.edit_field.setPlainText(initial_text)
-        
+
         # Сохраняем search_text для отложенного вызова
         self._search_text_to_highlight = search_text
-        
+
         # Перемещаем курсор к месту замены и выделяем измененный фрагмент
         # Используем QTimer для отложенного вызова, чтобы виджет успел отрисоваться
         if search_text:
-            QTimer.singleShot(100, lambda: self.highlight_and_focus_replacement(search_text))
+            QTimer.singleShot(
+                100, lambda: self.highlight_and_focus_replacement(search_text))
         # Поле редактирования — сжимается последним, поэтому оставим минимум больше, чем у превью
         self.edit_field.setMinimumHeight(110)
         try:
             self.edit_field.setMaximumHeight(260)
         except Exception:
             pass
-        
+
         # Моноширинный шрифт
-        mono = QFont('Consolas')
+        mono = QFont('Consolas', 9)
+        if not mono.exactMatch():
+            mono = QFont('Courier New', 9)
         mono.setStyleHint(QFont.Monospace)
         mono.setFixedPitch(True)
         self.edit_field.setFont(mono)
         # Перенос строк внутри редактора
         try:
             self.edit_field.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-            self.edit_field.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+            self.edit_field.setWordWrapMode(
+                QTextOption.WrapAtWordBoundaryOrAnywhere)
             self.edit_field.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             # Последний приоритет сжатия - сжимается только когда блоки превью уже сжались
-            self.edit_field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            self.edit_field.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Preferred)
         except Exception:
             pass
-    
+
     def create_control_panel(self, layout):
         """Создание панели управления с кнопками"""
         # Нижняя панель управления: слева — массовые действия, справа — стандартные кнопки
         controls = QHBoxLayout()
-        
+
         # Группа массовых действий
         mass_group = QGroupBox("Массовые действия")
         mass_group.setStyleSheet(
             "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } "
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
         )
-        
+
         mass_layout = QHBoxLayout(mass_group)
         mass_layout.setContentsMargins(8, 8, 8, 8)
         mass_layout.setSpacing(6)
-        
+
         # Чекбоксы: "Автоподтверждать прямые совпадения", "Автопропускать все"
         self.btn_confirm_all = QPushButton('Подтверждать все аналогичные')
         self.btn_skip_all = QPushButton('Пропускать все аналогичные')
-        
+
         mass_layout.addWidget(self.btn_confirm_all)
         mass_layout.addWidget(self.btn_skip_all)
-        
+
         controls.addWidget(mass_group)
         controls.addStretch()
-        
+
         # Кнопки: "Подтвердить и сохранить", "Пропустить", "Отмена"
         # QDialogButtonBox с правильными ролями кнопок
         button_box = QDialogButtonBox()
-        
+
         self.btn_confirm = QPushButton('Подтвердить и сохранить')
         self.btn_skip = QPushButton('Пропустить')
         self.btn_cancel = QPushButton('Отмена')
-        
+
         button_box.addButton(self.btn_confirm, QDialogButtonBox.AcceptRole)
         button_box.addButton(self.btn_skip, QDialogButtonBox.ActionRole)
         button_box.addButton(self.btn_cancel, QDialogButtonBox.RejectRole)
-        
+
         controls.addWidget(button_box)
         layout.addLayout(controls)
-        
+
         # Горячие клавиши: Enter = подтвердить, Esc = отмена
         QShortcut(QKeySequence(Qt.Key_Return), self, activated=self.on_confirm)
         QShortcut(QKeySequence(Qt.Key_Enter), self, activated=self.on_confirm)
         QShortcut(QKeySequence(Qt.Key_Escape), self, activated=self.on_cancel)
-        
+
         # Устанавливаем кнопку по умолчанию
         self.btn_confirm.setAutoDefault(True)
         self.btn_confirm.setDefault(True)
         self.btn_confirm.setFocus()
-    
+
     def setup_connections(self):
         """Настройка соединений сигналов и слотов"""
         self.btn_confirm.clicked.connect(self.on_confirm)
@@ -755,19 +782,20 @@ class TemplateReviewDialog(QDialog):
         self.btn_cancel.clicked.connect(self.on_cancel)
         self.btn_confirm_all.clicked.connect(self.on_confirm_all)
         self.btn_skip_all.clicked.connect(self.on_skip_all)
-        
+
         # При запуске диалога можем отключить массовые действия через request_data
         try:
             if bool(self.request_data.get('disable_mass_actions', False)):
                 self.btn_confirm_all.setEnabled(False)
                 self.btn_skip_all.setEnabled(False)
-                self.btn_confirm_all.setToolTip('Недоступно для данного случая')
+                self.btn_confirm_all.setToolTip(
+                    'Недоступно для данного случая')
                 self.btn_skip_all.setToolTip('Недоступно для данного случая')
         except Exception:
             pass
-        
+
         # Обработка закрытия диалога выполняется через переопределённый reject()
-    
+
     def on_confirm(self):
         """Подтвердить и сохранить"""
         self.result_action = 'confirm'
@@ -784,24 +812,24 @@ class TemplateReviewDialog(QDialog):
                     self.selected_dedupe_mode = 'keep_both'
         except Exception:
             self.selected_dedupe_mode = 'keep_both'
-        
+
         # Проверяем, было ли отредактировано содержимое
         current_text = self.edit_field.toPlainText().strip()
         if current_text != self.template_str:
             self.edited_template = current_text
-        
+
         self.accept()
-    
+
     def on_skip(self):
         """Пропустить"""
         self.result_action = 'skip'
         self.accept()
-    
+
     def on_cancel(self):
         """Отмена"""
         self.result_action = 'cancel'
         self.reject()
-    
+
     def reject(self):
         """Безопасное закрытие диалога как отмены без рекурсии."""
         # Закрытие окна (крестик) трактуем как явную отмену процесса
@@ -811,17 +839,17 @@ class TemplateReviewDialog(QDialog):
         except Exception:
             from PySide6.QtWidgets import QDialog as _QDialog
             return _QDialog.reject(self)
-    
+
     def on_confirm_all(self):
         """Автоподтверждение работает для прямых совпадений"""
         self.auto_confirm_all = True
         self.on_confirm()
-    
+
     def on_skip_all(self):
         """Автопропуск работает для всех последующих диалогов"""
         self.auto_skip_all = True
         self.on_skip()
-    
+
     def get_result(self):
         """
         Возврат правильного результата: 'confirm', 'skip', 'cancel'
@@ -831,20 +859,20 @@ class TemplateReviewDialog(QDialog):
             'request_id': self.request_id,
             'action': self.result_action
         }
-        
+
         if self.result_action == 'confirm' and self.edited_template is not None:
             payload['edited_template'] = self.edited_template
-        
+
         if self.auto_confirm_all:
             payload['auto_confirm_all'] = True
-        
+
         if self.auto_skip_all:
             payload['auto_skip_all'] = True
 
         # Возвращаем выбранную политику дедупликации (если блок отображался)
         if self.dup_warning and self.dup_idx1 and self.dup_idx2:
             payload['dedupe_mode'] = self.selected_dedupe_mode
-        
+
         return payload
 
     # Совместимость с вызывающим кодом (_on_review_request) — ожидаются эти геттеры
@@ -869,13 +897,13 @@ class TemplateReviewDialog(QDialog):
     def get_dedupe_mode(self) -> str:
         """Вернуть выбранный режим дедупликации."""
         return self.selected_dedupe_mode
-    
+
     @staticmethod
     def build_host(family: str, lang: str) -> str:
         """Построение хоста для проекта Wikimedia"""
         fam = (family or 'wikipedia').strip()
         lng = (lang or 'ru').strip()
-        
+
         if fam == 'commons':
             return 'commons.wikimedia.org'
         elif fam == 'wikidata':
@@ -889,11 +917,11 @@ class TemplateReviewDialog(QDialog):
 def show_template_review_dialog(parent=None, request_data=None):
     """
     Функция для показа диалога проверки шаблонов.
-    
+
     Args:
         parent: Родительский виджет
         request_data: Данные запроса с информацией о шаблоне
-    
+
     Returns:
         dict: Результат диалога с действием пользователя
     """
