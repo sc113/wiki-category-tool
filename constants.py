@@ -12,7 +12,7 @@
 """
 
 # ===== Версия приложения и URL-адреса =====
-APP_VERSION = "1.06"
+APP_VERSION = "1.07"
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'
 GITHUB_API_RELEASES = 'https://api.github.com/repos/sc113/wiki-category-tool/releases'
 
@@ -110,8 +110,8 @@ SAVE_RETRY_ATTEMPTS = 6
 # ===== Языковые настройки =====
 SUPPORTED_LANGUAGES = ['ru', 'uk', 'be', 'en', 'fr', 'es', 'de']
 SUPPORTED_FAMILIES = [
-    'wikipedia', 'commons', 'wikibooks', 'wikinews', 'wikiquote', 
-    'wikisource', 'wikiversity', 'wikivoyage', 'wiktionary', 
+    'wikipedia', 'commons', 'wikibooks', 'wikinews', 'wikiquote',
+    'wikisource', 'wikiversity', 'wikivoyage', 'wiktionary',
     'wikidata', 'meta', 'species', 'incubator', 'mediawiki', 'wikifunctions'
 ]
 
@@ -145,4 +145,3 @@ TEMPLATE_NEW_STYLE = (
 # ===== Цвета для подсветки =====
 HIGHLIGHT_OLD_COLOR = "#8b0000"
 HIGHLIGHT_NEW_COLOR = "#0b6623"
-
