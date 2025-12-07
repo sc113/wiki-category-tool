@@ -213,29 +213,29 @@ def build_ws_fuzzy_pattern(text: str) -> str:
 def default_summary(lang: str) -> str:
     """Возвращает стандартный комментарий для правок в зависимости от языка."""
     mapping = {
-        'ru': 'Замена содержимого страницы на единообразное наполнение: $1',
-        'uk': 'Заміна вмісту сторінки на одноманітне наповнення: $1',
-        'be': 'Замена зместу старонкі на адзіную структуру: $1',
-        'en': 'Replacement of the page content with uniform filling: $1',
-        'fr': 'Remplacement du contenu pour cohérence: $1',
-        'es': 'Sustitución del contenido para uniformidad: $1',
-        'de': 'Ersetzung des Seiteninhalts für Konsistenz: $1'
+        'ru': 'Замена содержимого страницы на единообразное наполнение: $1 $2 $3',
+        'uk': 'Заміна вмісту сторінки на одноманітне наповнення: $1 $2 $3',
+        'be': 'Замена зместу старонкі на адзіную структуру: $1 $2 $3',
+        'en': 'Replacement of the page content with uniform filling: $1 $2 $3',
+        'fr': 'Remplacement du contenu pour cohérence: $1 $2 $3',
+        'es': 'Sustitución del contenido para uniformidad: $1 $2 $3',
+        'de': 'Ersetzung des Seiteninhalts für Konsistenz: $1 $2 $3'
     }
-    return mapping.get(lang, 'Consistency content replacement: $1')
+    return mapping.get(lang, 'Consistency content replacement: $1 $2 $3')
 
 
 def default_create_summary(lang: str) -> str:
     """Возвращает стандартный комментарий для создания страниц в зависимости от языка."""
     mapping = {
-        'ru': 'Создание новой категории с заготовленным содержимым: $1',
-        'uk': 'Створення нової категорії з уніфікованим наповненням: $1',
-        'be': 'Стварэнне новай катэгорыі з адзінай структурай: $1',
-        'en': 'Creation of a new category with prepared content: $1',
-        'fr': 'Création d\'une nouvelle catégorie avec contenu préparé: $1',
-        'es': 'Creación de una nueva categoría con contenido preparado: $1',
-        'de': 'Erstellung einer neuen Kategorie mit vorbereitetem Inhalt: $1'
+        'ru': 'Создание новой категории с заготовленным содержимым: $1 $2 $3',
+        'uk': 'Створення нової категорії з уніфікованим наповненням: $1 $2 $3',
+        'be': 'Стварэнне новай катэгорыі з адзінай структурай: $1 $2 $3',
+        'en': 'Creation of a new category with prepared content: $1 $2 $3',
+        'fr': 'Création d\'une nouvelle catégorie avec contenu préparé: $1 $2 $3',
+        'es': 'Creación de una nueva categoría con contenido preparado: $1 $2 $3',
+        'de': 'Erstellung einer neuen Kategorie mit vorbereitetem Inhalt: $1 $2 $3'
     }
-    return mapping.get(lang, 'Category creation with prepared content: $1')
+    return mapping.get(lang, 'Category creation with prepared content: $1 $2 $3')
 
 
 def adjust_combo_popup_width(combo) -> None:
