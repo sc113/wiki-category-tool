@@ -35,11 +35,13 @@ from ...core.pywikibot_config import (
 from ...utils import debug, default_summary, default_create_summary
 from ...workers.login_worker import LoginWorker
 
+
 class AuthTab(QWidget):
     """Вкладка авторизации"""
 
     # Сигналы для связи с главным окном
-    login_success = Signal(str, str, str, str)  # username, password, lang, family
+    # username, password, lang, family
+    login_success = Signal(str, str, str, str)
     logout_success = Signal()
     lang_changed = Signal(str)  # new_lang
 
@@ -54,8 +56,7 @@ class AuthTab(QWidget):
         self._stay_on_top_active = False
         self._login_worker = None
         self._last_loaded_lang = None  # Для отслеживания последнего загруженного языка
-        
-        
+
         self._pending_lang = None
 
         # UI элементы
@@ -78,7 +79,7 @@ class AuthTab(QWidget):
         # Применить стили
         try:
             self.setStyleSheet(
-                "QWidget { font-size: 13px; } QLineEdit, QComboBox, QPushButton { min-height: 30px; }")
+                "QWidget { font-size: 10pt; } QLineEdit, QComboBox, QPushButton { min-height: 30px; }")
         except Exception:
             pass
 
@@ -89,8 +90,9 @@ class AuthTab(QWidget):
             top_row.setSpacing(0)
             top_row.addStretch()
             self.version_label = QLabel(f"v{APP_VERSION}")
-            self.version_label.setStyleSheet('color: gray; font-size: 11px;')
-            top_row.addWidget(self.version_label, alignment=Qt.AlignRight | Qt.AlignTop)
+            self.version_label.setStyleSheet('color: gray; font-size: 8pt;')
+            top_row.addWidget(self.version_label,
+                              alignment=Qt.AlignRight | Qt.AlignTop)
             layout.addLayout(top_row)
         except Exception:
             pass
@@ -139,7 +141,6 @@ class AuthTab(QWidget):
 
         # Подключить сигналы
         self._connect_signals()
-        
 
     def _create_language_selector(self, layout_form):
         """Создать селектор языка"""
@@ -309,7 +310,8 @@ class AuthTab(QWidget):
 
         # Кнопка принудительного обновления префиксов пространств имён (force)
         self.refresh_ns_btn = QPushButton('Обновить префиксы')
-        self.refresh_ns_btn.setToolTip('Принудительно обновить префиксы пространств имён для текущего языка и проекта')
+        self.refresh_ns_btn.setToolTip(
+            'Принудительно обновить префиксы пространств имён для текущего языка и проекта')
         self.refresh_ns_btn.clicked.connect(self.force_namespace_update)
         row_debug.addWidget(self.refresh_ns_btn)
 
@@ -332,17 +334,18 @@ class AuthTab(QWidget):
         except Exception:
             pass
 
-        
-        
         # Обновление только при потере фокуса или нажатии Enter
         self.lang_combo.lineEdit().editingFinished.connect(self._on_lang_editing_finished)
         self.lang_combo.lineEdit().returnPressed.connect(self._on_lang_editing_finished)
 
         # Синхронизация commons при изменении проекта
         try:
-            self.family_combo.currentTextChanged.connect(self._on_family_combo_changed)
-            self.family_combo.currentIndexChanged.connect(self._on_family_combo_index_changed)
-            self.family_combo.activated.connect(self._on_family_combo_index_changed)
+            self.family_combo.currentTextChanged.connect(
+                self._on_family_combo_changed)
+            self.family_combo.currentIndexChanged.connect(
+                self._on_family_combo_index_changed)
+            self.family_combo.activated.connect(
+                self._on_family_combo_index_changed)
         except Exception:
             pass
 
@@ -356,7 +359,8 @@ class AuthTab(QWidget):
         """Если выбран язык commons — автоматически установить проект commons."""
         try:
             if (new_lang or '').strip().lower() == 'commons':
-                cur_fam = (self.family_combo.currentText() or '').strip().lower()
+                cur_fam = (self.family_combo.currentText()
+                           or '').strip().lower()
                 if cur_fam != 'commons':
                     blocker = None
                     try:
@@ -373,7 +377,8 @@ class AuthTab(QWidget):
         try:
             fam = (fam_text or '').strip().lower()
             if fam == 'commons':
-                cur_lang = (self.lang_combo.currentText() or '').strip().lower()
+                cur_lang = (self.lang_combo.currentText()
+                            or '').strip().lower()
                 if cur_lang != 'commons':
                     blocker = None
                     try:
@@ -409,16 +414,16 @@ class AuthTab(QWidget):
             debug('Проверка обновлений...')
             debug(f'Запрос к: {GITHUB_API_RELEASES}')
             debug(f'Заголовки: {REQUEST_HEADERS}')
-            
+
             _rate_wait()
             debug('Отправляем HTTP запрос...')
-            
+
             r = REQUEST_SESSION.get(
                 GITHUB_API_RELEASES, headers=REQUEST_HEADERS, timeout=10)
-            
+
             debug(f'Получен ответ: статус {r.status_code}')
             debug(f'Заголовки ответа: {dict(r.headers)}')
-            
+
             if r.status_code != 200:
                 debug(f'GitHub API status {r.status_code}')
                 debug(f'Текст ответа: {r.text[:500]}...')
@@ -426,10 +431,11 @@ class AuthTab(QWidget):
                     self, 'Проверка обновлений', f'Не удалось проверить обновления. Текущая версия: {APP_VERSION}. Откроем страницу релизов.')
                 QDesktopServices.openUrl(QUrl(RELEASES_URL))
                 return
-                
+
             debug('Парсим JSON ответ...')
             data = r.json() or []
-            debug(f'Получено релизов: {len(data) if isinstance(data, list) else "не список"}')
+            debug(
+                f'Получено релизов: {len(data) if isinstance(data, list) else "не список"}')
             if not isinstance(data, list) or not data:
                 QMessageBox.information(
                     self, 'Проверка обновлений', f'Пока нет опубликованных релизов. Текущая версия: {APP_VERSION}. Откроем страницу.')
@@ -594,7 +600,8 @@ class AuthTab(QWidget):
 
         # Перед первой авторизацией — запросить подтверждение условий
         try:
-            consent_path = os.path.join(_dist_configs_dir(), 'consent.accepted')
+            consent_path = os.path.join(
+                _dist_configs_dir(), 'consent.accepted')
             consent_ok = os.path.isfile(consent_path)
         except Exception:
             consent_ok = False
@@ -608,10 +615,13 @@ class AuthTab(QWidget):
                 msg_box.setIcon(QMessageBox.Warning)
                 msg_box.setWindowTitle('Подтверждение условий')
                 msg_box.setText(consent_text)
-                btn_accept = msg_box.addButton('Подтвердить', QMessageBox.YesRole)
-                btn_decline = msg_box.addButton('Отказаться', QMessageBox.RejectRole)
+                btn_accept = msg_box.addButton(
+                    'Подтвердить', QMessageBox.YesRole)
+                btn_decline = msg_box.addButton(
+                    'Отказаться', QMessageBox.RejectRole)
                 try:
-                    msg_box.setDefaultButton(btn_accept)  # type: ignore[arg-type]
+                    # type: ignore[arg-type]
+                    msg_box.setDefaultButton(btn_accept)
                 except Exception:
                     pass
                 msg_box.exec()
@@ -814,7 +824,7 @@ class AuthTab(QWidget):
         """Немедленная обработка изменения языка (только для UI)"""
         try:
             debug(f'_on_lang_change_immediate: {self.prev_lang} -> {new_lang}')
-            
+
             # Обновляем только summary, без загрузки namespace'ов
             if hasattr(self.parent_window, 'summary_edit'):
                 edits = [
@@ -830,13 +840,14 @@ class AuthTab(QWidget):
                         widget.setText(func(new_lang))
 
             self.prev_lang = new_lang
-            
-            debug(f'Язык изменен на {new_lang}, но автоматическое обновление namespace отключено')
-            
+
+            debug(
+                f'Язык изменен на {new_lang}, но автоматическое обновление namespace отключено')
+
             # Сразу уведомляем об изменении языка без задержки
             debug(f'Отправляем сигнал lang_changed: {new_lang}')
             self.lang_changed.emit(new_lang)
-            
+
         except Exception as e:
             debug(f'Ошибка в _on_lang_change_immediate: {e}')
 
@@ -862,21 +873,21 @@ class AuthTab(QWidget):
             # Уведомить главное окно об изменении языка
             debug(f'Отправляем сигнал lang_changed: {new_lang}')
             self.lang_changed.emit(new_lang)
-            
+
         except Exception as e:
             debug(f'Критическая ошибка в _on_lang_editing_finished: {e}')
             import traceback
             debug(f'Traceback: {traceback.format_exc()}')
-    
+
     def _delayed_namespace_update(self):
         """Отложенное обновление namespace'ов (вызывается через таймер)"""
         try:
             if not self._pending_lang:
                 return
-                
+
             new_lang = self._pending_lang
             debug(f'_delayed_namespace_update: язык изменен на {new_lang}')
-            
+
             # Проверяем, изменился ли язык
             if new_lang == getattr(self, '_last_loaded_lang', None):
                 debug(f'Язык не изменился ({new_lang}), пропускаем обновление')
@@ -884,12 +895,13 @@ class AuthTab(QWidget):
 
             self._last_loaded_lang = new_lang
 
-            debug(f'Пропускаем автоматическое обновление namespace для {new_lang} (отключено для предотвращения зависания)')
-            
+            debug(
+                f'Пропускаем автоматическое обновление namespace для {new_lang} (отключено для предотвращения зависания)')
+
             # Только уведомляем об изменении языка без обновления комбобоксов
             debug(f'Отправляем сигнал lang_changed: {new_lang}')
             self.lang_changed.emit(new_lang)
-            
+
         except Exception as e:
             debug(f'Критическая ошибка в _delayed_namespace_update: {e}')
             import traceback
@@ -900,9 +912,10 @@ class AuthTab(QWidget):
         try:
             current_lang = (self.lang_combo.currentText() or 'ru').strip()
             current_family = (self.family_combo.currentText() or 'wikipedia')
-            
-            debug(f'Принудительное обновление namespace для {current_family}:{current_lang}')
-            
+
+            debug(
+                f'Принудительное обновление namespace для {current_family}:{current_lang}')
+
             # Обновляем namespace'ы через главное окно с принудительной загрузкой
             if hasattr(self.parent_window, 'force_update_namespace_combos'):
                 try:
@@ -914,7 +927,8 @@ class AuthTab(QWidget):
                         pass
 
                     # Асинхронная загрузка
-                    self.parent_window.force_update_namespace_combos(current_family, current_lang)
+                    self.parent_window.force_update_namespace_combos(
+                        current_family, current_lang)
 
                     # Подпишемся на результат единоразово
                     def _on_ns_done(fam, lng, ok):
@@ -936,12 +950,14 @@ class AuthTab(QWidget):
                             pass
                         finally:
                             try:
-                                self.parent_window.ns_update_finished.disconnect(_on_ns_done)
+                                self.parent_window.ns_update_finished.disconnect(
+                                    _on_ns_done)
                             except Exception:
                                 pass
 
                     try:
-                        self.parent_window.ns_update_finished.connect(_on_ns_done)
+                        self.parent_window.ns_update_finished.connect(
+                            _on_ns_done)
                     except Exception:
                         pass
                     finally:
@@ -951,7 +967,8 @@ class AuthTab(QWidget):
                         except Exception:
                             pass
                 except Exception as e:
-                    debug(f'Ошибка при принудительном обновлении namespace: {e}')
+                    debug(
+                        f'Ошибка при принудительном обновлении namespace: {e}')
                     try:
                         QMessageBox.warning(
                             self,
@@ -962,9 +979,10 @@ class AuthTab(QWidget):
                         pass
             else:
                 debug('Метод force_update_namespace_combos не найден в parent_window')
-                
+
         except Exception as e:
-            debug(f'Критическая ошибка при принудительном обновлении namespace: {e}')
+            debug(
+                f'Критическая ошибка при принудительном обновлении namespace: {e}')
 
     def _on_lang_change(self, new_lang):
         """Обработчик изменения языка (для совместимости)"""

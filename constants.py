@@ -80,14 +80,14 @@ PREFIX_TOOLTIP = (
 )
 
 # ===== Стили CSS для UI =====
-TAB_STYLESHEET = "QWidget { font-size: 13px; } QLineEdit, QComboBox, QPushButton { min-height: 30px; }"
+TAB_STYLESHEET = "QWidget { font-size: 10pt; } QLineEdit, QComboBox, QPushButton { min-height: 30px; }"
 
 GROUP_BOX_STYLESHEET = (
     "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } "
     "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
 )
 
-CLEAR_BUTTON_STYLESHEET = 'font-size: 20px; padding: 0px;'
+CLEAR_BUTTON_STYLESHEET = 'font-size: 15pt; padding: 0px;'
 
 CRED_OK_STYLESHEET = 'background-color:#d4edda'
 CRED_DEFAULT_STYLESHEET = ''

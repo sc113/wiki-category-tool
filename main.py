@@ -18,6 +18,8 @@ from PySide6.QtGui import QIcon
 from PySide6.QtCore import QTimer, QThread, Signal
 
 # Настройка путей и окружения
+
+
 def setup_environment():
     """Настройка окружения для работы приложения (делегировано core.pywikibot_config)."""
     try:
@@ -30,6 +32,7 @@ def setup_environment():
         if getattr(sys, 'frozen', False):
             return os.path.dirname(sys.executable)
         return os.path.dirname(os.path.dirname(__file__))
+
 
 def setup_stdout_redirect():
     """Настройка перенаправления stdout/stderr для GUI приложения"""
@@ -44,32 +47,34 @@ def setup_stdout_redirect():
         if getattr(sys, 'stderr', None) is None:
             sys.stderr = GuiStdWriter()
 
+
 def setup_pywikibot():
     """Инициализация pywikibot с перехватом вывода"""
     import pywikibot
     from .utils import debug
-    
+
     # Перехват вывода pywikibot
     def _pywb_log(msg, *_args, **_kwargs):
         debug('PYWIKIBOT: ' + str(msg))
-    
+
     pywikibot.output = _pywb_log
     pywikibot.warning = _pywb_log
     pywikibot.error = _pywb_log
-
 
 
 def setup_windows_taskbar():
     """Настройка иконки в панели задач Windows"""
     try:
         if sys.platform.startswith('win'):
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('sc113.WikiCatTool')
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                'sc113.WikiCatTool')
     except Exception as e:
         try:
             from .utils import debug
             debug(f"Taskbar ID setup failed: {e}")
         except Exception:
             pass
+
 
 def setup_application_icon(app: QApplication):
     """Настройка иконки приложения"""
@@ -88,10 +93,11 @@ def setup_application_icon(app: QApplication):
         except Exception:
             pass
 
+
 class UpdateCheckerThread(QThread):
     """Поток для проверки обновлений в фоновом режиме"""
     update_found = Signal(str, str)  # new_version, download_url
-    
+
     def run(self):
         """Выполняется в фоновом потоке"""
         try:
@@ -99,32 +105,34 @@ class UpdateCheckerThread(QThread):
             from .core.update_settings import UpdateSettings
             from .utils import resource_path, debug
             from .constants import APP_VERSION
-            
+
             debug(f"Проверка обновлений... (текущая версия: {APP_VERSION})")
-            
+
             # Получаем путь к директории настроек
             settings_dir = resource_path('configs')
             update_settings = UpdateSettings(settings_dir)
-            
+
             # Проверяем наличие обновлений
             update_info = check_for_updates()
-            
+
             if update_info:
                 new_version, download_url = update_info
-                
+
                 # Проверяем, не пропущена ли эта версия
                 if not update_settings.is_version_skipped(new_version):
                     debug(f"Найдена новая версия: {new_version}")
                     # Отправляем сигнал в главный поток
                     self.update_found.emit(new_version, download_url)
                 else:
-                    debug(f"Новая версия {new_version} найдена, но пропущена пользователем")
+                    debug(
+                        f"Новая версия {new_version} найдена, но пропущена пользователем")
             else:
                 debug("Обновлений не найдено")
         except Exception as e:
             # Если проверка не удалась, просто игнорируем
             debug(f"Ошибка при проверке обновлений: {e}")
             pass
+
 
 def show_update_dialog(window, new_version, download_url):
     """Показывает диалог обновления (вызывается в главном потоке)"""
@@ -133,14 +141,14 @@ def show_update_dialog(window, new_version, download_url):
         from .core.update_settings import UpdateSettings
         from .constants import APP_VERSION
         from .utils import resource_path, debug
-        
+
         settings_dir = resource_path('configs')
         update_settings = UpdateSettings(settings_dir)
-        
+
         # Показываем диалог
         dialog = UpdateDialog(APP_VERSION, new_version, download_url, window)
         result = dialog.exec()
-        
+
         # Если пользователь выбрал пропустить версию
         if dialog.skip_version:
             update_settings.skip_version(new_version)
@@ -148,42 +156,45 @@ def show_update_dialog(window, new_version, download_url):
     except Exception as e:
         debug(f"Ошибка при показе диалога обновления: {e}")
 
+
 def main():
     """Главная функция приложения"""
     # Настройка окружения
     setup_environment()
-    
+
     # Настройка перенаправления вывода
     setup_stdout_redirect()
-    
+
     # Инициализация pywikibot
     setup_pywikibot()
-    
+
     # Настройка Windows taskbar
     setup_windows_taskbar()
-    
+
     # Создание приложения Qt
     app = QApplication(sys.argv)
-    
+
     # Настройка иконки
     setup_application_icon(app)
-    
+
     # Создание и показ главного окна
     from .gui.main_window import MainWindow
-    
+
     window = MainWindow()
     window.show()
-    
+
     # Запуск проверки обновлений в фоновом потоке
     update_thread = UpdateCheckerThread()
-    update_thread.update_found.connect(lambda v, u: show_update_dialog(window, v, u))
+    update_thread.update_found.connect(
+        lambda v, u: show_update_dialog(window, v, u))
     update_thread.start()
-    
+
     # Сохраняем ссылку на поток, чтобы он не был удален сборщиком мусора
     window._update_thread = update_thread
-    
+
     # Запуск приложения
     sys.exit(app.exec())
+
 
 if __name__ == '__main__':
     main()

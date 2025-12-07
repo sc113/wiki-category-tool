@@ -38,9 +38,11 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
         if et == 'category_move_start':
             old_cat = (event.get('old_category') or '').strip()
             new_cat = (event.get('new_category') or '').strip()
-            cnt_str = (event.get('count_str') or str(event.get('count') or '')).strip()
+            cnt_str = (event.get('count_str') or str(
+                event.get('count') or '')).strip()
             title_txt = f"ℹ️ Перенос содержимого категории {old_cat} → {new_cat}"
-            log_tree_add(tree, ts, old_cat, title_txt, 'manual', status or 'info', cnt_str or None, 'category', True)
+            log_tree_add(tree, ts, old_cat, title_txt, 'manual',
+                         status or 'info', cnt_str or None, 'category', True)
             return
         if et == 'destination_exists':
             dst = (event.get('title') or '').strip()
@@ -48,14 +50,17 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
             obj_type = _detect_object_type_by_ns(tree, dst)
             # В колонку «Страница» помещаем название (независимо от типа)
             title_txt = f"Страница назначения {dst} уже существует."
-            log_tree_add(tree, ts, dst, title_txt, 'manual', status or 'info', None, obj_type, True)
+            log_tree_add(tree, ts, dst, title_txt, 'manual',
+                         status or 'info', None, obj_type, True)
             return
     except Exception:
         pass
 
+
 # Последняя пара переименования для системных сообщений (начало/успех)
 _LAST_RENAME_OLD: str | None = None
 _LAST_RENAME_NEW: str | None = None
+
 
 def add_info_button(parent_widget, host_layout, text: str, inline: bool = False):
     """Insert an ℹ button.
@@ -65,13 +70,13 @@ def add_info_button(parent_widget, host_layout, text: str, inline: bool = False)
     right edge of the host layout.
 
     Clicking the button shows *text* inside a modal information dialog.
-    
+
     Args:
         parent_widget: Parent widget for the button (needed for message box)
         host_layout: Layout to add the button to
         text: Text to show in the information dialog
         inline: Whether to place button inline or at the right edge
-        
+
     Returns:
         QToolButton: The created info button
     """
@@ -79,6 +84,7 @@ def add_info_button(parent_widget, host_layout, text: str, inline: bool = False)
     btn.setText('❔')
     btn.setAutoRaise(True)
     btn.setToolTip(text)
+
     def _show_info_dialog(raw: str):
         try:
             dlg = QDialog(parent_widget)
@@ -147,7 +153,8 @@ def add_info_button(parent_widget, host_layout, text: str, inline: bool = False)
                 total_needed = margin_top + content_h + spacing + btn_h + margin_bottom
                 height = min(max(120, total_needed), int(avail_h * 0.9))
                 # если есть запас — показываем содержимое полностью; иначе подрезаем под доступную высоту
-                visible_view_h = height - (margin_top + spacing + btn_h + margin_bottom)
+                visible_view_h = height - \
+                    (margin_top + spacing + btn_h + margin_bottom)
                 view.setFixedHeight(max(60, visible_view_h))
                 dlg.resize(base_width, height)
             except Exception:
@@ -182,11 +189,11 @@ def add_info_button(parent_widget, host_layout, text: str, inline: bool = False)
 
 def embed_button_in_lineedit(edit: QLineEdit, on_click):
     """Добавляет кнопку '…' внутрь правой части QLineEdit.
-    
+
     Args:
         edit: QLineEdit widget to embed button into
         on_click: Callback function for button click
-        
+
     Returns:
         QToolButton or None: The embedded button or None if failed
     """
@@ -226,33 +233,35 @@ def embed_button_in_lineedit(edit: QLineEdit, on_click):
 
 def pick_file(parent_widget, edit: QLineEdit, pattern: str):
     """Open file dialog and set selected path to QLineEdit.
-    
+
     Args:
         parent_widget: Parent widget for the dialog
         edit: QLineEdit to set the selected path
         pattern: File pattern filter (e.g., '*.tsv')
     """
-    path, _ = QFileDialog.getOpenFileName(parent_widget, 'Выберите файл', filter=f'Files ({pattern})')
+    path, _ = QFileDialog.getOpenFileName(
+        parent_widget, 'Выберите файл', filter=f'Files ({pattern})')
     if path:
         edit.setText(path)
 
 
 def pick_save(parent_widget, edit: QLineEdit, default_ext: str):
     """Open save file dialog and set selected path to QLineEdit.
-    
+
     Args:
         parent_widget: Parent widget for the dialog
         edit: QLineEdit to set the selected path
         default_ext: Default file extension (e.g., 'tsv')
     """
-    path, _ = QFileDialog.getSaveFileName(parent_widget, 'Куда сохранить', filter=f'*.{default_ext.lstrip(".")}')
+    path, _ = QFileDialog.getSaveFileName(
+        parent_widget, 'Куда сохранить', filter=f'*.{default_ext.lstrip(".")}')
     if path:
         edit.setText(path)
 
 
 def open_from_edit(parent_widget, edit: QLineEdit):
     """Открыть файл из пути, указанного в QLineEdit. Для .tsv — создать пустой, если отсутствует.
-    
+
     Args:
         parent_widget: Parent widget for message boxes
         edit: QLineEdit containing the file path
@@ -260,7 +269,8 @@ def open_from_edit(parent_widget, edit: QLineEdit):
     try:
         path = (edit.text() or '').strip()
         if not path:
-            QMessageBox.warning(parent_widget, 'Ошибка', 'Сначала укажите путь к файлу.')
+            QMessageBox.warning(parent_widget, 'Ошибка',
+                                'Сначала укажите путь к файлу.')
             return
         # Если это TSV и файла нет — создаём пустой файл (как с правилами замен)
         try:
@@ -274,26 +284,29 @@ def open_from_edit(parent_widget, edit: QLineEdit):
         except Exception:
             pass
         if not os.path.exists(path):
-            QMessageBox.warning(parent_widget, 'Ошибка', 'Файл не найден: ' + path)
+            QMessageBox.warning(parent_widget, 'Ошибка',
+                                'Файл не найден: ' + path)
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
     except Exception as e:
-        QMessageBox.warning(parent_widget, 'Ошибка', f'Не удалось открыть файл: {e}')
+        QMessageBox.warning(parent_widget, 'Ошибка',
+                            f'Не удалось открыть файл: {e}')
 
 
 def pretty_format_msg(raw: str) -> tuple[str, bool]:
     """Преобразует типичные сообщения о переносе в формат с эмодзи и разделителями.
-    
+
     Args:
         raw: Raw message string
-        
+
     Returns:
         tuple[str, bool]: (formatted_string, is_html_escaped)
     """
     try:
         s = (raw or '').strip()
         # Шаблон: "→ Категория:Имя : "Статья" — тип/статус"
-        m = re.match(r'^(?:→|▪️)\s+(?P<cat>[^:]+:.+?)\s*:\s*"(?P<title>[^"]+)"\s*—\s*(?P<rest>.+)', s)
+        m = re.match(
+            r'^(?:→|▪️)\s+(?P<cat>[^:]+:.+?)\s*:\s*"(?P<title>[^"]+)"\s*—\s*(?P<rest>.+)', s)
         if m:
             cat = (m.group('cat') or '').strip()
             title = (m.group('title') or '').strip()
@@ -302,7 +315,8 @@ def pretty_format_msg(raw: str) -> tuple[str, bool]:
             # Извлечь тип сущности в начале сообщения, если есть
             typ = None
             tail = rest
-            m2 = re.match(r'^(?P<typ>статья|страница|шаблон|модуль|файл)\b\s*(?P<tail>.*)', rest, flags=re.I)
+            m2 = re.match(
+                r'^(?P<typ>статья|страница|шаблон|модуль|файл)\b\s*(?P<tail>.*)', rest, flags=re.I)
             if m2:
                 typ = (m2.group('typ') or '').lower()
                 tail = (m2.group('tail') or '').strip()
@@ -351,7 +365,7 @@ def pretty_format_msg(raw: str) -> tuple[str, bool]:
 
 def log_message(widget: QTextEdit, msg: str, debug_func=None):
     """Log a message to a QTextEdit widget with color formatting.
-    
+
     Args:
         widget: QTextEdit widget to log to
         msg: Message to log
@@ -376,34 +390,36 @@ def log_message(widget: QTextEdit, msg: str, debug_func=None):
     elif any(k in lower for k in ('записано', 'создано', 'переименована', 'готово')):
         # более тёмный зелёный для лучшей читаемости на светлой теме
         color = '#2e7d32'
-    
+
     # Преобразуем переводы строк в <br/>, чтобы многострочные сообщения корректно отображались в HTML
     def _html_lines(s: str) -> str:
         try:
             return s.replace('\n', '<br/>')
         except Exception:
             return s
-    
+
     # Префикс времени [HH:MM:SS] с разделителем
     try:
         ts = datetime.now().strftime('%H:%M:%S')
         prefix = f"[{ts}] "
     except Exception:
         prefix = ''
-    
+
     # Попробовать преобразовать в красивый формат
     formatted, escaped = pretty_format_msg(msg)
-    text_to_show = (html.escape(prefix) + formatted) if escaped else (prefix + formatted)
-    
+    text_to_show = (html.escape(prefix) +
+                    formatted) if escaped else (prefix + formatted)
+
     if color:
-        widget.append(f"<span style='color:{color}'>" + _html_lines(text_to_show) + "</span>")
+        widget.append(
+            f"<span style='color:{color}'>" + _html_lines(text_to_show) + "</span>")
     else:
         widget.append(_html_lines(text_to_show))
 
 
 def set_start_stop_ratio(start_btn: QPushButton, stop_btn: QPushButton, ratio: int = 3):
     """Set the width ratio between start and stop buttons.
-    
+
     Args:
         start_btn: Start button (will be wider)
         stop_btn: Stop button (will be narrower)
@@ -423,11 +439,11 @@ def set_start_stop_ratio(start_btn: QPushButton, stop_btn: QPushButton, ratio: i
         start_btn.setFixedWidth(300)
 
 
-def apply_cred_style(user_edit: QLineEdit, pass_edit: QLineEdit, lang_combo, 
-                    login_btn: QPushButton, switch_btn: QPushButton, 
-                    status_label, ok: bool) -> tuple[str | None, str | None]:
+def apply_cred_style(user_edit: QLineEdit, pass_edit: QLineEdit, lang_combo,
+                     login_btn: QPushButton, switch_btn: QPushButton,
+                     status_label, ok: bool) -> tuple[str | None, str | None]:
     """Apply credential styling to authentication UI elements.
-    
+
     Args:
         user_edit: Username QLineEdit
         pass_edit: Password QLineEdit
@@ -436,7 +452,7 @@ def apply_cred_style(user_edit: QLineEdit, pass_edit: QLineEdit, lang_combo,
         switch_btn: Switch account button
         status_label: Status label
         ok: Whether authentication is successful
-        
+
     Returns:
         tuple[str, str]: (current_user, current_lang)
     """
@@ -450,16 +466,16 @@ def apply_cred_style(user_edit: QLineEdit, pass_edit: QLineEdit, lang_combo,
     login_btn.setVisible(not ok)
     switch_btn.setVisible(ok)
     status_label.setText('Авторизовано' if ok else 'Авторизация (pywikibot)')
-    
+
     current_user = user_edit.text().strip() if ok else None
     current_lang = (lang_combo.currentText() or 'ru').strip() if ok else None
-    
+
     return current_user, current_lang
 
 
 def force_on_top(window, enable: bool, delay_ms: int = 0) -> None:
     """Force window to stay on top or remove the flag.
-    
+
     Args:
         window: Window widget to modify
         enable: Whether to enable stay-on-top
@@ -467,7 +483,8 @@ def force_on_top(window, enable: bool, delay_ms: int = 0) -> None:
     """
     if delay_ms and delay_ms > 0:
         try:
-            QTimer.singleShot(delay_ms, lambda: force_on_top(window, enable, 0))
+            QTimer.singleShot(
+                delay_ms, lambda: force_on_top(window, enable, 0))
             return
         except Exception:
             pass
@@ -482,9 +499,10 @@ def force_on_top(window, enable: bool, delay_ms: int = 0) -> None:
             window._stay_on_top_active = bool(enable)
         else:
             window._stay_on_top_active = bool(enable)
-            
+
         was_visible = window.isVisible()
-        window.setWindowFlag(Qt.WindowStaysOnTopHint, window._stay_on_top_active)
+        window.setWindowFlag(Qt.WindowStaysOnTopHint,
+                             window._stay_on_top_active)
         if was_visible:
             # пере-применить флаг и удержать окно активным
             window.show()
@@ -497,7 +515,7 @@ def force_on_top(window, enable: bool, delay_ms: int = 0) -> None:
 def bring_to_front_sequence(window) -> None:
     """Многократное восстановление окна на передний план с задержками,
     чтобы перекрыть возможные асинхронные кражи фокуса.
-    
+
     Args:
         window: Window widget to bring to front
     """
@@ -521,8 +539,10 @@ def bring_to_front_sequence(window) -> None:
                         # показать и вывести на передний план
                         user32.ShowWindow(hwnd, SW_SHOWNORMAL)
                         # быстрый цикл topmost -> notopmost для всплытия над другими окнами
-                        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
-                        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+                        user32.SetWindowPos(
+                            hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+                        user32.SetWindowPos(
+                            hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
                         user32.SetForegroundWindow(hwnd)
                     except Exception:
                         pass
@@ -570,21 +590,22 @@ def _resolve_ns_context_from_tree(tree: QTreeWidget):
     try:
         parent = tree.parent()
         # Вкладки хранят ссылку на главное окно в поле parent_window
-        mw = getattr(parent, 'parent_window', None) or getattr(parent, 'window', lambda: None)()
+        mw = getattr(parent, 'parent_window', None) or getattr(
+            parent, 'window', lambda: None)()
         ns_manager = getattr(mw, 'namespace_manager', None)
         family = getattr(mw, 'current_family', None)
         lang = getattr(mw, 'current_lang', None)
-        
+
         # Пытаемся получить выбранное пространство имён из комбобокса вкладки
         selected_ns = None
         try:
             # parent это вкладка (RenameTab, CreateTab, ParseTab, ReplaceTab)
             # Ищем комбобокс с именем, содержащим 'ns_combo'
-            ns_combo = (getattr(parent, 'rename_ns_combo', None) or 
-                       getattr(parent, 'create_ns_combo', None) or
-                       getattr(parent, 'parse_ns_combo', None) or
-                       getattr(parent, 'rep_ns_combo', None) or
-                       getattr(parent, 'replace_ns_combo', None))
+            ns_combo = (getattr(parent, 'rename_ns_combo', None) or
+                        getattr(parent, 'create_ns_combo', None) or
+                        getattr(parent, 'parse_ns_combo', None) or
+                        getattr(parent, 'rep_ns_combo', None) or
+                        getattr(parent, 'replace_ns_combo', None))
             if ns_combo and hasattr(ns_combo, 'currentData'):
                 selected_ns = ns_combo.currentData()
                 # Нормализуем: если строка 'auto', оставляем как есть; если int - оставляем
@@ -592,7 +613,7 @@ def _resolve_ns_context_from_tree(tree: QTreeWidget):
                     selected_ns = selected_ns.strip().lower() if selected_ns else 'auto'
         except Exception:
             selected_ns = None
-            
+
         if ns_manager is None:
             try:
                 from ...core.namespace_manager import get_namespace_manager
@@ -663,7 +684,8 @@ def init_log_tree(parent_widget) -> QTreeWidget:
     try:
         # Добавляем колонку «Страница» между Заголовком и Источником
         tree.setColumnCount(6)
-        tree.setHeaderLabels(['Время', 'Тип', 'Статус', 'Действие или заголовок', 'Страница', 'Источник'])
+        tree.setHeaderLabels(
+            ['Время', 'Тип', 'Статус', 'Действие или заголовок', 'Страница', 'Источник'])
         # Плоская таблица: без древовидности и индикаторов
         tree.setRootIsDecorated(False)
         tree.setAlternatingRowColors(True)
@@ -734,7 +756,8 @@ def init_log_tree(parent_widget) -> QTreeWidget:
                 if i in (0, 1, 2):
                     continue
                 try:
-                    header_w = fm.horizontalAdvance(tree.headerItem().text(i) or '') + extras
+                    header_w = fm.horizontalAdvance(
+                        tree.headerItem().text(i) or '') + extras
                     cur_w = tree.columnWidth(i)
                     if header_w > cur_w:
                         tree.setColumnWidth(i, header_w)
@@ -783,7 +806,8 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
         obj_meta = OBJ_INFO.get(object_type or 'article', OBJ_INFO['article'])
         type_emoji_meta = obj_meta
         title_obj_type = _detect_object_type_by_ns(tree, title)
-        title_meta = OBJ_INFO.get(title_obj_type or 'article', OBJ_INFO['article'])
+        title_meta = OBJ_INFO.get(
+            title_obj_type or 'article', OBJ_INFO['article'])
         obj_emoji = title_meta['emoji']
 
         status_text = f"{st['emoji']} {st['label']}"
@@ -792,7 +816,8 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
         if system:
             action_cell = '⚙️'
         elif object_type == 'template':
-            action_cell = MODE_INFO['auto']['emoji'] if (mode == 'auto') else MODE_INFO['manual']['emoji']
+            action_cell = MODE_INFO['auto']['emoji'] if (
+                mode == 'auto') else MODE_INFO['manual']['emoji']
         else:
             action_cell = MODE_INFO['direct']['emoji']
         # Значок объекта переносим в начало заголовка.
@@ -815,7 +840,8 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
             if _is_template_like_source(tree, source) and src_cell:
                 # Показываем префикс «Ш:» и базовое имя без префикса
                 try:
-                    base = src_cell.split(':', 1)[-1] if ':' in src_cell else src_cell
+                    base = src_cell.split(
+                        ':', 1)[-1] if ':' in src_cell else src_cell
                 except Exception:
                     base = src_cell
                 # Особая пометка для частичных совпадений: другой значок в «Источник»
@@ -827,12 +853,14 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
                 is_loc_src = ('локатив' in low_base)
                 # Уберём текстовые пометки из отображаемого имени
                 try:
-                    base_disp = base.replace('[частично]', '').replace('[локатив]', '').strip()
+                    base_disp = base.replace('[частично]', '').replace(
+                        '[локатив]', '').strip()
                 except Exception:
                     base_disp = base
                 # Для частичных совпадений и локативов используем отдельные символы источника
                 # Полные совпадения: ⚛️ Ш:Имя; Частичные: #️⃣ Ш:Имя; Локативы: 🌐 Ш:Имя
-                src_emoji = '🌐' if is_loc_src else ('#️⃣' if is_partial_src else OBJ_INFO['template']['emoji'])
+                src_emoji = '🌐' if is_loc_src else (
+                    '#️⃣' if is_partial_src else OBJ_INFO['template']['emoji'])
                 src_cell = f"{src_emoji} Ш:{base_disp}"
                 # ToolTip для источника
                 try:
@@ -854,7 +882,8 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
                 page_cell = ''
             else:
                 # Убираем префикс пространства имён из полного названия
-                page_disp = page_txt.split(':', 1)[-1] if ':' in page_txt else page_txt
+                page_disp = page_txt.split(
+                    ':', 1)[-1] if ':' in page_txt else page_txt
                 # Определяем эмодзи и короткий префикс по object_type
                 if object_type == 'category':
                     page_cell = f"{OBJ_INFO['category']['emoji']} К:{page_disp}"
@@ -866,7 +895,8 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
                     page_cell = f"{OBJ_INFO['article']['emoji']} {page_disp}"
         except Exception:
             page_cell = page or ''
-        row = QTreeWidgetItem([timestamp, action_cell, status_text, title_cell, page_cell, src_cell])
+        row = QTreeWidgetItem(
+            [timestamp, action_cell, status_text, title_cell, page_cell, src_cell])
         # Цвет статуса
         try:
             from PySide6.QtGui import QBrush, QColor
@@ -879,9 +909,10 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
                 row.setToolTip(1, '⚙️ Системное сообщение')
             elif object_type == 'template':
                 row.setToolTip(1, f"{MODE_INFO.get('auto' if mode == 'auto' else 'manual')['emoji']} "
-                                   f"{MODE_INFO.get('auto' if mode == 'auto' else 'manual')['label']}")
+                               f"{MODE_INFO.get('auto' if mode == 'auto' else 'manual')['label']}")
             else:
-                row.setToolTip(1, f"{MODE_INFO['direct']['emoji']} {MODE_INFO['direct']['label']}")
+                row.setToolTip(
+                    1, f"{MODE_INFO['direct']['emoji']} {MODE_INFO['direct']['label']}")
             row.setToolTip(2, f"{st['emoji']} {st['label']}")
             # Отключаем подсказки для 3 и 4 колонок
             row.setToolTip(3, '')
@@ -940,7 +971,8 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             # Приводим к plain‑тексту для устойчивого парсинга
             plain = _re0.sub(r'<[^>]+>', '', s)
             # Начало переименования: «Начинаем переименование: Old → New»
-            m_begin = _re0.search(r"Начинаем\s+переименовани[ея]:\s*(?P<old>.+?)\s*→\s*(?P<new>.+)$", plain)
+            m_begin = _re0.search(
+                r"Начинаем\s+переименовани[ея]:\s*(?P<old>.+?)\s*→\s*(?P<new>.+)$", plain)
             if m_begin:
                 try:
                     global _LAST_RENAME_OLD, _LAST_RENAME_NEW
@@ -952,7 +984,8 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
                 obj_type = _detect_object_type_by_ns(tree, _LAST_RENAME_OLD)
                 # В колонку «Страница» помещаем старое имя (независимо от типа)
                 title_txt = f"Начинаем переименование: {_LAST_RENAME_OLD} → {_LAST_RENAME_NEW}"
-                log_tree_add(tree, ts, _LAST_RENAME_OLD, title_txt, 'manual', 'success', None, obj_type, True)
+                log_tree_add(tree, ts, _LAST_RENAME_OLD, title_txt,
+                             'manual', 'success', None, obj_type, True)
                 return
             # Завершение: «Переименовано успешно — …»
             if plain.startswith('Переименовано успешно'):
@@ -963,20 +996,24 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
                     new_name = ''
                     old_name = ''
                 # Определяем тип по старому имени (которое мы запомнили при начале переименования)
-                obj_type = _detect_object_type_by_ns(tree, old_name) if old_name else 'article'
+                obj_type = _detect_object_type_by_ns(
+                    tree, old_name) if old_name else 'article'
                 # В колонку «Страница» помещаем новое имя (независимо от типа)
-                log_tree_add(tree, ts, new_name, plain, 'manual', 'success', None, obj_type, True)
+                log_tree_add(tree, ts, new_name, plain, 'manual',
+                             'success', None, obj_type, True)
                 return
         except Exception:
             pass
-        
+
         # 1) Попытка распарсить сообщения нашего нового формата с эмодзи
-        m = re.search(r"📁\s*(?P<cat>[^•]+)\s*•\s*📄\s*(?P<title>[^—]+)\s*—\s*(?P<status>[^()]+?)(?:\s*\((?P<src>[^)]+)\))?\s*$", s)
+        m = re.search(
+            r"📁\s*(?P<cat>[^•]+)\s*•\s*📄\s*(?P<title>[^—]+)\s*—\s*(?P<status>[^()]+?)(?:\s*\((?P<src>[^)]+)\))?\s*$", s)
         if not m:
             # 2) Попытка разобрать старый формат через pretty_format_msg
             pretty, _ = pretty_format_msg(s)
             s = html.unescape(pretty)
-            m = re.search(r"📁\s*(?P<cat>[^•]+)\s*•\s*📄\s*(?P<title>[^—]+)\s*—\s*(?P<status>[^()]+?)(?:\s*\((?P<src>[^)]+)\))?\s*$", s)
+            m = re.search(
+                r"📁\s*(?P<cat>[^•]+)\s*•\s*📄\s*(?P<title>[^—]+)\s*—\s*(?P<status>[^()]+?)(?:\s*\((?P<src>[^)]+)\))?\s*$", s)
         if m:
             cat = (m.group('cat') or '').strip()
             title = (m.group('title') or '').strip()
@@ -1001,32 +1038,40 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             if object_type == 'article' and source and _is_template_like_source(tree, source):
                 object_type = 'template'
 
-            log_tree_add(tree, ts, cat, title, mode, status, source, object_type)
+            log_tree_add(tree, ts, cat, title, mode,
+                         status, source, object_type)
             return
 
         # 3) Специальные системные сообщения от воркера без эмодзи/ссылок
         # "Категория <b>Old</b> не существует и не содержит страниц."
-        m_nf_empty = re.search(r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует\s*и\s*не содержит страниц", s, re.I)
+        m_nf_empty = re.search(
+            r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует\s*и\s*не содержит страниц", s, re.I)
         if m_nf_empty:
             cat = (m_nf_empty.group('cat') or '').strip()
+
             def _fmt_cat(x: str) -> str:
                 xl = x.lower()
                 return x if xl.startswith('категория:') or xl.startswith('category:') else f"Категория:{x}"
             title = f"{_fmt_cat(cat)} — не существует и не содержит страниц"
-            log_tree_add(tree, ts, None, title, 'manual', 'not_found', 'API', 'category', True)
+            log_tree_add(tree, ts, None, title, 'manual',
+                         'not_found', 'API', 'category', True)
             return
         # "Категория <b>Old</b> не существует"
-        m_nf = re.search(r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует", s, re.I)
+        m_nf = re.search(
+            r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует", s, re.I)
         if m_nf:
             cat = (m_nf.group('cat') or '').strip()
+
             def _fmt_cat(x: str) -> str:
                 xl = x.lower()
                 return x if xl.startswith('категория:') or xl.startswith('category:') else f"Категория:{x}"
             title = f"{_fmt_cat(cat)} — не существует"
-            log_tree_add(tree, ts, None, title, 'manual', 'not_found', 'API', 'category', True)
+            log_tree_add(tree, ts, None, title, 'manual',
+                         'not_found', 'API', 'category', True)
             return
         # Новый формат: "<b>Категория:Name</b> не найдена." или любой <b>Title</b> не найден(а/о)
-        m_nf_generic = re.search(r"<b>(?P<title>[^<]+)</b>\s*не найден[ао]\.?", s, re.I)
+        m_nf_generic = re.search(
+            r"<b>(?P<title>[^<]+)</b>\s*не найден[ао]\.?", s, re.I)
         if m_nf_generic:
             title0 = (m_nf_generic.group('title') or '').strip()
             obj_type = _detect_object_type_by_ns(tree, title0)
@@ -1042,17 +1087,21 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             else:
                 tail = 'не найдено'
             title_txt = f"{title0} — {tail}"
-            log_tree_add(tree, ts, cat_col, title_txt, 'manual', 'not_found', None, obj_type, False)
+            log_tree_add(tree, ts, cat_col, title_txt, 'manual',
+                         'not_found', None, obj_type, False)
             return
         # "Категория <b>Old</b> пуста."
-        m_empty = re.search(r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*пуста\.?", s, re.I)
+        m_empty = re.search(
+            r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*пуста\.?", s, re.I)
         if m_empty:
             cat = (m_empty.group('cat') or '').strip()
+
             def _fmt_cat(x: str) -> str:
                 xl = x.lower()
                 return x if xl.startswith('категория:') or xl.startswith('category:') else f"Категория:{x}"
             title = f"{_fmt_cat(cat)} — пустая"
-            log_tree_add(tree, ts, None, title, 'manual', 'skipped', 'API', 'category', True)
+            log_tree_add(tree, ts, None, title, 'manual',
+                         'skipped', 'API', 'category', True)
             return
         # 4) Универсальный фолбэк: вывести строку целиком в таблицу без потери информации
         try:
@@ -1084,22 +1133,26 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             src = msrc.group(1) if msrc else ''
             title = plain if not msrc else plain[:msrc.start()].rstrip()
             # Попробуем выделить «→ Категория:… : "Заголовок" …»
-            mcat = _re.search(r"→\s*(?P<cat>[^:]+:.+?)\s*:\s*\"(?P<title>[^\"]+)\"", title)
+            mcat = _re.search(
+                r"→\s*(?P<cat>[^:]+:.+?)\s*:\s*\"(?P<title>[^\"]+)\"", title)
             if mcat:
                 cat_guess = (mcat.group('cat') or '').strip()
                 title_guess = (mcat.group('title') or '').strip()
                 obj_type = _detect_object_type_by_ns(tree, title_guess)
                 if obj_type == 'article' and src and _is_template_like_source(tree, src):
                     obj_type = 'template'
-                log_tree_add(tree, ts, cat_guess, title_guess, mode, status, src or None, obj_type, False)
+                log_tree_add(tree, ts, cat_guess, title_guess,
+                             mode, status, src or None, obj_type, False)
             else:
                 obj_type = _detect_object_type_by_ns(tree, title)
                 if obj_type == 'article' and src and _is_template_like_source(tree, src):
                     obj_type = 'template'
-                log_tree_add(tree, ts, None, title, mode, status, src or None, obj_type, True)
+                log_tree_add(tree, ts, None, title, mode,
+                             status, src or None, obj_type, True)
         except Exception:
             # В самом крайнем случае — добавим как системную строку в колонку заголовка
-            log_tree_add(tree, ts, None, s, 'manual', 'success', None, 'article', True)
+            log_tree_add(tree, ts, None, s, 'manual',
+                         'success', None, 'article', True)
     except Exception:
         pass
 
@@ -1114,12 +1167,14 @@ def log_tree_help_html() -> str:
             (STATUS_INFO['error'], 'Ошибка'),
             (STATUS_INFO['not_found'], 'Не найдено'),
         ]
+
         def _row(s):
             return (f"<tr>"
                     f"<td style='padding:4px 8px'>{s['emoji']}</td>"
                     f"<td style='padding:4px 8px'><span style='color:{s['color']}'><b>{s['label']}</b></span></td>"
                     f"</tr>")
-        status_table = "".join(_row(s) for s, _ in [(r[0], r[1]) for r in rows])
+        status_table = "".join(_row(s)
+                               for s, _ in [(r[0], r[1]) for r in rows])
         mode_rows = (
             f"<tr><td style='padding:4px 8px'>{MODE_INFO['auto']['emoji']}</td><td style='padding:4px 8px'><b>{MODE_INFO['auto']['label']}</b> — автоматический режим</td></tr>"
             f"<tr><td style='padding:4px 8px'>{MODE_INFO['manual']['emoji']}</td><td style='padding:4px 8px'><b>{MODE_INFO['manual']['label']}</b> — ручной режим</td></tr>"
@@ -1127,7 +1182,7 @@ def log_tree_help_html() -> str:
         html_text = (
             "<div style='font-size:12px;line-height:1.35'>"
             "<h3 style='margin:6px 0'>Легенда лога</h3>"
-            "<p>Время всегда отображается первым столбцом. Записи сгруппированы по категориям (корневые узлы дерева)." 
+            "<p>Время всегда отображается первым столбцом. Записи сгруппированы по категориям (корневые узлы дерева)."
             "Столбцы: <b>Время</b> • <b>Событие</b> • <b>Статус</b>.</p>"
             "<h4 style='margin:6px 0'>Статусы</h4>"
             f"<table style='border-collapse:collapse'>{status_table}</table>"
@@ -1151,6 +1206,7 @@ def enable_tree_copy_shortcut(tree: QTreeWidget) -> None:
             selected = set(tree.selectedItems())
             result: list[QTreeWidgetItem] = []
             root = tree.invisibleRootItem()
+
             def walk(parent):
                 for i in range(parent.childCount()):
                     it = parent.child(i)
@@ -1173,7 +1229,8 @@ def enable_tree_copy_shortcut(tree: QTreeWidget) -> None:
                 if not rows:
                     return
                 # Заголовок
-                hdr = [tree.headerItem().text(i) for i in range(tree.columnCount())]
+                hdr = [tree.headerItem().text(i)
+                       for i in range(tree.columnCount())]
                 lines = ['\t'.join(hdr)]
                 for it in rows:
                     cols = [it.text(i) for i in range(tree.columnCount())]
@@ -1203,6 +1260,7 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
     """
     try:
         from PySide6.QtWidgets import QMenu
+
         def _show_menu(pos):
             try:
                 item = tree.itemAt(pos)
@@ -1221,7 +1279,8 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                     pass
                 # Дополнительно блокируем текстовые «служебные» строки — только для колонки 3
                 if col == 3:
-                    raw_all = ' '.join([(item.text(i) or '') for i in range(tree.columnCount())]).strip().lower()
+                    raw_all = ' '.join([(item.text(i) or '') for i in range(
+                        tree.columnCount())]).strip().lower()
                     if 'пропущено переименование категории' in raw_all:
                         return
                 raw_text = (item.text(col) or '').strip()
@@ -1258,18 +1317,22 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                         pass
                 m = QMenu(tree)
                 act_open = QAction('Открыть', m)
+
                 def _open():
                     try:
                         # Пытаемся собрать URL из текущих family/lang и selected_ns главного окна
-                        ns_manager, family, lang, selected_ns = _resolve_ns_context_from_tree(tree)
+                        ns_manager, family, lang, selected_ns = _resolve_ns_context_from_tree(
+                            tree)
                         if not (ns_manager and family and lang):
                             return
                         try:
                             from ..dialogs.template_review_dialog import TemplateReviewDialog
-                            host = TemplateReviewDialog.build_host(family, lang)
+                            host = TemplateReviewDialog.build_host(
+                                family, lang)
                         except Exception:
                             return
                         import urllib.parse as _up
+
                         def _add_prefix(title_base: str, ns_id: int | None) -> str:
                             if not ns_id:
                                 return title_base
@@ -1281,7 +1344,8 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                                 pass
                             try:
                                 from ...constants import DEFAULT_EN_NS as _DEN
-                                pref = ns_manager.get_policy_prefix(family, lang, ns_id, _DEN.get(ns_id, '')) if ns_manager else ''
+                                pref = ns_manager.get_policy_prefix(
+                                    family, lang, ns_id, _DEN.get(ns_id, '')) if ns_manager else ''
                             except Exception:
                                 from ...constants import DEFAULT_EN_NS as _DEN
                                 pref = _DEN.get(ns_id, '')
@@ -1313,7 +1377,8 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                             # Приоритет 2: Если "Авто" или не определено - автоматически по содержимому
                             elif not selected_ns or (isinstance(selected_ns, str) and selected_ns in ('auto', '')):
                                 # Определяем тип объекта по самому заголовку через NamespaceManager
-                                obj_type_detected = _detect_object_type_by_ns(tree, txt)
+                                obj_type_detected = _detect_object_type_by_ns(
+                                    tree, txt)
                                 if obj_type_detected == 'template':
                                     ns_id = 10
                                 elif obj_type_detected == 'file':
@@ -1331,15 +1396,17 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                                 txt_base = txt[4:].strip()  # "📁 К:Имя" → "Имя"
                                 detected_ns = 14  # категория
                             elif txt.startswith('⚛️ Ш:'):
-                                txt_base = txt[4:].strip()  # "⚛️ Ш:Имя" → "Имя"
+                                # "⚛️ Ш:Имя" → "Имя"
+                                txt_base = txt[4:].strip()
                                 detected_ns = 10  # шаблон
                             elif txt.startswith('🖼️ Ф:'):
-                                txt_base = txt[4:].strip()  # "🖼️ Ф:Имя" → "Имя"
+                                # "🖼️ Ф:Имя" → "Имя"
+                                txt_base = txt[4:].strip()
                                 detected_ns = 6  # файл
                             elif txt.startswith('📄 '):
                                 txt_base = txt[2:].strip()  # "📄 Имя" → "Имя"
                                 detected_ns = None  # статья
-                            
+
                             # Применяем логику приоритета
                             ns_id = None
                             # Приоритет 1: Если в комбобоксе выбрано конкретное NS (не "Авто"), используем его
@@ -1360,7 +1427,8 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
 
                         if not full_title:
                             return
-                        url = f"https://{host}/wiki/" + _up.quote(full_title.replace(' ', '_'))
+                        url = f"https://{host}/wiki/" + \
+                            _up.quote(full_title.replace(' ', '_'))
                         QDesktopServices.openUrl(QUrl(url))
                     except Exception:
                         pass
@@ -1445,7 +1513,7 @@ def make_clear_button(parent_widget, on_click) -> QToolButton:
     btn.setAutoRaise(True)
     btn.setToolTip('<span style="font-size:12px">Очистить</span>')
     try:
-        btn.setStyleSheet('font-size: 20px; padding: 0px;')
+        btn.setStyleSheet('font-size: 15pt; padding: 0px;')
         btn.setFixedSize(32, 32)
         btn.setCursor(Qt.PointingHandCursor)
     except Exception:
@@ -1619,7 +1687,8 @@ def inc_progress(label_widget, bar_widget, processed_label: str = 'Обрабо�
         val = bar_widget.value() + 1
         bar_widget.setValue(val)
         try:
-            label_widget.setText(f'{processed_label} {val}/{bar_widget.maximum()}')
+            label_widget.setText(
+                f'{processed_label} {val}/{bar_widget.maximum()}')
         except Exception:
             pass
     except Exception:
