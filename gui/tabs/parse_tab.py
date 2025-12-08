@@ -384,11 +384,12 @@ class ParseTab(QWidget):
             return
 
         # --- API режим --- формируем полное имя категории ---
-        if re.match(r'(?i)^(категория|category):', category):
+        from core.namespace_manager import has_prefix_by_policy, get_policy_prefix
+        if has_prefix_by_policy(fam, lang, category, {14}):
             cat_full = category
         else:
-            cat_full = ('Категория:' if lang ==
-                        'ru' else 'Category:') + category
+            cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
+            cat_full = cat_prefix + category
 
         # Получаем глубину из спинбокса
         depth = self.depth_spin.value() if hasattr(self, 'depth_spin') else 0
