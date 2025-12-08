@@ -296,6 +296,46 @@ class NamespaceManager:
         # Then English prefixes
         return any(self._has_en_prefix(title, ns) for ns in ns_ids)
 
+    def strip_ns_prefix(self, family: str, lang: str, title: str, ns_id: int) -> str:
+        """
+        Strip namespace prefix from title if present.
+
+        Args:
+            family: Project family
+            lang: Language code
+            title: Title possibly with namespace prefix
+            ns_id: Namespace ID to strip
+
+        Returns:
+            Title without namespace prefix, or original title if no prefix found
+        """
+        t = (title or '').lstrip('\ufeff').strip()
+        if not t:
+            return t
+        lower = t.casefold()
+
+        # Collect all known prefixes for this namespace
+        prefixes: Set[str] = set()
+
+        # Local prefixes from cache/API
+        info = self._get_cached_ns_info(family, lang)
+        if info and ns_id in info:
+            prefixes |= info[ns_id].get('all') or set()
+
+        # English prefixes
+        base_en = (DEFAULT_EN_NS.get(ns_id) or '').strip()
+        if base_en:
+            prefixes.add(base_en.casefold() if base_en.endswith(
+                ':') else (base_en + ':').casefold())
+        prefixes |= set(EN_PREFIX_ALIASES.get(ns_id, set()))
+
+        # Find and strip matching prefix
+        for p in prefixes:
+            if lower.startswith(p):
+                return t[len(p):].strip()
+
+        return t
+
     def get_policy_prefix(self, family: str, lang: str, ns_id: int, default_en: str) -> str:
         """Get namespace prefix according to policy."""
         # If local primary is known - use it
@@ -503,6 +543,10 @@ def title_has_ns_prefix(family: str, lang: str, title: str, ns_ids: set[int]) ->
 
 def has_prefix_by_policy(family: str, lang: str, title: str, ns_ids: set[int]) -> bool:
     return get_namespace_manager().has_prefix_by_policy(family, lang, title, ns_ids)
+
+
+def strip_ns_prefix(family: str, lang: str, title: str, ns_id: int) -> str:
+    return get_namespace_manager().strip_ns_prefix(family, lang, title, ns_id)
 
 
 def get_policy_prefix(family: str, lang: str, ns_id: int, default_en: str) -> str:

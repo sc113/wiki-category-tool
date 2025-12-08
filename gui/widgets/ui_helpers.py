@@ -656,6 +656,37 @@ def _detect_object_type_by_ns(tree: QTreeWidget, title: str) -> str:
     return 'article'
 
 
+def _fmt_cat_with_ns(tree: QTreeWidget, cat_name: str) -> str:
+    """Форматирует название категории с правильным локальным префиксом.
+
+    Если категория уже имеет префикс (любой локальный или английский) — возвращает как есть.
+    Иначе добавляет локальный префикс категории для текущего языка.
+    """
+    cat = (cat_name or '').strip()
+    if not cat:
+        return cat
+    try:
+        ns_manager, family, lang, _ = _resolve_ns_context_from_tree(tree)
+        if ns_manager and family and lang:
+            # Проверяем, есть ли уже префикс категории
+            if ns_manager.has_prefix_by_policy(family, lang, cat, {14}):
+                return cat
+            # Добавляем локальный префикс
+            prefix = ns_manager.get_policy_prefix(
+                family, lang, 14, 'Category:')
+            return f"{prefix}{cat}"
+    except Exception:
+        pass
+    # Фолбэк: проверяем известные префиксы и добавляем русский по умолчанию
+    cl = cat.lower()
+    if cl.startswith('категория:') or cl.startswith('category:'):
+        return cat
+    # Проверяем наличие любого ns-подобного префикса (слово + двоеточие)
+    if re.match(r'^[a-zA-Zа-яА-ЯіїєґІЇЄҐёЁ]+:', cat):
+        return cat
+    return f"Категория:{cat}"
+
+
 def _is_template_like_source(tree: QTreeWidget, source: str) -> bool:
     """Проверяет, является ли строка источника ссылкой на шаблон/модуль, с учётом локали."""
     try:
@@ -1048,11 +1079,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует\s*и\s*не содержит страниц", s, re.I)
         if m_nf_empty:
             cat = (m_nf_empty.group('cat') or '').strip()
-
-            def _fmt_cat(x: str) -> str:
-                xl = x.lower()
-                return x if xl.startswith('категория:') or xl.startswith('category:') else f"Категория:{x}"
-            title = f"{_fmt_cat(cat)} — не существует и не содержит страниц"
+            title = f"{_fmt_cat_with_ns(tree, cat)} — не существует и не содержит страниц"
             log_tree_add(tree, ts, None, title, 'manual',
                          'not_found', 'API', 'category', True)
             return
@@ -1061,11 +1088,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует", s, re.I)
         if m_nf:
             cat = (m_nf.group('cat') or '').strip()
-
-            def _fmt_cat(x: str) -> str:
-                xl = x.lower()
-                return x if xl.startswith('категория:') or xl.startswith('category:') else f"Категория:{x}"
-            title = f"{_fmt_cat(cat)} — не существует"
+            title = f"{_fmt_cat_with_ns(tree, cat)} — не существует"
             log_tree_add(tree, ts, None, title, 'manual',
                          'not_found', 'API', 'category', True)
             return
@@ -1095,11 +1118,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*пуста\.?", s, re.I)
         if m_empty:
             cat = (m_empty.group('cat') or '').strip()
-
-            def _fmt_cat(x: str) -> str:
-                xl = x.lower()
-                return x if xl.startswith('категория:') or xl.startswith('category:') else f"Категория:{x}"
-            title = f"{_fmt_cat(cat)} — пустая"
+            title = f"{_fmt_cat_with_ns(tree, cat)} — пустая"
             log_tree_add(tree, ts, None, title, 'manual',
                          'skipped', 'API', 'category', True)
             return

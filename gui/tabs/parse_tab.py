@@ -349,24 +349,8 @@ class ParseTab(QWidget):
         mods = QApplication.keyboardModifiers()
         if mods & Qt.ControlModifier:
             # Для PetScan требуется название категории без префикса пространства имён
-            try:
-                from ...core.namespace_manager import get_namespace_manager
-                ns_manager = get_namespace_manager()
-                info = ns_manager._load_ns_info(fam, lang)
-                prefixes = set(info.get(14, {}).get('all') or set())
-                lower = category.casefold()
-                base = None
-                for p in prefixes:
-                    if lower.startswith(p):
-                        base = category[len(p):].strip()
-                        break
-                if base is None:
-                    m = re.match(
-                        r'(?i)^(категория|category):\s*(.+)$', category)
-                    base = (m.group(2).strip() if m else category)
-            except Exception:
-                m = re.match(r'(?i)^(категория|category):\s*(.+)$', category)
-                base = (m.group(2).strip() if m else category)
+            from core.namespace_manager import strip_ns_prefix
+            base = strip_ns_prefix(fam, lang, category, 14)
             cat_param = urllib.parse.quote_plus(base)
             petscan_url = (
                 'https://petscan.wmcloud.org/?combination=subset&interface_language=en&ores_prob_from=&'
