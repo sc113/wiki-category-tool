@@ -349,7 +349,7 @@ class ParseTab(QWidget):
         mods = QApplication.keyboardModifiers()
         if mods & Qt.ControlModifier:
             # Для PetScan требуется название категории без префикса пространства имён
-            from core.namespace_manager import strip_ns_prefix
+            from ...core.namespace_manager import strip_ns_prefix
             base = strip_ns_prefix(fam, lang, category, 14)
             cat_param = urllib.parse.quote_plus(base)
             petscan_url = (
@@ -368,7 +368,7 @@ class ParseTab(QWidget):
             return
 
         # --- API режим --- формируем полное имя категории ---
-        from core.namespace_manager import has_prefix_by_policy, get_policy_prefix
+        from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
         if has_prefix_by_policy(fam, lang, category, {14}):
             cat_full = category
         else:
