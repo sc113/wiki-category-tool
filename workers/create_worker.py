@@ -33,6 +33,10 @@ def _format_summary(template: str, content: str) -> str:
     for i, line in enumerate(lines, start=1):
         result = result.replace(f'${i}', line)
 
+    # Удаляем неиспользованные теги $N (если строк меньше чем тегов)
+    import re
+    result = re.sub(r'\s*\$\d+', '', result)
+
     return result
 
 
