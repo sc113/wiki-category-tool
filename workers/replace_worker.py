@@ -9,6 +9,25 @@ from .base_worker import BaseWorker
 from ..core.namespace_manager import normalize_title_by_selection
 
 
+def _escape_wikitext_for_summary(text: str) -> str:
+    """
+    Экранирует вики-разметку для отображения в описании правки.
+
+    Заменяет [[ и ]] на их Unicode-эквиваленты, чтобы MediaWiki
+    не интерпретировала ссылки и категории в описании правки.
+
+    Args:
+        text: Исходный текст с вики-разметкой
+
+    Returns:
+        Текст с экранированной разметкой
+    """
+    # Заменяем квадратные скобки на похожие Unicode-символы
+    # чтобы MediaWiki не парсила их как ссылки/категории
+    text = text.replace('[[', '⟦').replace(']]', '⟧')
+    return text
+
+
 def _format_summary(template: str, content: str) -> str:
     """
     Форматирует комментарий к правке, заменяя переменные на реальные значения.
@@ -29,9 +48,10 @@ def _format_summary(template: str, content: str) -> str:
     lines = content.split('\n')
     result = template
 
-    # Заменяем $1, $2, $3... на соответствующие строки
+    # Заменяем $1, $2, $3... на соответствующие строки (с экранированием)
     for i, line in enumerate(lines, start=1):
-        result = result.replace(f'${i}', line)
+        escaped_line = _escape_wikitext_for_summary(line)
+        result = result.replace(f'${i}', escaped_line)
 
     # Удаляем неиспользованные теги $N (если строк меньше чем тегов)
     import re
