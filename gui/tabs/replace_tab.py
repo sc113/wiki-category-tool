@@ -14,7 +14,7 @@ import os
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGridLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QTextEdit, QCheckBox, QProgressBar,
     QMessageBox, QSizePolicy
 )
@@ -224,10 +224,12 @@ class ReplaceTab(QWidget):
             pass
         preview_layout.addWidget(QLabel('<b>Предпросмотр:</b>'))
 
-        pv_split = QHBoxLayout()
-        pv_split.addWidget(self.rep_preview_titles, 1)
-        pv_split.addWidget(self.rep_preview_rest, 2)
-        preview_layout.addLayout(pv_split)
+        pv_split = QSplitter(Qt.Horizontal)
+        pv_split.addWidget(self.rep_preview_titles)
+        pv_split.addWidget(self.rep_preview_rest)
+        pv_split.setStretchFactor(0, 1)
+        pv_split.setStretchFactor(1, 2)
+        preview_layout.addWidget(pv_split, 1)
         content_row.addWidget(preview_wrap, 3)
 
         # Лог справа
