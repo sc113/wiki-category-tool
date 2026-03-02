@@ -126,13 +126,19 @@ class ParseTab(QWidget):
         add_info_button(self, prefix_layout, parse_help_left, inline=True)
         left_layout.addLayout(prefix_layout)
 
-        # Получение подкатегорий
+        # Получение содержимого категории
         left_layout.addSpacing(6)
-        left_layout.addWidget(QLabel('<b>Получить подкатегории:</b>'))
+        left_layout.addWidget(QLabel('<b>Получить содержимое категории:</b>'))
         petscan_input_layout = QHBoxLayout()
         self.cat_edit = QLineEdit()
         self.cat_edit.setPlaceholderText('Название корневой категории')
         petscan_input_layout.addWidget(self.cat_edit, 1)
+
+        self.get_pages_btn = QPushButton('Получить страницы')
+        self.get_pages_btn.setToolTip(
+            'Клик — получить страницы категории через API (без подкатегорий)')
+        self.get_pages_btn.clicked.connect(self.fetch_category_pages)
+        petscan_input_layout.addWidget(self.get_pages_btn)
 
         self.petscan_btn = QPushButton('Получить подкатегории')
         self.petscan_btn.setToolTip(
@@ -398,6 +404,88 @@ class ParseTab(QWidget):
         self.petscan_btn.setEnabled(True)
 
         # Если нужно открыть ссылку вручную, скопируйте URL из логов
+
+    def fetch_category_pages(self):
+        """Получение страниц указанной категории через MediaWiki API (без подкатегорий)."""
+        if not hasattr(self, 'cat_edit') or self.cat_edit is None:
+            debug("Error: cat_edit not initialized")
+            return
+
+        category = self.cat_edit.text().strip()
+        debug(f"Fetch pages btn pressed: cat={category}")
+        if not category:
+            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
+            return
+
+        lang = self.get_current_language()
+        fam = self.get_current_family()
+
+        try:
+            self.get_pages_btn.setEnabled(False)
+        except Exception:
+            pass
+
+        # Формируем полное имя категории с NS-14, если префикс не указан
+        from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
+        if has_prefix_by_policy(fam, lang, category, {14}):
+            cat_full = category
+        else:
+            cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
+            cat_full = cat_prefix + category
+
+        api_client = WikimediaAPIClient()
+        titles = []
+        try:
+            api_url = api_client._build_api_url(fam, lang)
+            params = {
+                'action': 'query',
+                'list': 'categorymembers',
+                'cmtitle': cat_full,
+                'cmtype': 'page',
+                'cmlimit': 'max',
+                'format': 'json'
+            }
+
+            while True:
+                _rate_wait()
+                r = REQUEST_SESSION.get(
+                    api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
+                if r.status_code != 200:
+                    log_message(
+                        self.parse_log, f"HTTP {r.status_code} при запросе страниц для {cat_full}", debug)
+                    break
+
+                try:
+                    resp = r.json()
+                except Exception:
+                    log_message(
+                        self.parse_log, f"Не удалось распарсить JSON для {cat_full}", debug)
+                    break
+
+                batch = [m.get('title', '') for m in resp.get(
+                    'query', {}).get('categorymembers', [])]
+                titles.extend([t for t in batch if t])
+
+                if 'continue' in resp:
+                    params.update(resp['continue'])
+                else:
+                    break
+
+            if titles:
+                titles_sorted = sorted(set(titles), key=lambda s: s.casefold())
+                self.manual_list.setPlainText('\n'.join(titles_sorted))
+                log_message(
+                    self.parse_log, f"Получено страниц: {len(titles_sorted)} (без подкатегорий, отсортировано)", debug)
+            else:
+                log_message(
+                    self.parse_log, 'Страницы в категории не найдены.', debug)
+        except Exception as e:
+            log_message(self.parse_log, f"Ошибка API: {e}", debug)
+        finally:
+            try:
+                self.get_pages_btn.setEnabled(True)
+            except Exception:
+                pass
 
     def _fetch_subcats_recursive(self, api_client, category, lang, fam, max_depth, current_depth, visited):
         """

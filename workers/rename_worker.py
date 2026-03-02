@@ -1430,6 +1430,26 @@ class RenameWorker(BaseWorker):
                             pairs.append((old_with_prep, new_with_prep))
                             debug(f'  Пара с предлогом: "{old_with_prep}" → "{new_with_prep}"')
                     return pairs
+
+                # СПЕЦИАЛЬНЫЙ СЛУЧАЙ: сужение категории (новая короче старой, общий префикс совпадает)
+                # Например: "Умершие в Константинополе (Византия) империя)" → "Умершие в Константинополе (Византия)"
+                if diff_i >= len(tokens_new) and len(tokens_old) > len(tokens_new):
+                    debug(f'Частичные пары: сужение категории (новая короче старой)')
+                    removed = len(tokens_old) - len(tokens_new)
+                    # Базовая пара по "хвосту": "(Византия) империя)" → "(Византия)"
+                    old_tail = " ".join(tokens_old[-(removed+1):]) if removed > 0 else (tokens_old[-1] if tokens_old else "")
+                    new_tail = tokens_new[-1] if tokens_new else ""
+                    if old_tail and new_tail and old_tail != new_tail:
+                        pairs.append((old_tail, new_tail))
+                        debug(f'  Пара сужения: "{old_tail}" → "{new_tail}"')
+                    # Пара с контекстом: "Константинополе (Византия) империя)" → "Константинополе (Византия)"
+                    if len(tokens_old) >= (removed + 2) and len(tokens_new) >= 2:
+                        old_with_ctx = " ".join(tokens_old[-(removed+2):])
+                        new_with_ctx = " ".join(tokens_new[-2:])
+                        if old_with_ctx and new_with_ctx and (old_with_ctx, new_with_ctx) not in pairs:
+                            pairs.append((old_with_ctx, new_with_ctx))
+                            debug(f'  Пара с контекстом: "{old_with_ctx}" → "{new_with_ctx}"')
+                    return pairs
                 
                 # Пара 1: минимальная разница по токену
                 if diff_i < len(tokens_old) and diff_i < len(tokens_new):
@@ -1640,9 +1660,13 @@ class RenameWorker(BaseWorker):
                                 value_plain == old_sub or value_norm == old_sub or
                                 (old_sub_enc and (value_plain == old_sub_enc or value_norm == old_sub_enc))
                             ):
-                                # ЗАЩИТА ОТ ПОВТОРНОЙ ЗАМЕНЫ: проверяем, что значение уже не содержит новую подстроку
+                                # Защита от повторной замены нужна только для «расширяющих» правил
+                                # (old_sub -> new_sub, где new_sub содержит old_sub).
                                 try:
-                                    already_replaced = (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
+                                    is_expanding = bool(old_sub and new_sub and old_sub != new_sub and (old_sub in new_sub))
+                                    already_replaced = is_expanding and (
+                                        (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
+                                    )
                                     if already_replaced:
                                         debug(f'    Пропускаем (строгое равенство): значение "{value_plain}" уже содержит новую подстроку "{new_sub}"')
                                         continue
@@ -1666,11 +1690,13 @@ class RenameWorker(BaseWorker):
                                     _has_sub_with_boundaries(value_norm, old_sub_enc)
                                 ))
                             ):
-                                # ЗАЩИТА ОТ ПОВТОРНОЙ ЗАМЕНЫ: проверяем, что значение уже не содержит новую подстроку
-                                # Например, если old_sub="в Аксае", new_sub="в Аксае (Дагестан)", 
-                                # то не заменяем в "в Аксае (Дагестан)", иначе получится "в Аксае (Дагестан) (Дагестан)"
+                                # Защита от повторной замены только для «расширения»:
+                                # old_sub="в Аксае", new_sub="в Аксае (Дагестан)".
                                 try:
-                                    already_replaced = (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
+                                    is_expanding = bool(old_sub and new_sub and old_sub != new_sub and (old_sub in new_sub))
+                                    already_replaced = is_expanding and (
+                                        (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
+                                    )
                                     if already_replaced:
                                         debug(f'    Пропускаем: значение "{value_plain}" уже содержит новую подстроку "{new_sub}"')
                                         continue

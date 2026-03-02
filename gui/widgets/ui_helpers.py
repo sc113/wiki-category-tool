@@ -701,6 +701,90 @@ def _is_template_like_source(tree: QTreeWidget, source: str) -> bool:
     return any(k in sl for k in ('template:', 'module:'))
 
 
+def _build_mode_tooltip(system: bool, mode: str, object_type: str | None) -> str:
+    """Формирует понятную подсказку для колонки «Тип»."""
+    try:
+        if system:
+            return '⚙️ Служебная строка процесса (без прямой правки страницы).'
+        if object_type == 'template':
+            if mode == 'auto':
+                return '⚡ Изменение параметра шаблона с автоподтверждением.'
+            return '✍️ Изменение параметра шаблона с ручным подтверждением.'
+        return '📝 Прямая правка ссылки на категорию в тексте страницы.'
+    except Exception:
+        return 'Тип операции.'
+
+
+def _build_status_tooltip(tree: QTreeWidget, status: str, title: str, source: str | None,
+                          mode: str, object_type: str | None, system: bool) -> str:
+    """Формирует подробную подсказку для колонки «Статус»."""
+    try:
+        low_title = (title or '').strip().lower()
+        low_source = (source or '').strip().lower()
+
+        reason = ''
+        if status == 'skipped':
+            if 'пользоват' in low_title or 'отмен' in low_title:
+                reason = 'Пропущено вручную пользователем в диалоге подтверждения.'
+            elif 'автоматичес' in low_title:
+                reason = 'Пропущено автоматически по сохранённому правилу.'
+            elif 'без изменений' in low_title:
+                reason = 'Подходящие совпадения для замены не найдены.'
+            elif 'пуста' in low_title:
+                reason = 'Категория-источник пуста, обрабатывать нечего.'
+            else:
+                reason = 'Изменение не было применено.'
+        elif status == 'success':
+            if 'переименовано успешно' in low_title:
+                reason = 'Переименование выполнено успешно.'
+            elif 'перенесена' in low_title or 'перенесено' in low_title:
+                reason = 'Изменения применены и сохранены.'
+            else:
+                reason = 'Операция завершена успешно.'
+        elif status == 'error':
+            reason = 'Операция завершилась ошибкой; подробности смотрите в колонке «Действие или заголовок».'
+        elif status == 'not_found':
+            if 'не существует и не содержит страниц' in low_title:
+                reason = 'Объект не существует и не содержит страниц.'
+            elif 'не существует' in low_title:
+                reason = 'Объект не существует.'
+            else:
+                reason = 'Искомый объект не найден.'
+        else:
+            if 'остановлен' in low_title:
+                reason = 'Процесс остановлен пользователем.'
+            elif 'перенос содержимого категории' in low_title:
+                reason = 'Служебное сообщение о начале/ходе переноса содержимого категории.'
+            elif 'уже существ' in low_title:
+                reason = 'Целевая страница уже существует.'
+            else:
+                reason = 'Информационное сообщение о ходе операции.'
+
+        details: list[str] = []
+        if source:
+            if _is_template_like_source(tree, source):
+                if '[локатив]' in low_source:
+                    details.append('Контекст: шаблонный параметр, локативная эвристика (смена падежей).')
+                elif '[частично]' in low_source:
+                    details.append('Контекст: шаблонный параметр, частичное совпадение.')
+                else:
+                    details.append('Контекст: шаблонный параметр, полное совпадение.')
+            elif low_source == 'api':
+                details.append('Контекст: данные/проверка через MediaWiki API.')
+            else:
+                details.append(f'Контекст: {source}.')
+        if object_type == 'template':
+            details.append(
+                f"Режим: {'автоподтверждение' if mode == 'auto' else 'ручное подтверждение'}."
+            )
+        if system:
+            details.append('Запись добавлена системой лога.')
+
+        return '\n'.join([f'Причина: {reason}'] + details)
+    except Exception:
+        return 'Подробности статуса недоступны.'
+
+
 def init_log_tree(parent_widget) -> QTreeWidget:
     """Создаёт QTreeWidget для древовидного лога.
 
@@ -763,7 +847,7 @@ def init_log_tree(parent_widget) -> QTreeWidget:
                 head_w = 18
             t_w = max(emoji_w, head_w) + 1
             # Минимальная защита, чтобы колонка не схлопывалась
-            t_w = max(20, t_w + 3)  # добавим ещё немного ширины
+            t_w = max(20, t_w + 5)  # +2 px к прежней ширине
             tree.setColumnWidth(1, t_w)
             tree.headerItem().setTextAlignment(1, _Qt.AlignHCenter)
 
@@ -936,15 +1020,10 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
             pass
         # Tooltips для колонок с эмодзи
         try:
-            if system:
-                row.setToolTip(1, '⚙️ Системное сообщение')
-            elif object_type == 'template':
-                row.setToolTip(1, f"{MODE_INFO.get('auto' if mode == 'auto' else 'manual')['emoji']} "
-                               f"{MODE_INFO.get('auto' if mode == 'auto' else 'manual')['label']}")
-            else:
-                row.setToolTip(
-                    1, f"{MODE_INFO['direct']['emoji']} {MODE_INFO['direct']['label']}")
-            row.setToolTip(2, f"{st['emoji']} {st['label']}")
+            row.setToolTip(1, _build_mode_tooltip(
+                system, mode, object_type))
+            row.setToolTip(2, _build_status_tooltip(
+                tree, status, title or '', source, mode, object_type, system))
             # Отключаем подсказки для 3 и 4 колонок
             row.setToolTip(3, '')
             row.setToolTip(4, '')
