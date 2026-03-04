@@ -112,8 +112,8 @@ class UpdateCheckerThread(QThread):
             settings_dir = resource_path('configs')
             update_settings = UpdateSettings(settings_dir)
 
-            # Проверяем наличие обновлений
-            update_info = check_for_updates()
+            # Проверяем наличие обновлений с коротким таймаутом
+            update_info = check_for_updates(timeout=3)
 
             if update_info:
                 new_version, download_url = update_info
@@ -122,7 +122,10 @@ class UpdateCheckerThread(QThread):
                 if not update_settings.is_version_skipped(new_version):
                     debug(f"Найдена новая версия: {new_version}")
                     # Отправляем сигнал в главный поток
-                    self.update_found.emit(new_version, download_url)
+                    try:
+                        self.update_found.emit(new_version, download_url)
+                    except Exception as e:
+                        debug(f"Ошибка при отправке сигнала обновления: {e}")
                 else:
                     debug(
                         f"Новая версия {new_version} найдена, но пропущена пользователем")
@@ -130,8 +133,10 @@ class UpdateCheckerThread(QThread):
                 debug("Обновлений не найдено")
         except Exception as e:
             # Если проверка не удалась, просто игнорируем
-            debug(f"Ошибка при проверке обновлений: {e}")
-            pass
+            try:
+                debug(f"Ошибка при проверке обновлений: {e}")
+            except Exception:
+                pass
 
 
 def show_update_dialog(window, new_version, download_url):
@@ -183,14 +188,21 @@ def main():
     window = MainWindow()
     window.show()
 
-    # Запуск проверки обновлений в фоновом потоке
-    update_thread = UpdateCheckerThread()
-    update_thread.update_found.connect(
-        lambda v, u: show_update_dialog(window, v, u))
-    update_thread.start()
+    # Функция для отложенного запуска проверки обновлений
+    def start_update_check():
+        try:
+            update_thread = UpdateCheckerThread()
+            update_thread.update_found.connect(
+                lambda v, u: show_update_dialog(window, v, u))
+            update_thread.start()
+            # Сохраняем ссылку на поток
+            window._update_thread = update_thread
+        except Exception:
+            pass
 
-    # Сохраняем ссылку на поток, чтобы он не был удален сборщиком мусора
-    window._update_thread = update_thread
+    # Запускаем проверку обновлений через 500мс после показа окна
+    # Это даёт время окну полностью отрисоваться
+    QTimer.singleShot(500, start_update_check)
 
     # Запуск приложения
     sys.exit(app.exec())
