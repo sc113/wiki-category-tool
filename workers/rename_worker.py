@@ -401,6 +401,37 @@ class RenameWorker(BaseWorker):
                     # Для актуальных версий pywikibot используется параметр noredirect
                     page.move(new_name, reason=move_summary, noredirect=(not leave_redirect))
                     self._decay_save_interval()
+
+                    # Если пользователь просил не оставлять редирект, но он всё же остался,
+                    # явно показываем это в логе (обычно из-за отсутствия suppressredirect).
+                    if not leave_redirect:
+                        try:
+                            old_after = pywikibot.Page(site, old_name)
+                            redirect_left = old_after.exists() and old_after.isRedirectPage()
+                        except Exception:
+                            redirect_left = False
+                        if redirect_left:
+                            try:
+                                self.log_event.emit({
+                                    'type': 'redirect_retained',
+                                    'old_title': old_name,
+                                    'new_title': new_name,
+                                    'status': 'info'
+                                })
+                            except Exception:
+                                try:
+                                    self.progress.emit(
+                                        f"ℹ️ После переименования перенаправление осталось: "
+                                        f"{html.escape(old_name)} → {html.escape(new_name)} "
+                                        f"(возможно, недостаточно прав suppressredirect)."
+                                    )
+                                except Exception:
+                                    self.progress.emit(
+                                        f"ℹ️ После переименования перенаправление осталось: "
+                                        f"{old_name} → {new_name} "
+                                        f"(возможно, недостаточно прав suppressredirect)."
+                                    )
+
                     # Сообщение после тире: оставляем только комментарий/причину, без "Old → New"
                     try:
                         tail = comment_text if comment_text else ''

@@ -36,8 +36,8 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
         if status not in ('success', 'skipped', 'error', 'not_found', 'info'):
             status = 'info'
         if et == 'category_move_start':
-            old_cat = (event.get('old_category') or '').strip()
-            new_cat = (event.get('new_category') or '').strip()
+            old_cat = html.unescape((event.get('old_category') or '').strip())
+            new_cat = html.unescape((event.get('new_category') or '').strip())
             cnt_str = (event.get('count_str') or str(
                 event.get('count') or '')).strip()
             title_txt = f"ℹ️ Перенос содержимого категории {old_cat} → {new_cat}"
@@ -45,12 +45,24 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
                          status or 'info', cnt_str or None, 'category', True)
             return
         if et == 'destination_exists':
-            dst = (event.get('title') or '').strip()
+            dst = html.unescape((event.get('title') or '').strip())
             # Определяем тип объекта для правильного отображения
             obj_type = _detect_object_type_by_ns(tree, dst)
             # В колонку «Страница» помещаем название (независимо от типа)
             title_txt = f"Страница назначения {dst} уже существует."
             log_tree_add(tree, ts, dst, title_txt, 'manual',
+                         status or 'info', None, obj_type, True)
+            return
+        if et == 'redirect_retained':
+            old_title = html.unescape((event.get('old_title') or '').strip())
+            new_title = html.unescape((event.get('new_title') or '').strip())
+            page_title = old_title or new_title
+            obj_type = _detect_object_type_by_ns(tree, page_title)
+            title_txt = (
+                f"Переименовано, но перенаправление осталось: {old_title} → {new_title} "
+                f"(возможно, недостаточно прав suppressredirect)."
+            )
+            log_tree_add(tree, ts, page_title, title_txt, 'manual',
                          status or 'info', None, obj_type, True)
             return
     except Exception:
@@ -647,11 +659,12 @@ def _detect_object_type_by_ns(tree: QTreeWidget, title: str) -> str:
         pass
     # Фолбэк: простая эвристика (языконезависимые части и английские слова)
     lt = (title or '').lower()
-    if any(k in lt for k in ('template:', 'module:')):
+    pref = lt.split(':', 1)[0].strip() if ':' in lt else ''
+    if any(k in lt for k in ('template:', 'module:')) or any(k in pref for k in ('template', 'module', 'шаблон', 'модуль', 'şablon', 'modül')):
         return 'template'
-    if any(k in lt for k in ('file:', 'image:')):
+    if any(k in lt for k in ('file:', 'image:')) or any(k in pref for k in ('file', 'image', 'файл', 'изображ', 'dosya', 'archivo', 'datei')):
         return 'file'
-    if any(k in lt for k in ('category:',)):
+    if any(k in lt for k in ('category:', 'категория:', 'kategori:')) or any(k in pref for k in ('category', 'категор', 'kategori', 'categoria', 'kategoria')):
         return 'category'
     return 'article'
 
@@ -990,22 +1003,36 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
         except Exception:
             src_cell = source or ''
             src_tooltip = ''
-        # Колонка «Страница» — отображение с иконкой и коротким префиксом по типу объекта
+        # Колонка «Страница» — тип определяем по самой странице,
+        # а не по object_type (он может относиться к другому объекту в строке).
         try:
-            page_txt = (page or '').strip()
+            page_txt = html.unescape((page or '').strip())
             if not page_txt:
                 page_cell = ''
             else:
-                # Убираем префикс пространства имён из полного названия
-                page_disp = page_txt.split(
-                    ':', 1)[-1] if ':' in page_txt else page_txt
-                # Определяем эмодзи и короткий префикс по object_type
-                if object_type == 'category':
-                    page_cell = f"{OBJ_INFO['category']['emoji']} К:{page_disp}"
-                elif object_type == 'template':
-                    page_cell = f"{OBJ_INFO['template']['emoji']} Ш:{page_disp}"
-                elif object_type == 'file':
-                    page_cell = f"{OBJ_INFO['file']['emoji']} Ф:{page_disp}"
+                page_obj_type = None
+                try:
+                    page_obj_type = _detect_object_type_by_ns(tree, page_txt)
+                except Exception:
+                    page_obj_type = None
+                if page_obj_type not in ('article', 'template', 'file', 'category'):
+                    page_obj_type = None
+                # Для строк переноса: если тип страницы не распознан, но тип операции известен
+                # как не-article, используем его как безопасный фолбэк.
+                if (not page_obj_type or page_obj_type == 'article') and object_type in ('template', 'file', 'category'):
+                    page_obj_type = object_type
+                if not page_obj_type:
+                    page_obj_type = 'article'
+
+                # В колонке «Страница» показываем исходный заголовок как есть:
+                # полный исходный префикс без подмены (например, Kategori:, Category: и т.д.).
+                page_disp = page_txt
+                if page_obj_type == 'category':
+                    page_cell = f"{OBJ_INFO['category']['emoji']} {page_disp}"
+                elif page_obj_type == 'template':
+                    page_cell = f"{OBJ_INFO['template']['emoji']} {page_disp}"
+                elif page_obj_type == 'file':
+                    page_cell = f"{OBJ_INFO['file']['emoji']} {page_disp}"
                 else:  # article
                     page_cell = f"{OBJ_INFO['article']['emoji']} {page_disp}"
         except Exception:
@@ -1079,7 +1106,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
         try:
             import re as _re0
             # Приводим к plain‑тексту для устойчивого парсинга
-            plain = _re0.sub(r'<[^>]+>', '', s)
+            plain = html.unescape(_re0.sub(r'<[^>]+>', '', s))
             # Начало переименования: «Начинаем переименование: Old → New»
             m_begin = _re0.search(
                 r"Начинаем\s+переименовани[ея]:\s*(?P<old>.+?)\s*→\s*(?P<new>.+)$", plain)
@@ -1125,10 +1152,11 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             m = re.search(
                 r"📁\s*(?P<cat>[^•]+)\s*•\s*📄\s*(?P<title>[^—]+)\s*—\s*(?P<status>[^()]+?)(?:\s*\((?P<src>[^)]+)\))?\s*$", s)
         if m:
-            cat = (m.group('cat') or '').strip()
-            title = (m.group('title') or '').strip()
-            status_text = (m.group('status') or '').strip().lower()
-            source = (m.group('src') or '').strip() or None
+            cat = html.unescape((m.group('cat') or '').strip())
+            title = html.unescape((m.group('title') or '').strip())
+            status_raw = html.unescape((m.group('status') or '').strip())
+            status_text = status_raw.lower()
+            source = html.unescape((m.group('src') or '').strip()) or None
 
             # Режим: авто/ручное
             mode = 'auto' if 'автоматичес' in status_text else 'manual'
@@ -1157,7 +1185,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
         m_nf_empty = re.search(
             r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует\s*и\s*не содержит страниц", s, re.I)
         if m_nf_empty:
-            cat = (m_nf_empty.group('cat') or '').strip()
+            cat = html.unescape((m_nf_empty.group('cat') or '').strip())
             title = f"{_fmt_cat_with_ns(tree, cat)} — не существует и не содержит страниц"
             log_tree_add(tree, ts, None, title, 'manual',
                          'not_found', 'API', 'category', True)
@@ -1166,7 +1194,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
         m_nf = re.search(
             r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*не существует", s, re.I)
         if m_nf:
-            cat = (m_nf.group('cat') or '').strip()
+            cat = html.unescape((m_nf.group('cat') or '').strip())
             title = f"{_fmt_cat_with_ns(tree, cat)} — не существует"
             log_tree_add(tree, ts, None, title, 'manual',
                          'not_found', 'API', 'category', True)
@@ -1175,7 +1203,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
         m_nf_generic = re.search(
             r"<b>(?P<title>[^<]+)</b>\s*не найден[ао]\.?", s, re.I)
         if m_nf_generic:
-            title0 = (m_nf_generic.group('title') or '').strip()
+            title0 = html.unescape((m_nf_generic.group('title') or '').strip())
             obj_type = _detect_object_type_by_ns(tree, title0)
             # Если это категория — продублируем в соответствующую колонку
             cat_col = title0 if obj_type == 'category' else None
@@ -1196,7 +1224,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
         m_empty = re.search(
             r"Категория\s*<b>(?P<cat>[^<]+)</b>\s*пуста\.?", s, re.I)
         if m_empty:
-            cat = (m_empty.group('cat') or '').strip()
+            cat = html.unescape((m_empty.group('cat') or '').strip())
             title = f"{_fmt_cat_with_ns(tree, cat)} — пустая"
             log_tree_add(tree, ts, None, title, 'manual',
                          'skipped', 'API', 'category', True)
@@ -1225,7 +1253,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
             mode = 'auto' if 'автоматичес' in s_lower else 'manual'
             # Удалим HTML-теги, но сохраним текст
             import re as _re
-            plain = _re.sub(r'<[^>]+>', '', s)
+            plain = html.unescape(_re.sub(r'<[^>]+>', '', s))
             # Попробуем выделить источник из скобок в конце
             msrc = _re.search(r'\(([^)]+)\)\s*$', plain)
             src = msrc.group(1) if msrc else ''
@@ -1353,7 +1381,7 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
 
     - Разрешаем только для реальных страниц (не для статуса Инфо/Остановлено и т.п.).
     - Для «Заголовок» распознаём тип с учетом выбранного пространства имён.
-    - Для «Страница» используем тип из эмодзи (📄/⚛️/🖼️/📁) и применяем логику приоритета NS.
+    - Для «Страница» используем тип из эмодзи (📄/⚛️/🖼️/📁) и открываем исходный заголовок.
     - Для «Источник» открываем как шаблон (удалив эмодзи и префикс «Ш:»).
     """
     try:
@@ -1486,24 +1514,29 @@ def _enable_open_on_title_right_click(tree: QTreeWidget) -> None:
                                 # 'article' — обычная статья (ns_id None)
                             full_title = _add_prefix(txt, ns_id)
                         elif col == 4:
-                            # Страница (колонка 4): определяем тип по эмодзи и убираем префикс
+                            # Страница (колонка 4): определяем тип по эмодзи,
+                            # но оставляем исходный заголовок (полный префикс).
                             txt_base = txt
                             detected_ns = None
-                            # Удаляем эмодзи и короткий префикс, определяя тип
-                            if txt.startswith('📁 К:'):
-                                txt_base = txt[4:].strip()  # "📁 К:Имя" → "Имя"
+                            # Тип берём из исходного текста с эмодзи (до среза).
+                            if raw_text.startswith('📁 '):
                                 detected_ns = 14  # категория
-                            elif txt.startswith('⚛️ Ш:'):
-                                # "⚛️ Ш:Имя" → "Имя"
-                                txt_base = txt[4:].strip()
-                                detected_ns = 10  # шаблон
-                            elif txt.startswith('🖼️ Ф:'):
-                                # "🖼️ Ф:Имя" → "Имя"
-                                txt_base = txt[4:].strip()
-                                detected_ns = 6  # файл
-                            elif txt.startswith('📄 '):
-                                txt_base = txt[2:].strip()  # "📄 Имя" → "Имя"
-                                detected_ns = None  # статья
+                            elif raw_text.startswith('⚛️ '):
+                                detected_ns = 10  # шаблон/модуль
+                            elif raw_text.startswith('🖼️ '):
+                                detected_ns = 6   # файл
+                            else:
+                                detected_ns = None  # статья/прочее
+
+                            # Фолбэк на определение по префиксу (на случай нестандартного формата строки).
+                            if detected_ns is None:
+                                obj_type_detected = _detect_object_type_by_ns(tree, txt_base)
+                                if obj_type_detected == 'template':
+                                    detected_ns = 10
+                                elif obj_type_detected == 'file':
+                                    detected_ns = 6
+                                elif obj_type_detected == 'category':
+                                    detected_ns = 14
 
                             # Применяем логику приоритета
                             ns_id = None

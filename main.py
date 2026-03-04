@@ -66,8 +66,11 @@ def setup_windows_taskbar():
     """Настройка иконки в панели задач Windows"""
     try:
         if sys.platform.startswith('win'):
+            # Устанавливаем AppUserModelID для правильного отображения иконки
+            import ctypes
+            myappid = 'sc113.WikiCatTool.1.08'
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                'sc113.WikiCatTool')
+                myappid)
     except Exception as e:
         try:
             from .utils import debug
@@ -82,7 +85,8 @@ def setup_application_icon(app: QApplication):
         from .utils import resource_path, debug
         icon_path = resource_path('icon.ico')
         if os.path.exists(icon_path):
-            app.setWindowIcon(QIcon(icon_path))
+            icon = QIcon(icon_path)
+            app.setWindowIcon(icon)
             debug(f"Icon set: {icon_path}")
         else:
             debug("Icon file not found: icon.ico")
@@ -188,6 +192,9 @@ def main():
     window = MainWindow()
     window.show()
 
+    # Принудительно обрабатываем события Qt, чтобы окно отрисовалось
+    app.processEvents()
+
     # Функция для отложенного запуска проверки обновлений
     def start_update_check():
         try:
@@ -200,11 +207,11 @@ def main():
         except Exception:
             pass
 
-    # Запускаем проверку обновлений через 500мс после показа окна
-    # Это даёт время окну полностью отрисоваться
-    QTimer.singleShot(500, start_update_check)
+    # Запускаем проверку обновлений через 1 секунду после старта event loop
+    # Это гарантирует, что окно уже полностью отрисовано
+    QTimer.singleShot(1000, start_update_check)
 
-    # Запуск приложения
+    # Запуск приложения - ВАЖНО: event loop должен запуститься сразу после show()
     sys.exit(app.exec())
 
 
