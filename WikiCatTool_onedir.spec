@@ -6,8 +6,28 @@ datas = [('icon.ico', '.')]
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('wiki_cat_tool')
-tmp_ret = collect_all('pywikibot')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# pywikibot сам импортируется статически, но семейства грузятся динамически.
+# Подключаем только pywikibot.families, чтобы не тянуть scripts/* и тяжёлые лишние зависимости.
+hiddenimports += collect_submodules('pywikibot.families')
+# Интерфейс pywikibot выбирается динамически (set_interface -> terminal_interface).
+# Добавляем только terminal-* модули, без gui-интерфейса.
+hiddenimports += [
+    'pywikibot.userinterfaces',
+    'pywikibot.userinterfaces._interface_base',
+    'pywikibot.userinterfaces.transliteration',
+    'pywikibot.userinterfaces.buffer_interface',
+    'pywikibot.userinterfaces.terminal_interface',
+    'pywikibot.userinterfaces.terminal_interface_base',
+    'pywikibot.userinterfaces.terminal_interface_win32',
+    'pywikibot.userinterfaces.terminal_interface_unix',
+]
+# pywikibot.config ожидает физическую папку pywikibot/families на диске.
+# Добавляем только family-файлы как datas (без полного collect_all).
+_pywikibot_datas = collect_all('pywikibot')[0]
+datas += [
+    (src, dst) for (src, dst) in _pywikibot_datas
+    if str(dst).replace('/', '\\').startswith('pywikibot\\families')
+]
 
 
 a = Analysis(
@@ -19,7 +39,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Не используем pywikibot GUI-редактор; эти зависимости только раздувают сборку.
+        'pywikibot.userinterfaces.gui',
+        'idlelib',
+        'tkinter',
+        '_tkinter',
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageTk',
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -34,21 +63,21 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icon.ico'],
+    icon='icon.ico',
 )
 coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='WikiCatTool',
 )

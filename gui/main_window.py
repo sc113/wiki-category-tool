@@ -60,37 +60,56 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle('Wiki Category Tool')
         try:
-            icon_path = resource_path('icon.ico')
-            if os.path.exists(icon_path):
-                self.setWindowIcon(QIcon(icon_path))
-                debug(f"MainWindow icon set: {icon_path}")
-                # Дополнительно: на Windows принудительно установим иконку через WinAPI (WM_SETICON)
+            import sys
+            icon_sources = [
+                resource_path('icon.ico'),
+                os.path.join(os.path.dirname(sys.executable), 'icon.ico'),
+            ]
+            if getattr(sys, 'frozen', False):
+                icon_sources.append(sys.executable)
+
+            applied_icon_path = None
+            for icon_path in icon_sources:
                 try:
-                    import sys
-                    if sys.platform.startswith('win'):
-                        import ctypes
-                        hwnd = int(self.winId())
-                        WM_SETICON = 0x0080
-                        ICON_SMALL = 0
-                        ICON_BIG = 1
-                        IMAGE_ICON = 1
-                        LR_LOADFROMFILE = 0x0010
-                        LR_DEFAULTSIZE = 0x0040
-                        hicon = ctypes.windll.user32.LoadImageW(
-                            None, icon_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
-                        if hicon:
-                            ctypes.windll.user32.SendMessageW(
-                                hwnd, WM_SETICON, ICON_SMALL, hicon)
-                            ctypes.windll.user32.SendMessageW(
-                                hwnd, WM_SETICON, ICON_BIG, hicon)
-                            debug('WM_SETICON applied for small and big icons')
+                    if not icon_path or not os.path.exists(icon_path):
+                        continue
+                    icon = QIcon(icon_path)
+                    if icon.isNull():
+                        continue
+                    self.setWindowIcon(icon)
+                    applied_icon_path = icon_path
+                    debug(f"MainWindow icon set: {icon_path}")
+                    break
+                except Exception:
+                    continue
+
+            # Дополнительно: на Windows принудительно установим иконку через WinAPI (WM_SETICON)
+            # только когда нашли .ico-файл.
+            if applied_icon_path and sys.platform.startswith('win') and applied_icon_path.lower().endswith('.ico'):
+                try:
+                    import ctypes
+                    hwnd = int(self.winId())
+                    WM_SETICON = 0x0080
+                    ICON_SMALL = 0
+                    ICON_BIG = 1
+                    IMAGE_ICON = 1
+                    LR_LOADFROMFILE = 0x0010
+                    LR_DEFAULTSIZE = 0x0040
+                    hicon = ctypes.windll.user32.LoadImageW(
+                        None, applied_icon_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+                    if hicon:
+                        ctypes.windll.user32.SendMessageW(
+                            hwnd, WM_SETICON, ICON_SMALL, hicon)
+                        ctypes.windll.user32.SendMessageW(
+                            hwnd, WM_SETICON, ICON_BIG, hicon)
+                        debug('WM_SETICON applied for small and big icons')
                 except Exception as _e:
                     try:
                         debug(f'WM_SETICON failed: {_e}')
                     except Exception:
                         pass
-            else:
-                debug("MainWindow icon not found: icon.ico")
+            elif not applied_icon_path:
+                debug("MainWindow icon not found in known locations")
         except Exception:
             pass
 

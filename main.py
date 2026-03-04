@@ -68,7 +68,8 @@ def setup_windows_taskbar():
         if sys.platform.startswith('win'):
             # Устанавливаем AppUserModelID для правильного отображения иконки
             import ctypes
-            myappid = 'sc113.WikiCatTool.1.08'
+            # Стабильный ID без версии, чтобы Windows не теряла привязку иконки между сборками.
+            myappid = 'sc113.WikiCatTool'
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 myappid)
     except Exception as e:
@@ -83,13 +84,32 @@ def setup_application_icon(app: QApplication):
     """Настройка иконки приложения"""
     try:
         from .utils import resource_path, debug
-        icon_path = resource_path('icon.ico')
-        if os.path.exists(icon_path):
-            icon = QIcon(icon_path)
-            app.setWindowIcon(icon)
-            debug(f"Icon set: {icon_path}")
-        else:
-            debug("Icon file not found: icon.ico")
+        candidates = []
+        # 1) Путь к добавленному ресурсу (dev/onefile _MEIPASS)
+        candidates.append(resource_path('icon.ico'))
+        # 2) Папка рядом с exe (на случай внешнего запуска)
+        try:
+            exe_dir = os.path.dirname(sys.executable)
+            candidates.append(os.path.join(exe_dir, 'icon.ico'))
+        except Exception:
+            pass
+        # 3) Fallback: иконка, вшитая в сам exe (Windows)
+        if getattr(sys, 'frozen', False):
+            candidates.append(sys.executable)
+
+        for icon_path in candidates:
+            try:
+                if not icon_path or not os.path.exists(icon_path):
+                    continue
+                icon = QIcon(icon_path)
+                if icon.isNull():
+                    continue
+                app.setWindowIcon(icon)
+                debug(f"Icon set: {icon_path}")
+                return
+            except Exception:
+                continue
+        debug("Icon setup: no valid icon source found")
     except Exception as e:
         try:
             from .utils import debug
