@@ -194,9 +194,6 @@ def main():
     # Настройка перенаправления вывода
     setup_stdout_redirect()
 
-    # Инициализация pywikibot
-    setup_pywikibot()
-
     # Настройка Windows taskbar
     setup_windows_taskbar()
 
@@ -206,30 +203,51 @@ def main():
     # Настройка иконки
     setup_application_icon(app)
 
-    # Создание и показ главного окна
+    # Создание и показ лёгкой оболочки окна
     from .gui.main_window import MainWindow
 
     window = MainWindow()
     window.show()
 
-    # Принудительно обрабатываем события Qt, чтобы окно отрисовалось
+    # Принудительно обрабатываем события Qt, чтобы окно отрисовалось до тяжёлых импортов
     app.processEvents()
 
-    # Функция для отложенного запуска проверки обновлений
-    def start_update_check():
+    def finish_startup():
         try:
-            update_thread = UpdateCheckerThread()
-            update_thread.update_found.connect(
-                lambda v, u: show_update_dialog(window, v, u))
-            update_thread.start()
-            # Сохраняем ссылку на поток
-            window._update_thread = update_thread
-        except Exception:
-            pass
+            window.set_startup_status('Подключаем pywikibot...')
+            app.processEvents()
+            setup_pywikibot()
+            window.set_startup_status('Подгружаем вкладки...')
+            app.processEvents()
+            window.complete_startup()
+        except Exception as e:
+            try:
+                from .utils import debug
+                debug(f'Ошибка отложенного запуска: {e}')
+            except Exception:
+                pass
+            try:
+                window.set_startup_status(f'Ошибка запуска: {e}')
+            except Exception:
+                pass
+            return
 
-    # Запускаем проверку обновлений через 1 секунду после старта event loop
-    # Это гарантирует, что окно уже полностью отрисовано
-    QTimer.singleShot(1000, start_update_check)
+        # Функция для отложенного запуска проверки обновлений
+        def start_update_check():
+            try:
+                update_thread = UpdateCheckerThread()
+                update_thread.update_found.connect(
+                    lambda v, u: show_update_dialog(window, v, u))
+                update_thread.start()
+                # Сохраняем ссылку на поток
+                window._update_thread = update_thread
+            except Exception:
+                pass
+
+        QTimer.singleShot(1000, start_update_check)
+
+    # Сначала рисуем окно, затем догружаем pywikibot и вкладки
+    QTimer.singleShot(0, finish_startup)
 
     # Запуск приложения - ВАЖНО: event loop должен запуститься сразу после show()
     sys.exit(app.exec())
@@ -237,3 +255,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -11,23 +11,14 @@ from typing import Optional
 
 from PySide6.QtCore import QEvent, QTimer, QSignalBlocker, QThread, Signal
 from PySide6.QtWidgets import (
-    QMainWindow, QTabWidget, QMessageBox, QToolButton
+    QMainWindow, QTabWidget, QMessageBox, QToolButton, QWidget, QVBoxLayout, QLabel
 )
 from PySide6.QtGui import QIcon
 
-from ..core.api_client import WikimediaAPIClient
-from ..core.namespace_manager import NamespaceManager
-from ..core.pywikibot_config import PywikibotConfigManager
-from ..core.template_manager import TemplateManager
 from ..utils import debug, default_summary, default_create_summary, resource_path
 from .widgets.ui_helpers import add_info_button as ui_add_info_button
 from .widgets.ui_helpers import force_on_top as ui_force_on_top
 from .widgets.ui_helpers import bring_to_front_sequence as ui_bring_to_front_sequence
-from .tabs.auth_tab import AuthTab
-from .tabs.parse_tab import ParseTab
-from .tabs.replace_tab import ReplaceTab
-from .tabs.create_tab import CreateTab
-from .tabs.rename_tab import RenameTab
 
 
 class NSLoadThread(QThread):
@@ -120,6 +111,9 @@ class MainWindow(QMainWindow):
         # Создание центрального виджета с вкладками
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
+        self._startup_placeholder = None
+        self._startup_label = None
+        self._startup_complete = False
 
         # Состояние приложения
         self.current_user: Optional[str] = None
@@ -133,25 +127,83 @@ class MainWindow(QMainWindow):
         # Запоминание флага «автоподтверждать прямые совпадения» между диалогами
         self._auto_confirm_direct_all_ui: bool = False
 
-        # Инициализация core компонентов
-        self.init_core_components()
-
-        # Установка начальных значений ДО init_tabs, чтобы load_creds мог их перезаписать
+        # Значения по умолчанию и отложенная инициализация тяжёлых компонентов.
         self.current_lang = 'ru'
         self.current_family = 'wikipedia'
+        self.api_client = None
+        self.namespace_manager = None
+        self.config_manager = None
+        self.template_manager = None
+        self.auth_tab = None
+        self.parse_tab = None
+        self.replace_tab = None
+        self.create_tab = None
+        self.rename_tab = None
+        self._ns_thread = None
+        self._rules_file_path = None
 
-        # Инициализация вкладок (load_creds может обновить current_lang/current_family)
+        self._init_startup_placeholder()
+
+    def _init_startup_placeholder(self):
+        """Лёгкая оболочка окна, чтобы GUI показался до тяжёлых импортов."""
+        holder = QWidget(self)
+        layout = QVBoxLayout(holder)
+        layout.addStretch(1)
+        label = QLabel('Запуск приложения...\nПодгружаем модули и вкладки.', holder)
+        try:
+            label.setAlignment(Qt.AlignCenter)
+            label.setWordWrap(True)
+        except Exception:
+            pass
+        layout.addWidget(label)
+        layout.addStretch(1)
+        self._startup_placeholder = holder
+        self._startup_label = label
+        try:
+            self.tabs.addTab(holder, 'Запуск')
+            self.tabs.setTabEnabled(0, False)
+        except Exception:
+            pass
+
+    def set_startup_status(self, text: str):
+        """Обновляет статус стартовой инициализации."""
+        try:
+            if self._startup_label is not None:
+                self._startup_label.setText(text or '')
+                self._startup_label.repaint()
+        except Exception:
+            pass
+
+    def complete_startup(self):
+        """Ленивая инициализация core-компонентов и вкладок после первого показа окна."""
+        if self._startup_complete:
+            return
+        self.set_startup_status('Инициализация модулей...')
+        self.init_core_components()
+        self.set_startup_status('Создание вкладок...')
         self.init_tabs()
-
-        # Не создаём файл правил заранее — он появится только при первом сохранении правил
         try:
             self._rules_file_path = os.path.join(
                 self.config_manager._dist_configs_dir(), 'template_rules.json')
         except Exception:
             self._rules_file_path = None
+        try:
+            self.tabs.clear()
+        except Exception:
+            pass
+        self.tabs.addTab(self.auth_tab, 'Авторизация')
+        self.tabs.addTab(self.parse_tab, 'Чтение')
+        self.tabs.addTab(self.replace_tab, 'Перезапись')
+        self.tabs.addTab(self.create_tab, 'Создание')
+        self.tabs.addTab(self.rename_tab, 'Переименование')
+        self._startup_complete = True
 
     def init_core_components(self):
         """Инициализация всех core компонентов"""
+        from ..core.api_client import WikimediaAPIClient
+        from ..core.namespace_manager import NamespaceManager
+        from ..core.pywikibot_config import PywikibotConfigManager
+        from ..core.template_manager import TemplateManager
         # Создание API клиента
         self.api_client = WikimediaAPIClient()
 
@@ -166,6 +218,11 @@ class MainWindow(QMainWindow):
 
     def init_tabs(self):
         """Инициализация всех вкладок"""
+        from .tabs.auth_tab import AuthTab
+        from .tabs.parse_tab import ParseTab
+        from .tabs.replace_tab import ReplaceTab
+        from .tabs.create_tab import CreateTab
+        from .tabs.rename_tab import RenameTab
         # Создание вкладок с передачей core компонентов
         self.auth_tab = AuthTab(self)
         self.parse_tab = ParseTab(self)
@@ -183,12 +240,6 @@ class MainWindow(QMainWindow):
                     template_manager=self.template_manager
                 )
 
-        # Добавление вкладок в TabWidget
-        self.tabs.addTab(self.auth_tab, "Авторизация")
-        self.tabs.addTab(self.parse_tab, "Чтение")
-        self.tabs.addTab(self.replace_tab, "Перезапись")
-        self.tabs.addTab(self.create_tab, "Создание")
-        self.tabs.addTab(self.rename_tab, "Переименование")
 
         # Подключение сигналов для передачи данных между вкладками
         self.auth_tab.login_success.connect(self._on_login_success)
@@ -440,7 +491,14 @@ class MainWindow(QMainWindow):
 
     def content_tabs(self):
         """Возвращает список вкладок с основными операциями (без авторизации)."""
-        return [self.parse_tab, self.replace_tab, self.create_tab, self.rename_tab]
+        return [
+            tab for tab in [
+                getattr(self, 'parse_tab', None),
+                getattr(self, 'replace_tab', None),
+                getattr(self, 'create_tab', None),
+                getattr(self, 'rename_tab', None),
+            ] if tab is not None
+        ]
 
     # ===== Связь выпадающих списков Namespace между вкладками =====
     def _gather_ns_combos(self):
@@ -654,3 +712,10 @@ class MainWindow(QMainWindow):
             pass
 
         super().closeEvent(event)
+
+
+
+
+
+
+

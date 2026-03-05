@@ -6,6 +6,22 @@ Entry-point to run Wiki Category Tool via `python -m wiki_cat_tool` or directly.
 import os
 import sys as _sys
 
+
+def _set_windows_app_id_early() -> None:
+    """Выставить AppUserModelID как можно раньше (до импортов Qt)."""
+    try:
+        if _sys.platform.startswith("win"):
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "sc113.WikiCatTool"
+            )
+    except Exception:
+        pass
+
+
+# Для стабильного отображения иконки в taskbar на Windows.
+_set_windows_app_id_early()
+
 # Всегда добавляем корень проекта (родитель каталога пакета) в sys.path ПЕРЕД импортами,
 # чтобы абсолютный импорт гарантированно подтянул локальный пакет, а не установленный.
 try:
