@@ -19,7 +19,7 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QTextEdit, QProgressBar,
-    QGroupBox, QMessageBox, QSpinBox
+    QGroupBox, QMessageBox, QSpinBox, QGridLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -64,7 +64,8 @@ class ParseTab(QWidget):
         parse_help_left = (
             'Префиксы/NS: «Авто» — без изменения исходного списка. Выбирайте NS, если в списке названия без префиксов.\n'
             'Локальные и английские префиксы в исходном списке распознаются.\n'
-            'Ctrl+клик по «Получить подкатегории» — открыть PetScan для указанной категории.'
+            'Глубина применяется и к страницам, и к подкатегориям.\n'
+            'Кнопка «PetScan» открывает расширенный поиск для указанной категории в браузере.'
         )
         parse_help_right = (
             'Результат: .tsv (UTF‑8 с BOM). Формат: Title<TAB>строка1<TAB>строка2…\n'
@@ -90,7 +91,7 @@ class ParseTab(QWidget):
             pass
         # (i) будет добавлена в строку «Префиксы» справа — без влияния на вертикальные отступы
 
-        # Префиксы пространства имён и глубина
+        # Префиксы пространства имён
         prefix_layout = QHBoxLayout()
         prefix_label = QLabel('Префиксы:')
         prefix_label.setToolTip(PREFIX_TOOLTIP)
@@ -100,27 +101,6 @@ class ParseTab(QWidget):
         # Заполнение будет происходить через метод update_namespace_combo
         prefix_layout.addWidget(self.ns_combo_parse)
 
-        # Добавляем stretch, чтобы отодвинуть глубину к середине
-        prefix_layout.addStretch(1)
-
-        # Глубина получения подкатегорий (от середины)
-        depth_label = QLabel('Глубина:')
-        depth_label.setToolTip(
-            'Глубина рекурсивного получения подкатегорий (0 = только прямые подкатегории, 1 = подкатегории + их подкатегории и т.д.)')
-        prefix_layout.addWidget(depth_label)
-
-        self.depth_spin = QSpinBox()
-        self.depth_spin.setMinimum(0)
-        self.depth_spin.setMaximum(10)
-        self.depth_spin.setValue(0)
-        self.depth_spin.setToolTip(
-            'Глубина рекурсивного получения подкатегорий')
-        try:
-            self.depth_spin.setFixedWidth(60)
-        except Exception:
-            pass
-        prefix_layout.addWidget(self.depth_spin)
-
         # Толкаем (i) к правому краю в этой же строке
         prefix_layout.addStretch(1)
         add_info_button(self, prefix_layout, parse_help_left, inline=True)
@@ -129,23 +109,65 @@ class ParseTab(QWidget):
         # Получение содержимого категории
         left_layout.addSpacing(6)
         left_layout.addWidget(QLabel('<b>Получить содержимое категории:</b>'))
-        petscan_input_layout = QHBoxLayout()
         self.cat_edit = QLineEdit()
         self.cat_edit.setPlaceholderText('Название корневой категории')
-        petscan_input_layout.addWidget(self.cat_edit, 1)
+        category_fetch_layout = QGridLayout()
+        category_fetch_layout.setContentsMargins(0, 0, 0, 0)
+        category_fetch_layout.setHorizontalSpacing(8)
+        category_fetch_layout.setVerticalSpacing(6)
+        category_fetch_layout.setColumnStretch(0, 1)
+        category_fetch_layout.addWidget(self.cat_edit, 0, 0)
 
         self.get_pages_btn = QPushButton('Получить страницы')
         self.get_pages_btn.setToolTip(
-            'Клик — получить страницы категории через API (без подкатегорий)')
+            'Получить страницы категории через API с учётом глубины')
         self.get_pages_btn.clicked.connect(self.fetch_category_pages)
-        petscan_input_layout.addWidget(self.get_pages_btn)
 
         self.petscan_btn = QPushButton('Получить подкатегории')
         self.petscan_btn.setToolTip(
-            'Клик — получить подкатегории через API.\nCtrl+клик — открыть Petscan с расширенными настройками')
+            'Получить подкатегории через API с учётом глубины')
         self.petscan_btn.clicked.connect(self.open_petscan)
-        petscan_input_layout.addWidget(self.petscan_btn)
-        left_layout.addLayout(petscan_input_layout)
+
+        self.open_petscan_btn = QPushButton('PetScan')
+        self.open_petscan_btn.setToolTip(
+            'Открыть PetScan с расширенными настройками для указанной категории')
+        self.open_petscan_btn.clicked.connect(self.open_petscan_in_browser)
+
+        depth_label = QLabel('Глубина:')
+        depth_label.setToolTip(
+            'Глубина рекурсивного обхода категории. '
+            'Для «Получить страницы»: 0 = только корневая категория, 1 = + прямые подкатегории. '
+            'Для «Получить подкатегории»: 0 = только прямые подкатегории.')
+
+        self.depth_spin = QSpinBox()
+        self.depth_spin.setMinimum(0)
+        self.depth_spin.setMaximum(10)
+        self.depth_spin.setValue(0)
+        self.depth_spin.setToolTip(
+            'Глубина рекурсивного обхода категории для страниц и подкатегорий')
+        try:
+            self.depth_spin.setFixedWidth(60)
+        except Exception:
+            pass
+
+        category_fetch_layout.addWidget(depth_label, 0, 1)
+        category_fetch_layout.addWidget(self.depth_spin, 0, 2)
+
+        category_buttons_layout = QHBoxLayout()
+        category_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        category_buttons_layout.setSpacing(8)
+
+        for button in (
+            self.get_pages_btn,
+            self.petscan_btn,
+            self.open_petscan_btn,
+        ):
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            category_buttons_layout.addWidget(button)
+
+        category_fetch_layout.addLayout(category_buttons_layout, 1, 0, 1, 3)
+
+        left_layout.addLayout(category_fetch_layout)
 
         # Ручной ввод списка
         left_layout.addSpacing(6)
@@ -336,8 +358,46 @@ class ParseTab(QWidget):
             pass
         return 'wikipedia'
 
+    def _build_petscan_url(self, family: str, lang: str, category: str, depth: int = 0) -> str:
+        """Собирает URL PetScan для категории."""
+        from ...core.namespace_manager import strip_ns_prefix
+
+        base = strip_ns_prefix(family, lang, category, 14)
+        cat_param = urllib.parse.quote_plus(base)
+        petscan_url = (
+            'https://petscan.wmcloud.org/?combination=subset&interface_language=en&ores_prob_from=&'
+            'referrer_name=&ores_prob_to=&min_sitelink_count=&wikidata_source_sites=&templates_yes=&'
+            'sortby=title&pagepile=&cb_labels_no_l=1&show_disambiguation_pages=both&language=' + lang +
+            '&max_sitelink_count=&cb_labels_yes_l=1&outlinks_any=&common_wiki=auto&categories=' + cat_param +
+            '&edits%5Bbots%5D=both&wikidata_prop_item_use=&ores_prediction=any&outlinks_no=&source_combination=&'
+            'ns%5B14%5D=1&sitelinks_any=&cb_labels_any_l=1&edits%5Banons%5D=both&links_to_no=&search_wiki=&'
+            f'project={family}&after=&wikidata_item=no&search_max_results=1000&langs_labels_no=&langs_labels_yes=&'
+            'sortorder=ascending&templates_any=&show_redirects=both&active_tab=tab_output&wpiu=any&doit='
+        )
+        if depth > 0:
+            petscan_url += f'&depth={depth}'
+        return petscan_url
+
+    def open_petscan_in_browser(self):
+        """Открывает PetScan для указанной категории."""
+        if not hasattr(self, 'cat_edit') or self.cat_edit is None:
+            debug("Error: cat_edit not initialized")
+            return
+
+        category = self.cat_edit.text().strip()
+        if not category:
+            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
+            return
+
+        lang = self.get_current_language()
+        fam = self.get_current_family()
+        depth = self.depth_spin.value() if hasattr(self, 'depth_spin') else 0
+        petscan_url = self._build_petscan_url(fam, lang, category, depth)
+        debug(f"Open Petscan URL: {petscan_url}")
+        webbrowser.open_new_tab(petscan_url)
+
     def open_petscan(self):
-        """Получение подкатегорий через API или открытие PetScan"""
+        """Получение подкатегорий через API."""
         if not hasattr(self, 'cat_edit') or self.cat_edit is None:
             debug("Error: cat_edit not initialized")
             return
@@ -349,29 +409,6 @@ class ParseTab(QWidget):
             return
         lang = self.get_current_language()
         fam = self.get_current_family()
-
-        # --- Ctrl+click → открыть Petscan URL в браузере ---
-        from PySide6.QtWidgets import QApplication
-        mods = QApplication.keyboardModifiers()
-        if mods & Qt.ControlModifier:
-            # Для PetScan требуется название категории без префикса пространства имён
-            from ...core.namespace_manager import strip_ns_prefix
-            base = strip_ns_prefix(fam, lang, category, 14)
-            cat_param = urllib.parse.quote_plus(base)
-            petscan_url = (
-                'https://petscan.wmcloud.org/?combination=subset&interface_language=en&ores_prob_from=&'
-                'referrer_name=&ores_prob_to=&min_sitelink_count=&wikidata_source_sites=&templates_yes=&'
-                'sortby=title&pagepile=&cb_labels_no_l=1&show_disambiguation_pages=both&language=' + lang +
-                '&max_sitelink_count=&cb_labels_yes_l=1&outlinks_any=&common_wiki=auto&categories=' + cat_param +
-                '&edits%5Bbots%5D=both&wikidata_prop_item_use=&ores_prediction=any&outlinks_no=&source_combination=&'
-                'ns%5B14%5D=1&sitelinks_any=&cb_labels_any_l=1&edits%5Banons%5D=both&links_to_no=&search_wiki=&'
-                f'project={fam}&after=&wikidata_item=no&search_max_results=1000&langs_labels_no=&langs_labels_yes=&'
-                'sortorder=ascending&templates_any=&show_redirects=both&active_tab=tab_output&wpiu=any&doit='
-            )
-            debug(f"Open Petscan URL: {petscan_url}")
-            webbrowser.open_new_tab(petscan_url)
-            self.petscan_btn.setEnabled(True)
-            return
 
         # --- API режим --- формируем полное имя категории ---
         from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
@@ -406,7 +443,7 @@ class ParseTab(QWidget):
         # Если нужно открыть ссылку вручную, скопируйте URL из логов
 
     def fetch_category_pages(self):
-        """Получение страниц указанной категории через MediaWiki API (без подкатегорий)."""
+        """Получение страниц указанной категории через MediaWiki API с учётом глубины."""
         if not hasattr(self, 'cat_edit') or self.cat_edit is None:
             debug("Error: cat_edit not initialized")
             return
@@ -433,49 +470,26 @@ class ParseTab(QWidget):
             cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
             cat_full = cat_prefix + category
 
+        depth = self.depth_spin.value() if hasattr(self, 'depth_spin') else 0
+
         api_client = WikimediaAPIClient()
         titles = []
         try:
-            api_url = api_client._build_api_url(fam, lang)
-            params = {
-                'action': 'query',
-                'list': 'categorymembers',
-                'cmtitle': cat_full,
-                'cmtype': 'page',
-                'cmlimit': 'max',
-                'format': 'json'
-            }
+            categories = [cat_full]
+            if depth > 0:
+                categories.extend(self._fetch_subcats_recursive(
+                    api_client, cat_full, lang, fam, depth - 1, 0, set()))
+            categories = list(dict.fromkeys(categories))
 
-            while True:
-                _rate_wait()
-                r = REQUEST_SESSION.get(
-                    api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
-                if r.status_code != 200:
-                    log_message(
-                        self.parse_log, f"HTTP {r.status_code} при запросе страниц для {cat_full}", debug)
-                    break
-
-                try:
-                    resp = r.json()
-                except Exception:
-                    log_message(
-                        self.parse_log, f"Не удалось распарсить JSON для {cat_full}", debug)
-                    break
-
-                batch = [m.get('title', '') for m in resp.get(
-                    'query', {}).get('categorymembers', [])]
-                titles.extend([t for t in batch if t])
-
-                if 'continue' in resp:
-                    params.update(resp['continue'])
-                else:
-                    break
+            for current_category in categories:
+                titles.extend(self._fetch_pages_for_category(
+                    api_client, current_category, lang, fam))
 
             if titles:
                 titles_sorted = sorted(set(titles), key=lambda s: s.casefold())
                 self.manual_list.setPlainText('\n'.join(titles_sorted))
                 log_message(
-                    self.parse_log, f"Получено страниц: {len(titles_sorted)} (без подкатегорий, отсортировано)", debug)
+                    self.parse_log, f"Получено страниц: {len(titles_sorted)} (глубина: {depth}, отсортировано)", debug)
             else:
                 log_message(
                     self.parse_log, 'Страницы в категории не найдены.', debug)
@@ -486,6 +500,46 @@ class ParseTab(QWidget):
                 self.get_pages_btn.setEnabled(True)
             except Exception:
                 pass
+
+    def _fetch_pages_for_category(self, api_client, category, lang, fam):
+        """Получает прямые страницы категории без рекурсии."""
+        api_url = api_client._build_api_url(fam, lang)
+        params = {
+            'action': 'query',
+            'list': 'categorymembers',
+            'cmtitle': category,
+            'cmtype': 'page',
+            'cmlimit': 'max',
+            'format': 'json'
+        }
+
+        titles = []
+        while True:
+            _rate_wait()
+            r = REQUEST_SESSION.get(
+                api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
+            if r.status_code != 200:
+                log_message(
+                    self.parse_log, f"HTTP {r.status_code} при запросе страниц для {category}", debug)
+                break
+
+            try:
+                resp = r.json()
+            except Exception:
+                log_message(
+                    self.parse_log, f"Не удалось распарсить JSON для {category}", debug)
+                break
+
+            batch = [m.get('title', '') for m in resp.get(
+                'query', {}).get('categorymembers', [])]
+            titles.extend([t for t in batch if t])
+
+            if 'continue' in resp:
+                params.update(resp['continue'])
+            else:
+                break
+
+        return titles
 
     def _fetch_subcats_recursive(self, api_client, category, lang, fam, max_depth, current_depth, visited):
         """
