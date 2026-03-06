@@ -8,6 +8,7 @@ This module contains all the tab components for the main window:
 - ReplaceTab: Replacing page content
 - CreateTab: Creating new pages
 - RenameTab: Renaming pages and categories
+- RedundantCategoriesTab: Removing redundant parent categories
 """
 
 from .auth_tab import AuthTab
@@ -15,5 +16,13 @@ from .parse_tab import ParseTab
 from .replace_tab import ReplaceTab
 from .create_tab import CreateTab
 from .rename_tab import RenameTab
+from .redundant_categories_tab import RedundantCategoriesTab
 
-__all__ = ['AuthTab', 'ParseTab', 'ReplaceTab', 'CreateTab', 'RenameTab']
+__all__ = [
+    'AuthTab',
+    'ParseTab',
+    'ReplaceTab',
+    'CreateTab',
+    'RenameTab',
+    'RedundantCategoriesTab',
+]

@@ -1,66 +1,45 @@
 # -*- coding: utf-8 -*-
 """
 Вкладка чтения для Wiki Category Tool.
-
-Этот модуль содержит компонент ParseTab, который обеспечивает:
-- Получение подкатегорий через API или PetScan
-- Ручной ввод списка категорий
-- Загрузку списка из файла
-- Чтение содержимого страниц
-- Сохранение результатов в TSV формате
 """
 
 import os
-import re
-import urllib.parse
-import webbrowser
-from typing import Optional
 
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QComboBox, QPushButton, QToolButton, QTextEdit, QProgressBar,
-    QGroupBox, QMessageBox, QSpinBox, QGridLayout, QSizePolicy
+    QPushButton, QToolButton, QTextEdit, QProgressBar,
+    QGroupBox, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 
-from ...constants import PREFIX_TOOLTIP, REQUEST_HEADERS
-from ...core.api_client import WikimediaAPIClient, REQUEST_SESSION, _rate_wait
-from ...utils import debug, format_russian_subcategories_nominative
+from ...utils import debug
 from ...workers.parse_worker import ParseWorker
+from ..widgets.shared_panels import CategorySourcePanel
 from ..widgets.ui_helpers import (
-    embed_button_in_lineedit, add_info_button, pick_file, pick_save,
-    open_from_edit, log_message, set_start_stop_ratio
+    add_info_button, pick_save, open_from_edit, log_message,
+    set_start_stop_ratio, create_log_wrap
 )
 
 
 class ParseTab(QWidget):
-    """Вкладка для чтения содержимого страниц"""
+    """Вкладка для чтения содержимого страниц."""
 
-    # Сигналы для взаимодействия с главным окном
     language_changed = Signal(str)
     family_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
-
-        # Инициализация worker'а
         self.worker = None
-
-        # Данные авторизации
         self.current_user = None
         self.current_lang = None
         self.current_family = None
-
-        # Создание UI
         self.setup_ui()
 
     def setup_ui(self):
-        """Создание пользовательского интерфейса вкладки чтения"""
         main_layout = QVBoxLayout(self)
 
-        # Справочная информация (кратко и по делу)
         parse_help_left = (
             'Префиксы/NS: «Авто» — без изменения исходного списка. Выбирайте NS, если в списке названия без префиксов.\n'
             'Локальные и английские префиксы в исходном списке распознаются.\n'
@@ -68,158 +47,42 @@ class ParseTab(QWidget):
             'Кнопка «PetScan» открывает расширенный поиск для указанной категории в браузере.'
         )
         parse_help_right = (
-            'Результат: .tsv (UTF‑8 с BOM). Формат: Title<TAB>строка1<TAB>строка2…\n'
+            'Результат: .tsv (UTF-8 с BOM). Формат: Title<TAB>строка1<TAB>строка2…\n'
             'В файл записываются только найденные страницы; отсутствующие отражаются в логе.\n'
             'Список берётся из .txt (если указан), иначе — из поля слева.\n'
             'При лимитах API выполняются автоматические паузы/повторы.'
         )
 
-        # === ГОРИЗОНТАЛЬНОЕ РАЗДЕЛЕНИЕ ===
         h_main = QHBoxLayout()
 
-        # === ЛЕВАЯ ПАНЕЛЬ: ВВОД ДАННЫХ ===
-        left_group = QGroupBox("Источник")
-        left_group.setStyleSheet(
-            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
-        left_layout = QVBoxLayout(left_group)
-        try:
-            # не двигаем (i) у верхней кромки
-            left_layout.setContentsMargins(8, 12, 8, 8)
-            # уменьшили зазор между (i) и строкой «Префиксы»
-            left_layout.setSpacing(2)
-        except Exception:
-            pass
-        # (i) будет добавлена в строку «Префиксы» справа — без влияния на вертикальные отступы
+        self.source_panel = CategorySourcePanel(
+            self,
+            parent_window=self.parent_window,
+            help_text=parse_help_left,
+            group_title='Источник',
+            category_section_label='<b>Получить содержимое категории:</b>',
+            category_placeholder='Название корневой категории',
+            manual_label='<b>Список категорий для считывания:</b>',
+            manual_placeholder='Список страниц (по одной на строку)',
+            file_section_label='<b>Или загрузить из файла:</b>',
+            file_caption='Файл (.txt):',
+        )
+        self.ns_combo_parse = self.source_panel.ns_combo
+        self.cat_edit = self.source_panel.cat_edit
+        self.get_pages_btn = self.source_panel.get_pages_btn
+        self.petscan_btn = self.source_panel.petscan_btn
+        self.open_petscan_btn = self.source_panel.open_petscan_btn
+        self.depth_spin = self.source_panel.depth_spin
+        self.manual_list = self.source_panel.manual_list
+        self.list_edit = self.source_panel.list_edit
+        self.in_path = self.source_panel.in_path
+        self.file_edit = self.source_panel.file_edit
 
-        # Префиксы пространства имён
-        prefix_layout = QHBoxLayout()
-        prefix_label = QLabel('Префиксы:')
-        prefix_label.setToolTip(PREFIX_TOOLTIP)
-        prefix_layout.addWidget(prefix_label)
-        self.ns_combo_parse = QComboBox()
-        self.ns_combo_parse.setEditable(False)
-        # Заполнение будет происходить через метод update_namespace_combo
-        prefix_layout.addWidget(self.ns_combo_parse)
-
-        # Толкаем (i) к правому краю в этой же строке
-        prefix_layout.addStretch(1)
-        add_info_button(self, prefix_layout, parse_help_left, inline=True)
-        left_layout.addLayout(prefix_layout)
-
-        # Получение содержимого категории
-        left_layout.addSpacing(6)
-        left_layout.addWidget(QLabel('<b>Получить содержимое категории:</b>'))
-        self.cat_edit = QLineEdit()
-        self.cat_edit.setPlaceholderText('Название корневой категории')
-        category_fetch_layout = QGridLayout()
-        category_fetch_layout.setContentsMargins(0, 0, 0, 0)
-        category_fetch_layout.setHorizontalSpacing(8)
-        category_fetch_layout.setVerticalSpacing(6)
-        category_fetch_layout.setColumnStretch(0, 1)
-        category_fetch_layout.addWidget(self.cat_edit, 0, 0)
-
-        self.get_pages_btn = QPushButton('Получить страницы')
-        self.get_pages_btn.setToolTip(
-            'Получить страницы категории через API с учётом глубины')
-        self.get_pages_btn.clicked.connect(self.fetch_category_pages)
-
-        self.petscan_btn = QPushButton('Получить подкатегории')
-        self.petscan_btn.setToolTip(
-            'Получить подкатегории через API с учётом глубины')
-        self.petscan_btn.clicked.connect(self.open_petscan)
-
-        self.open_petscan_btn = QPushButton('PetScan')
-        self.open_petscan_btn.setToolTip(
-            'Открыть PetScan с расширенными настройками для указанной категории')
-        self.open_petscan_btn.clicked.connect(self.open_petscan_in_browser)
-
-        depth_label = QLabel('Глубина:')
-        depth_label.setToolTip(
-            'Глубина рекурсивного обхода категории. '
-            'Для «Получить страницы»: 0 = только корневая категория, 1 = + прямые подкатегории. '
-            'Для «Получить подкатегории»: 0 = только прямые подкатегории.')
-
-        self.depth_spin = QSpinBox()
-        self.depth_spin.setMinimum(0)
-        self.depth_spin.setMaximum(10)
-        self.depth_spin.setValue(0)
-        self.depth_spin.setToolTip(
-            'Глубина рекурсивного обхода категории для страниц и подкатегорий')
-        try:
-            self.depth_spin.setFixedWidth(60)
-        except Exception:
-            pass
-
-        category_fetch_layout.addWidget(depth_label, 0, 1)
-        category_fetch_layout.addWidget(self.depth_spin, 0, 2)
-
-        category_buttons_layout = QHBoxLayout()
-        category_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        category_buttons_layout.setSpacing(8)
-
-        for button in (
-            self.get_pages_btn,
-            self.petscan_btn,
-            self.open_petscan_btn,
-        ):
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            category_buttons_layout.addWidget(button)
-
-        category_fetch_layout.addLayout(category_buttons_layout, 1, 0, 1, 3)
-
-        left_layout.addLayout(category_fetch_layout)
-
-        # Ручной ввод списка
-        left_layout.addSpacing(6)
-        lbl_left_top = QLabel('<b>Список категорий для считывания:</b>')
-        left_layout.addWidget(lbl_left_top)
-        self.manual_list = QTextEdit()
-        self.manual_list.setPlaceholderText(
-            'Список страниц (по одной на строку)')
-        self.manual_list.setMinimumHeight(220)
-        left_layout.addWidget(self.manual_list, 1)
-
-        # Создаем алиас для совместимости с тестами
-        self.list_edit = self.manual_list
-        try:
-            left_layout.setStretchFactor(self.manual_list, 1)
-        except Exception:
-            pass
-
-        # Загрузка из файла
-        left_layout.addWidget(QLabel('<b>Или загрузить из файла:</b>'))
-        file_layout = QHBoxLayout()
-        file_layout.addWidget(QLabel('Файл (.txt):'))
-
-        self.in_path = QLineEdit()
-        self.in_path.setMinimumWidth(0)
-        file_layout.addWidget(self.in_path, 1)
-        # Кнопка «…» справа
-        btn_browse_in = QToolButton()
-        btn_browse_in.setText('…')
-        btn_browse_in.setAutoRaise(False)
-        try:
-            btn_browse_in.setFixedSize(28, 28)
-            btn_browse_in.setCursor(Qt.PointingHandCursor)
-            btn_browse_in.setToolTip('Выбрать файл')
-        except Exception:
-            pass
-        btn_browse_in.clicked.connect(
-            lambda: pick_file(self, self.in_path, '*.txt'))
-        file_layout.addWidget(btn_browse_in)
-
-        # Создаем алиас для совместимости с тестами
-        self.file_edit = self.in_path
-
-        btn_open_in = QPushButton('Открыть')
-        btn_open_in.clicked.connect(lambda: open_from_edit(self, self.in_path))
-        file_layout.addWidget(btn_open_in)
-        left_layout.addLayout(file_layout)
-
-        # === ПРАВАЯ ПАНЕЛЬ: ХОД СЧИТЫВАНИЯ ===
-        right_group = QGroupBox("Настройки и результат")
+        right_group = QGroupBox('Настройки и результат')
         right_group.setStyleSheet(
-            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } "
+            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
+        )
         right_layout = QVBoxLayout(right_group)
         try:
             right_layout.setContentsMargins(8, 12, 8, 8)
@@ -227,22 +90,18 @@ class ParseTab(QWidget):
         except Exception:
             pass
 
-        # i-кнопка справа будет прикреплена к рамке, без участия в layout
-
-        # Файл сохранения
         save_layout = QHBoxLayout()
         save_layout.addWidget(QLabel('Сохранить в:'))
 
         self.out_path = QLineEdit('categories.tsv')
         self.out_path.setMinimumWidth(0)
         save_layout.addWidget(self.out_path, 1)
-        # Кнопка «…» справа
+
         btn_browse_out = QToolButton()
         btn_browse_out.setText('…')
         btn_browse_out.setAutoRaise(False)
         try:
             btn_browse_out.setFixedSize(28, 28)
-            btn_browse_out.setCursor(Qt.PointingHandCursor)
             btn_browse_out.setToolTip('Выбрать путь сохранения')
         except Exception:
             pass
@@ -251,51 +110,32 @@ class ParseTab(QWidget):
         save_layout.addWidget(btn_browse_out)
 
         btn_open_out = QPushButton('Открыть')
-        btn_open_out.clicked.connect(
-            lambda: open_from_edit(self, self.out_path))
+        btn_open_out.clicked.connect(lambda: open_from_edit(self, self.out_path))
         save_layout.addWidget(btn_open_out)
-        # Толкаем (i) к правому краю верхней строки справа
         save_layout.addStretch()
         add_info_button(self, save_layout, parse_help_right, inline=True)
         right_layout.addLayout(save_layout)
 
-        # Небольшой отступ и лог процесса (основная область)
         right_layout.addSpacing(6)
-        lbl_right_top = QLabel('<b>Лог выполнения:</b>')
-        # Заголовок
-        right_layout.addWidget(lbl_right_top)
-        # Контейнер для лога с кнопкой очистки в правом нижнем углу
         self.parse_log = QTextEdit()
         self.parse_log.setReadOnly(True)
         self.parse_log.setMinimumHeight(220)
 
-        # Устанавливаем моноширинный шрифт для лога
-        mono_font = QFont("Consolas", 9)
+        mono_font = QFont('Consolas', 9)
         if not mono_font.exactMatch():
-            mono_font = QFont("Courier New", 9)
+            mono_font = QFont('Courier New', 9)
         mono_font.setFixedPitch(True)
         self.parse_log.setFont(mono_font)
-        from ..widgets.ui_helpers import create_log_wrap
-        parse_log_wrap = create_log_wrap(
-            self, self.parse_log, with_header=False)
-        right_layout.addWidget(parse_log_wrap, 1)
-        try:
-            right_layout.setStretchFactor(parse_log_wrap, 1)
-        except Exception:
-            pass
 
-        # Прогресс-бар
+        parse_log_wrap = create_log_wrap(
+            self, self.parse_log, with_header=True)
+        right_layout.addWidget(parse_log_wrap, 1)
+
         self.parse_bar = QProgressBar()
         self.parse_bar.setMaximum(1)
         self.parse_bar.setValue(0)
         right_layout.addWidget(self.parse_bar)
-        try:
-            # Синхронизируем нижние поля по высоте (лог справа и список слева)
-            right_layout.setStretchFactor(self.parse_log, 1)
-        except Exception:
-            pass
 
-        # Кнопки управления
         control_layout = QHBoxLayout()
         control_layout.addStretch()
         self.parse_btn = QPushButton('Начать считывание')
@@ -309,337 +149,40 @@ class ParseTab(QWidget):
         right_layout.addLayout(control_layout)
         set_start_stop_ratio(self.parse_btn, self.parse_stop_btn, 3)
 
-        # Добавление панелей в основной макет
-        h_main.addWidget(left_group, 1)
+        self.source_panel.set_log_widget(self.parse_log)
+
+        h_main.addWidget(self.source_panel, 1)
         h_main.addWidget(right_group, 1)
         main_layout.addLayout(h_main)
 
     def update_namespace_combo(self, family: str, lang: str):
-        """Обновление комбобокса пространств имен для текущего языка/проекта"""
-        try:
-            nm = getattr(self.parent_window, 'namespace_manager', None)
-            if nm:
-                nm.populate_ns_combo(self.ns_combo_parse, family, lang)
-                nm._adjust_combo_popup_width(self.ns_combo_parse)
-        except Exception:
-            pass
+        self.source_panel.update_namespace_combo(family, lang)
 
     def get_current_language(self) -> str:
-        """Получение текущего языка из родительского окна"""
-        # Сначала пробуем current_lang из MainWindow (синхронизируется при авторизации)
-        try:
-            lang = getattr(self.parent_window, 'current_lang', None)
-            if lang:
-                return lang
-        except Exception:
-            pass
-        # Фолбэк: берём из AuthTab.lang_combo
-        try:
-            auth = getattr(self.parent_window, 'auth_tab', None)
-            if auth and hasattr(auth, 'lang_combo') and auth.lang_combo:
-                return auth.lang_combo.currentText() or 'ru'
-        except Exception:
-            pass
-        return 'ru'
+        return self.source_panel.get_current_language()
 
     def get_current_family(self) -> str:
-        """Получение текущего проекта из родительского окна (или из AuthTab)."""
-        try:
-            # Предпочитаем текущее состояние MainWindow.current_family, которое синхронизируется с AuthTab
-            fam = getattr(self.parent_window, 'current_family', None)
-            if fam:
-                return fam
-            # Фолбэк: попытаться взять из AuthTab
-            auth = getattr(self.parent_window, 'auth_tab', None)
-            if auth and hasattr(auth, 'family_combo') and auth.family_combo:
-                txt = auth.family_combo.currentText() or 'wikipedia'
-                return txt
-        except Exception:
-            pass
-        return 'wikipedia'
-
-    def _build_petscan_url(self, family: str, lang: str, category: str, depth: int = 0) -> str:
-        """Собирает URL PetScan для категории."""
-        from ...core.namespace_manager import strip_ns_prefix
-
-        base = strip_ns_prefix(family, lang, category, 14)
-        cat_param = urllib.parse.quote_plus(base)
-        petscan_url = (
-            'https://petscan.wmcloud.org/?combination=subset&interface_language=en&ores_prob_from=&'
-            'referrer_name=&ores_prob_to=&min_sitelink_count=&wikidata_source_sites=&templates_yes=&'
-            'sortby=title&pagepile=&cb_labels_no_l=1&show_disambiguation_pages=both&language=' + lang +
-            '&max_sitelink_count=&cb_labels_yes_l=1&outlinks_any=&common_wiki=auto&categories=' + cat_param +
-            '&edits%5Bbots%5D=both&wikidata_prop_item_use=&ores_prediction=any&outlinks_no=&source_combination=&'
-            'ns%5B14%5D=1&sitelinks_any=&cb_labels_any_l=1&edits%5Banons%5D=both&links_to_no=&search_wiki=&'
-            f'project={family}&after=&wikidata_item=no&search_max_results=1000&langs_labels_no=&langs_labels_yes=&'
-            'sortorder=ascending&templates_any=&show_redirects=both&active_tab=tab_output&wpiu=any&doit='
-        )
-        if depth > 0:
-            petscan_url += f'&depth={depth}'
-        return petscan_url
+        return self.source_panel.get_current_family()
 
     def open_petscan_in_browser(self):
-        """Открывает PetScan для указанной категории."""
-        if not hasattr(self, 'cat_edit') or self.cat_edit is None:
-            debug("Error: cat_edit not initialized")
-            return
-
-        category = self.cat_edit.text().strip()
-        if not category:
-            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
-            return
-
-        lang = self.get_current_language()
-        fam = self.get_current_family()
-        depth = self.depth_spin.value() if hasattr(self, 'depth_spin') else 0
-        petscan_url = self._build_petscan_url(fam, lang, category, depth)
-        debug(f"Open Petscan URL: {petscan_url}")
-        webbrowser.open_new_tab(petscan_url)
+        self.source_panel.open_petscan_in_browser()
 
     def open_petscan(self):
-        """Получение подкатегорий через API."""
-        if not hasattr(self, 'cat_edit') or self.cat_edit is None:
-            debug("Error: cat_edit not initialized")
-            return
-
-        debug(f"Fetch subcats btn pressed: cat={self.cat_edit.text().strip()}")
-        category = self.cat_edit.text().strip()
-        if not category:
-            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
-            return
-        lang = self.get_current_language()
-        fam = self.get_current_family()
-
-        # --- API режим --- формируем полное имя категории ---
-        from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
-        if has_prefix_by_policy(fam, lang, category, {14}):
-            cat_full = category
-        else:
-            cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
-            cat_full = cat_prefix + category
-
-        # Получаем глубину из спинбокса
-        depth = self.depth_spin.value() if hasattr(self, 'depth_spin') else 0
-
-        api_client = WikimediaAPIClient()
-        subcats = []
-        try:
-            # Рекурсивное получение подкатегорий с заданной глубиной
-            subcats = self._fetch_subcats_recursive(
-                api_client, cat_full, lang, fam, depth, 0, set())
-
-            if subcats:
-                subcats_sorted = sorted(subcats, key=lambda s: s.casefold())
-                self.manual_list.setPlainText('\n'.join(subcats_sorted))
-                log_message(
-                    self.parse_log, f"Получено {format_russian_subcategories_nominative(len(subcats_sorted))} (глубина: {depth}, отсортировано)", debug)
-            else:
-                log_message(self.parse_log, 'Подкатегории не найдены.', debug)
-        except Exception as e:
-            log_message(self.parse_log, f"Ошибка API: {e}", debug)
-        debug("Subcat fetch finished")
-        self.petscan_btn.setEnabled(True)
-
-        # Если нужно открыть ссылку вручную, скопируйте URL из логов
+        self.source_panel.open_petscan()
 
     def fetch_category_pages(self):
-        """Получение страниц указанной категории через MediaWiki API с учётом глубины."""
-        if not hasattr(self, 'cat_edit') or self.cat_edit is None:
-            debug("Error: cat_edit not initialized")
-            return
-
-        category = self.cat_edit.text().strip()
-        debug(f"Fetch pages btn pressed: cat={category}")
-        if not category:
-            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
-            return
-
-        lang = self.get_current_language()
-        fam = self.get_current_family()
-
-        try:
-            self.get_pages_btn.setEnabled(False)
-        except Exception:
-            pass
-
-        # Формируем полное имя категории с NS-14, если префикс не указан
-        from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
-        if has_prefix_by_policy(fam, lang, category, {14}):
-            cat_full = category
-        else:
-            cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
-            cat_full = cat_prefix + category
-
-        depth = self.depth_spin.value() if hasattr(self, 'depth_spin') else 0
-
-        api_client = WikimediaAPIClient()
-        titles = []
-        try:
-            categories = [cat_full]
-            if depth > 0:
-                categories.extend(self._fetch_subcats_recursive(
-                    api_client, cat_full, lang, fam, depth - 1, 0, set()))
-            categories = list(dict.fromkeys(categories))
-
-            for current_category in categories:
-                titles.extend(self._fetch_pages_for_category(
-                    api_client, current_category, lang, fam))
-
-            if titles:
-                titles_sorted = sorted(set(titles), key=lambda s: s.casefold())
-                self.manual_list.setPlainText('\n'.join(titles_sorted))
-                log_message(
-                    self.parse_log, f"Получено страниц: {len(titles_sorted)} (глубина: {depth}, отсортировано)", debug)
-            else:
-                log_message(
-                    self.parse_log, 'Страницы в категории не найдены.', debug)
-        except Exception as e:
-            log_message(self.parse_log, f"Ошибка API: {e}", debug)
-        finally:
-            try:
-                self.get_pages_btn.setEnabled(True)
-            except Exception:
-                pass
-
-    def _fetch_pages_for_category(self, api_client, category, lang, fam):
-        """Получает прямые страницы категории без рекурсии."""
-        api_url = api_client._build_api_url(fam, lang)
-        params = {
-            'action': 'query',
-            'list': 'categorymembers',
-            'cmtitle': category,
-            'cmtype': 'page',
-            'cmlimit': 'max',
-            'format': 'json'
-        }
-
-        titles = []
-        while True:
-            _rate_wait()
-            r = REQUEST_SESSION.get(
-                api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
-            if r.status_code != 200:
-                log_message(
-                    self.parse_log, f"HTTP {r.status_code} при запросе страниц для {category}", debug)
-                break
-
-            try:
-                resp = r.json()
-            except Exception:
-                log_message(
-                    self.parse_log, f"Не удалось распарсить JSON для {category}", debug)
-                break
-
-            batch = [m.get('title', '') for m in resp.get(
-                'query', {}).get('categorymembers', [])]
-            titles.extend([t for t in batch if t])
-
-            if 'continue' in resp:
-                params.update(resp['continue'])
-            else:
-                break
-
-        return titles
-
-    def _fetch_subcats_recursive(self, api_client, category, lang, fam, max_depth, current_depth, visited):
-        """
-        Рекурсивно получает подкатегории с заданной глубиной.
-
-        Args:
-            api_client: Клиент API
-            category: Полное название категории (с префиксом)
-            lang: Язык
-            fam: Семейство (wikipedia, commons и т.д.)
-            max_depth: Максимальная глубина рекурсии
-            current_depth: Текущая глубина
-            visited: Множество уже посещённых категорий (для избежания циклов)
-
-        Returns:
-            Список подкатегорий
-        """
-        if current_depth > max_depth:
-            return []
-
-        # Избегаем циклов
-        cat_lower = category.casefold()
-        if cat_lower in visited:
-            return []
-        visited.add(cat_lower)
-
-        api_url = api_client._build_api_url(fam, lang)
-        params = {
-            'action': 'query',
-            'list': 'categorymembers',
-            'cmtitle': category,
-            'cmtype': 'subcat',
-            'cmlimit': 'max',
-            'format': 'json'
-        }
-
-        direct_subcats = []
-        try:
-            while True:
-                _rate_wait()
-                r = REQUEST_SESSION.get(
-                    api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
-                if r.status_code != 200:
-                    debug(
-                        f"HTTP {r.status_code} при запросе подкатегорий для {category}")
-                    break
-                try:
-                    resp = r.json()
-                except Exception:
-                    debug(f"Не удалось распарсить JSON для {category}")
-                    break
-
-                batch = [m['title'] for m in resp.get(
-                    'query', {}).get('categorymembers', [])]
-                direct_subcats.extend(batch)
-
-                if 'continue' in resp:
-                    params.update(resp['continue'])
-                else:
-                    break
-
-            debug(
-                f"Глубина {current_depth}: {category} → {len(direct_subcats)} подкатегорий")
-
-        except Exception as e:
-            debug(f"Ошибка получения подкатегорий для {category}: {e}")
-            return []
-
-        # Если достигли максимальной глубины, возвращаем только прямые подкатегории
-        if current_depth >= max_depth:
-            return direct_subcats
-
-        # Иначе рекурсивно получаем подкатегории следующего уровня
-        all_subcats = list(direct_subcats)
-        for subcat in direct_subcats:
-            deeper = self._fetch_subcats_recursive(
-                api_client, subcat, lang, fam, max_depth, current_depth + 1, visited)
-            all_subcats.extend(deeper)
-
-        return all_subcats
+        self.source_panel.fetch_category_pages()
 
     def start_parse(self):
-        """Запуск процесса чтения страниц"""
         if not self.out_path.text():
             QMessageBox.warning(self, 'Ошибка', 'Укажите файл результата.')
             return
 
-        titles = []
-        # Приоритет: если указан файл — читаем из него; иначе берём из текстового поля
-        in_file = self.in_path.text().strip()
-        if in_file:
-            try:
-                with open(in_file, encoding='utf-8') as f:
-                    titles = [l.strip() for l in f if l.strip()]
-            except Exception as e:
-                QMessageBox.critical(self, 'Ошибка', str(e))
-                return
-        else:
-            manual_lines = self.manual_list.toPlainText().splitlines()
-            titles = [l.strip() for l in manual_lines if l.strip()]
+        try:
+            titles = self.source_panel.load_titles_from_inputs()
+        except Exception as exc:
+            QMessageBox.critical(self, 'Ошибка', str(exc))
+            return
 
         if not titles:
             QMessageBox.warning(
@@ -652,57 +195,43 @@ class ParseTab(QWidget):
         self.parse_bar.setMaximum(len(titles))
         self.parse_bar.setValue(0)
         self.parse_btn.setEnabled(False)
+
         ns_sel = self.ns_combo_parse.currentData()
         self.worker = ParseWorker(
             titles, self.out_path.text(), ns_sel, lang, fam)
         self.worker.progress.connect(
-            lambda m: [self._inc_parse_prog(), log_message(self.parse_log, m, debug)])
+            lambda message: [self._inc_parse_prog(), log_message(self.parse_log, message, debug)])
         self.worker.finished.connect(self._on_parse_finished)
-        self.parse_btn.setEnabled(False)
-        # Возвращаем кнопку в режим «Остановить» при старте нового считывания
+
         try:
-            try:
-                self.parse_stop_btn.clicked.disconnect()
-            except Exception:
-                pass
-            self.parse_stop_btn.setText('Остановить')
-            self.parse_stop_btn.clicked.connect(self.stop_parse)
+            self.parse_stop_btn.clicked.disconnect()
         except Exception:
             pass
+        self.parse_stop_btn.setText('Остановить')
+        self.parse_stop_btn.clicked.connect(self.stop_parse)
         self.parse_stop_btn.setEnabled(True)
-        # не очищаем лог автоматически — пользователь может очистить вручную
         self.worker.start()
 
     def stop_parse(self):
-        """Остановка процесса чтения"""
-        w = getattr(self, 'worker', None)
-        if w and w.isRunning():
-            w.request_stop()
-
+        worker = getattr(self, 'worker', None)
+        if worker and worker.isRunning():
+            worker.request_stop()
             try:
                 self.parse_stop_btn.setEnabled(False)
                 log_message(self.parse_log, 'Останавливаю...', debug)
             except Exception:
                 pass
-        else:
-            # Если не запущено — считаем, что кнопка в режиме «Открыть» и ничего не делаем
-            pass
 
     def _on_parse_finished(self):
-        """Обработка завершения процесса чтения"""
-        # Переключаем кнопку «Остановить» → «Открыть» по завершении
         try:
             self.parse_btn.setEnabled(True)
             if getattr(self, 'worker', None) and getattr(self.worker, '_stop', False):
-                # Если остановлено — вернём кнопку к исходному состоянию
                 self.parse_stop_btn.setText('Остановить')
                 self.parse_stop_btn.setEnabled(False)
-                msg = 'Остановлено!'
+                message = 'Остановлено!'
             else:
-                # Завершено штатно — меняем на «Открыть»
                 self.parse_stop_btn.setText('Открыть')
                 self.parse_stop_btn.setEnabled(True)
-                # Привяжем к открытию файла результата
                 out_path = self.out_path.text().strip()
 
                 def _open_result():
@@ -712,44 +241,36 @@ class ParseTab(QWidget):
                         else:
                             QMessageBox.information(
                                 self, 'Файл не найден', 'Файл результата не найден.')
-                    except Exception as e:
-                        QMessageBox.warning(self, 'Ошибка', str(e))
+                    except Exception as exc:
+                        QMessageBox.warning(self, 'Ошибка', str(exc))
+
                 try:
-                    # Сбрасываем старые коннекты, если были
-                    try:
-                        self.parse_stop_btn.clicked.disconnect()
-                    except Exception:
-                        pass
-                    self.parse_stop_btn.clicked.connect(_open_result)
+                    self.parse_stop_btn.clicked.disconnect()
                 except Exception:
                     pass
-                msg = 'Готово!'
-            log_message(self.parse_log, msg, debug)
+                self.parse_stop_btn.clicked.connect(_open_result)
+                message = 'Готово!'
+            log_message(self.parse_log, message, debug)
         except Exception:
             pass
 
     def _inc_parse_prog(self):
-        """Увеличение значения прогресс-бара"""
         self.parse_bar.setValue(self.parse_bar.value() + 1)
 
     def set_auth_data(self, username: str, lang: str, family: str):
-        """Установить данные авторизации"""
         self.current_user = username
         self.current_lang = lang
         self.current_family = family
 
     def clear_auth_data(self):
-        """Очистить данные авторизации"""
         self.current_user = None
         self.current_lang = None
         self.current_family = None
 
     def pick_file(self, line_edit, filter_str: str):
-        """Выбор файла для загрузки"""
         from ..widgets.ui_helpers import pick_file
         pick_file(self, line_edit, filter_str)
 
     def open_from_edit(self, line_edit):
-        """Открытие файла из поля ввода"""
         from ..widgets.ui_helpers import open_from_edit
         open_from_edit(self, line_edit)

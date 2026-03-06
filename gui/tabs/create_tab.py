@@ -14,7 +14,7 @@ import os
 from typing import Optional
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGridLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QTextEdit, QSizePolicy, QProgressBar,
     QMessageBox
 )
@@ -24,6 +24,7 @@ from ...constants import PREFIX_TOOLTIP
 from ...utils import debug, default_create_summary, format_russian_pages_nominative
 from ...workers.create_worker import CreateWorker
 from ...core.pywikibot_config import apply_pwb_config
+from ..widgets.shared_panels import TsvPreviewPanel
 from ..widgets.ui_helpers import (
     embed_button_in_lineedit, add_info_button, pick_file,
     open_from_edit, log_message, set_start_stop_ratio,
@@ -126,38 +127,14 @@ class CreateTab(QWidget):
         self.summary_edit_create.setText(default_create_summary('ru'))
         sum_layout.addWidget(self.summary_edit_create)
 
-        # Предпросмотр области
-        self.create_preview_titles = QTextEdit()
-        self.create_preview_titles.setReadOnly(True)
-        try:
-            self.create_preview_titles.setLineWrapMode(QTextEdit.NoWrap)
-            self.create_preview_titles.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarAsNeeded)
-        except Exception:
-            pass
-
-        self.create_preview_rest = QTextEdit()
-        self.create_preview_rest.setReadOnly(True)
-        try:
-            self.create_preview_rest.setLineWrapMode(QTextEdit.NoWrap)
-            self.create_preview_rest.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarAsNeeded)
-        except Exception:
-            pass
-
-        # Создаем алиас для совместимости с тестами
+        self.preview_panel = TsvPreviewPanel(
+            self,
+            left_header='Название страницы',
+            right_header='Содержимое для создания',
+        )
+        self.create_preview_titles = self.preview_panel.titles_edit
+        self.create_preview_rest = self.preview_panel.content_edit
         self.create_preview_content = self.create_preview_rest
-
-        # Синхронизация вертикального скролла
-        try:
-            a = self.create_preview_titles.verticalScrollBar()
-            b = self.create_preview_rest.verticalScrollBar()
-            a.valueChanged.connect(lambda v: (
-                b.setValue(v) if b.value() != v else None))
-            b.valueChanged.connect(lambda v: (
-                a.setValue(v) if a.value() != v else None))
-        except Exception:
-            pass
 
         # Кнопки управления
         self.preview_create_btn = QPushButton('Предпросмотр')
@@ -184,8 +161,7 @@ class CreateTab(QWidget):
             except Exception:
                 pass
             try:
-                self.create_preview_titles.clear()
-                self.create_preview_rest.clear()
+                self.preview_panel.clear()
             except Exception:
                 pass
             try:
@@ -216,14 +192,7 @@ class CreateTab(QWidget):
             preview_layout.setSpacing(0)
         except Exception:
             pass
-        preview_layout.addWidget(QLabel('<b>Предпросмотр:</b>'))
-
-        pv_split = QSplitter(Qt.Horizontal)
-        pv_split.addWidget(self.create_preview_titles)
-        pv_split.addWidget(self.create_preview_rest)
-        pv_split.setStretchFactor(0, 1)
-        pv_split.setStretchFactor(1, 2)
-        preview_layout.addWidget(pv_split, 1)
+        preview_layout.addWidget(self.preview_panel, 1)
         content_row.addWidget(preview_wrap, 3)
 
         # Лог справа
@@ -290,8 +259,7 @@ class CreateTab(QWidget):
                 self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
             return
 
-        self.create_preview_titles.setPlainText('\n'.join(left))
-        self.create_preview_rest.setPlainText('\n'.join(right))
+        self.preview_panel.set_preview(left, right)
 
         # Активируем кнопку "Создать" после предпросмотра
         self.create_btn.setEnabled(True)

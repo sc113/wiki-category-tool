@@ -238,6 +238,39 @@ def default_create_summary(lang: str) -> str:
     return mapping.get(lang, 'Category creation with prepared content: $1 $2 $3')
 
 
+def default_redundant_category_summary(lang: str) -> str:
+    """Стандартный шаблон описания правки для удаления избыточных категорий."""
+    mapping = {
+        'ru': 'Удалена категория {link_broad}, так как существует более точная {link_precise}',
+        'uk': 'Вилучено категорію {link_broad}, оскільки існує точніша {link_precise}',
+        'be': 'Выдалена катэгорыя {link_broad}, бо існуе больш дакладная {link_precise}',
+        'en': 'Removed category {link_broad} because a more precise {link_precise} exists',
+        'fr': 'Catégorie {link_broad} retirée car il existe une catégorie plus précise : {link_precise}',
+        'es': 'Se retiró la categoría {link_broad} porque existe una más precisa: {link_precise}',
+        'de': 'Kategorie {link_broad} entfernt, da eine genauere {link_precise} vorhanden ist',
+    }
+    return mapping.get(lang, 'Removed category {link_broad} because a more precise {link_precise} exists')
+
+
+def default_redundant_category_multi_summary(lang: str) -> str:
+    """Стандартный шаблон для множественного удаления категорий."""
+    mapping = {
+        'ru': 'Удалены категории, так как существуют более точные: {pair}.',
+        'uk': 'Вилучено категорії, оскільки існують точніші: {pair}.',
+        'be': 'Выдалены катэгорыі, бо існуюць больш дакладныя: {pair}.',
+        'en': 'Removed categories because more precise ones exist: {pair}.',
+        'fr': 'Catégories retirées car des catégories plus précises existent : {pair}.',
+        'es': 'Se retiraron categorías porque existen otras más precisas: {pair}.',
+        'de': 'Kategorien entfernt, da genauere vorhanden sind: {pair}.',
+    }
+    return mapping.get(lang, 'Removed categories because more precise ones exist: {pair}.')
+
+
+def default_redundant_category_pair_format(_lang: str) -> str:
+    """Формат одной пары внутри множественного комментария."""
+    return '{link_broad} → {link_precise}'
+
+
 def adjust_combo_popup_width(combo) -> None:
     """Настройка ширины выпадающего списка комбобокса."""
     try:

@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
         self.replace_tab = None
         self.create_tab = None
         self.rename_tab = None
+        self.redundant_categories_tab = None
         self._ns_thread = None
         self._rules_file_path = None
 
@@ -196,6 +197,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.replace_tab, 'Перезапись')
         self.tabs.addTab(self.create_tab, 'Создание')
         self.tabs.addTab(self.rename_tab, 'Переименование')
+        self.tabs.addTab(self.redundant_categories_tab, 'Удаление избыточных категорий')
         self._startup_complete = True
 
     def init_core_components(self):
@@ -223,15 +225,24 @@ class MainWindow(QMainWindow):
         from .tabs.replace_tab import ReplaceTab
         from .tabs.create_tab import CreateTab
         from .tabs.rename_tab import RenameTab
+        from .tabs.redundant_categories_tab import RedundantCategoriesTab
         # Создание вкладок с передачей core компонентов
         self.auth_tab = AuthTab(self)
         self.parse_tab = ParseTab(self)
         self.replace_tab = ReplaceTab(self)
         self.create_tab = CreateTab(self)
         self.rename_tab = RenameTab(self)
+        self.redundant_categories_tab = RedundantCategoriesTab(self)
 
         # Передача core компонентов во вкладки
-        for tab in [self.auth_tab, self.parse_tab, self.replace_tab, self.create_tab, self.rename_tab]:
+        for tab in [
+            self.auth_tab,
+            self.parse_tab,
+            self.replace_tab,
+            self.create_tab,
+            self.rename_tab,
+            self.redundant_categories_tab,
+        ]:
             if hasattr(tab, 'set_core_components'):
                 tab.set_core_components(
                     api_client=self.api_client,
@@ -413,8 +424,9 @@ class MainWindow(QMainWindow):
         Выполняем сетевую загрузку только если отсутствует кэш для текущего языка/проекта.
         """
         try:
-            # Вкладки: 0=Авторизация, 1=Чтение, 2=Перезапись, 3=Создание, 4=Переименование
-            if index in (1, 2, 3, 4):
+            # Вкладки: 0=Авторизация, 1=Чтение, 2=Перезапись, 3=Создание,
+            # 4=Переименование, 5=Удаление избыточных категорий
+            if index in (1, 2, 3, 4, 5):
                 fam = self.current_family or 'wikipedia'
                 lang = self.current_lang or 'ru'
                 force_needed = False
@@ -497,6 +509,7 @@ class MainWindow(QMainWindow):
                 getattr(self, 'replace_tab', None),
                 getattr(self, 'create_tab', None),
                 getattr(self, 'rename_tab', None),
+                getattr(self, 'redundant_categories_tab', None),
             ] if tab is not None
         ]
 
@@ -507,7 +520,8 @@ class MainWindow(QMainWindow):
             (self.parse_tab, 'ns_combo_parse'),
             (self.replace_tab, 'rep_ns_combo'),
             (self.create_tab, 'ns_combo_create'),
-            (self.rename_tab, 'rename_ns_combo')
+            (self.rename_tab, 'rename_ns_combo'),
+            (self.redundant_categories_tab, 'redundant_ns_combo'),
         ]
         for tab, attr in mapping:
             try:
@@ -666,6 +680,7 @@ class MainWindow(QMainWindow):
             ('replace', self.replace_tab, 'rworker'),
             ('create', self.create_tab, 'cworker'),
             ('rename', self.rename_tab, 'mrworker'),
+            ('redundant', self.redundant_categories_tab, 'rcworker'),
             ('auth', self.auth_tab, '_login_worker')
         ]
 
