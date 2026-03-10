@@ -1,0 +1,80 @@
+
+This file lists modules PyInstaller was not able to find. This does not
+necessarily mean these modules are required for running your program. Both
+Python's standard library and 3rd-party Python packages often conditionally
+import optional modules, some of which may be available only on certain
+platforms.
+
+Types of import:
+* top-level: imported at the top-level - look at these first
+* conditional: imported within an if-statement
+* delayed: imported within a function
+* optional: imported within a try-except-statement
+
+IMPORTANT: Do NOT post this list to the issue-tracker. Use it as a basis for
+            tracking down the missing module yourself. Thanks!
+
+missing module named urllib.urlopen - imported by urllib (delayed, optional), lxml.html (delayed, optional)
+missing module named urllib.urlencode - imported by urllib (delayed, optional), lxml.html (delayed, optional)
+missing module named pwd - imported by posixpath (delayed, conditional, optional), shutil (delayed, optional), tarfile (optional), pathlib._local (optional), subprocess (delayed, conditional, optional), netrc (delayed, optional), getpass (delayed, optional), setuptools._distutils.util (delayed, conditional, optional), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional), http.server (delayed, optional)
+missing module named grp - imported by shutil (delayed, optional), tarfile (optional), pathlib._local (optional), subprocess (delayed, conditional, optional), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional)
+missing module named 'collections.abc' - imported by traceback (top-level), typing (top-level), inspect (top-level), logging (top-level), importlib.resources.readers (top-level), selectors (top-level), tracemalloc (top-level), PySide6.QtCore (top-level), PySide6.QtNetwork (top-level), PySide6.QtGui (top-level), PySide6.QtWidgets (top-level), pywikibot (top-level), pywikibot.config (top-level), pywikibot.logging (top-level), pywikibot.tools (top-level), typing_extensions (top-level), asyncio.base_events (top-level), http.client (top-level), asyncio.coroutines (top-level), pywikibot._wbtypes (top-level), pywikibot.site._namespace (top-level), pywikibot.site._apisite (top-level), setuptools (top-level), setuptools._distutils.filelist (top-level), setuptools._distutils.util (top-level), setuptools._vendor.jaraco.functools (top-level), setuptools._vendor.more_itertools.more (top-level), setuptools._distutils._modified (top-level), setuptools._distutils.compat (top-level), setuptools._distutils.spawn (top-level), setuptools._distutils.compilers.C.base (top-level), setuptools._distutils.fancy_getopt (top-level), setuptools._reqs (top-level), setuptools._vendor.jaraco.context (top-level), setuptools.discovery (top-level), setuptools.dist (top-level), setuptools._vendor.importlib_metadata (top-level), setuptools._vendor.importlib_metadata._meta (top-level), setuptools._distutils.command.bdist (top-level), setuptools._distutils.core (top-level), setuptools._distutils.cmd (top-level), setuptools._distutils.dist (top-level), configparser (top-level), setuptools._distutils.extension (top-level), setuptools.config.setupcfg (top-level), setuptools.config.expand (top-level), setuptools.config.pyprojecttoml (top-level), setuptools.config._apply_pyprojecttoml (top-level), setuptools.extension (top-level), tomllib._parser (top-level), setuptools._vendor.tomli._parser (conditional), setuptools.wheel (top-level), setuptools.command.egg_info (top-level), setuptools.command.bdist_egg (top-level), setuptools.command.sdist (top-level), setuptools._distutils.command.build (top-level), setuptools._distutils.command.sdist (top-level), setuptools.glob (top-level), setuptools.command._requirestxt (top-level), setuptools.command.bdist_wheel (top-level), hpack.hpack (conditional), hyperframe.frame (conditional), hyperframe.flags (top-level), h2.settings (top-level), h2.utilities (conditional), h2.stream (conditional), h2.connection (conditional), requests.compat (top-level), OpenSSL.SSL (top-level), cryptography.utils (top-level), cryptography.x509.name (top-level), cryptography.x509.base (top-level), cryptography.hazmat.bindings.openssl.binding (top-level), cryptography.x509.extensions (top-level), OpenSSL.crypto (top-level), socks (optional), fake_useragent.fake (top-level), pywikibot.data.api._generators (top-level), pywikibot.tools.collections (top-level), pywikibot.data.api._optionset (top-level), pywikibot.data.api._paraminfo (top-level), pywikibot.backports (conditional), pywikibot.data.api._requests (top-level), pywikibot.textlib (top-level), pywikibot.family (top-level), pywikibot.tools.chars (top-level), mwparserfromhell.string_mixin (top-level), mwparserfromhell.wikicode (top-level), mwparserfromhell.smart_list.utils (top-level), mwparserfromhell.nodes._base (top-level), mwparserfromhell.nodes.argument (top-level), mwparserfromhell.nodes.external_link (top-level), mwparserfromhell.nodes.heading (top-level), mwparserfromhell.nodes.tag (top-level), mwparserfromhell.nodes.template (top-level), mwparserfromhell.nodes.wikilink (top-level), pywikibot.site._extensions (top-level), pywikibot.site._generators (top-level), pywikibot.tools.itertools (top-level), pywikibot.site._tokenwallet (top-level), pywikibot.site._siteinfo (top-level), pywikibot.site._upload (top-level), pywikibot.page._basepage (top-level), pywikibot.date (top-level), pywikibot.i18n (top-level), pywikibot.plural (conditional), pywikibot.cosmetic_changes (top-level), pywikibot.page._category (top-level), pywikibot.page._filepage (top-level), pywikibot.page._revision (top-level), pywikibot.page._user (top-level), pywikibot.page._collections (top-level), pywikibot.site._datasite (top-level), pywikibot.bot (top-level), pywikibot.bot_choice (top-level), pywikibot.userinterfaces.terminal_interface_base (top-level), pywikibot.diff (top-level), pywikibot.userinterfaces.buffer_interface (top-level), cssselect.parser (conditional), cssselect.xpath (conditional), lxml.html (top-level), lxml.html._setmixin (optional), setuptools._distutils.command.build_ext (top-level), _pyrepl.types (top-level), _pyrepl.readline (top-level), setuptools._distutils.compilers.C.msvc (top-level)
+missing module named posix - imported by posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional), os (conditional, optional), _pyrepl.unix_console (delayed, optional)
+missing module named resource - imported by posix (top-level)
+missing module named _frozen_importlib_external - imported by importlib._bootstrap (delayed), importlib (optional), importlib.abc (optional), zipimport (top-level)
+excluded module named _frozen_importlib - imported by importlib (optional), importlib.abc (optional), zipimport (top-level)
+missing module named _posixsubprocess - imported by subprocess (conditional), multiprocessing.util (delayed)
+missing module named fcntl - imported by subprocess (optional), _pyrepl.unix_console (top-level)
+missing module named _posixshmem - imported by multiprocessing.resource_tracker (conditional), multiprocessing.shared_memory (conditional)
+missing module named multiprocessing.set_start_method - imported by multiprocessing (top-level), multiprocessing.spawn (top-level)
+missing module named multiprocessing.get_start_method - imported by multiprocessing (top-level), multiprocessing.spawn (top-level)
+missing module named multiprocessing.get_context - imported by multiprocessing (top-level), multiprocessing.pool (top-level), multiprocessing.managers (top-level), multiprocessing.sharedctypes (top-level)
+missing module named multiprocessing.TimeoutError - imported by multiprocessing (top-level), multiprocessing.pool (top-level)
+missing module named _scproxy - imported by urllib.request (conditional)
+missing module named termios - imported by getpass (optional), tty (top-level), _pyrepl.pager (delayed, optional), _pyrepl.unix_console (top-level), _pyrepl.fancy_termios (top-level), _pyrepl.unix_eventqueue (top-level)
+missing module named multiprocessing.BufferTooShort - imported by multiprocessing (top-level), multiprocessing.connection (top-level)
+missing module named multiprocessing.AuthenticationError - imported by multiprocessing (top-level), multiprocessing.connection (top-level)
+missing module named asyncio.DefaultEventLoopPolicy - imported by asyncio (delayed, conditional), asyncio.events (delayed, conditional)
+missing module named annotationlib - imported by typing_extensions (conditional)
+missing module named _typeshed - imported by setuptools._distutils.dist (conditional), setuptools.command.bdist_egg (conditional), setuptools.glob (conditional), wheel.wheelfile (conditional), setuptools.compat.py311 (conditional)
+missing module named vms_lib - imported by platform (delayed, optional)
+missing module named 'java.lang' - imported by platform (delayed, optional)
+missing module named java - imported by platform (delayed)
+missing module named usercustomize - imported by site (delayed, optional)
+missing module named sitecustomize - imported by site (delayed, optional)
+missing module named readline - imported by cmd (delayed, conditional, optional), code (delayed, conditional, optional), rlcompleter (optional), pdb (delayed, optional), site (delayed, optional)
+missing module named _manylinux - imported by packaging._manylinux (delayed, optional), setuptools._vendor.packaging._manylinux (delayed, optional)
+missing module named setuptools._vendor.backports.zstd - imported by setuptools._vendor.backports (top-level), urllib3.util.request (conditional, optional), urllib3.response (conditional, optional)
+missing module named importlib_resources - imported by setuptools._vendor.jaraco.text (optional), fake_useragent.utils (conditional)
+missing module named trove_classifiers - imported by setuptools.config._validate_pyproject.formats (optional)
+missing module named pyimod02_importers - imported by C:\Users\wtf_\AppData\Local\Programs\Python\Python313\Lib\site-packages\PyInstaller\hooks\rthooks\pyi_rth_pkgutil.py (delayed)
+excluded module named pywikibot.userinterfaces.gui - imported by pywikibot.userinterfaces (delayed, optional), pywikibot.userinterfaces.terminal_interface_base (delayed, optional)
+missing module named compression - imported by pywikibot.tools (optional), urllib3.util.request (conditional, optional), urllib3.response (conditional, optional)
+missing module named tests - imported by pywikibot.data.api._requests (delayed, conditional, optional)
+missing module named simplejson - imported by requests.compat (conditional, optional)
+missing module named dummy_threading - imported by requests.cookies (optional)
+missing module named brotlicffi - imported by urllib3.util.request (optional), urllib3.response (optional)
+missing module named win_inet_pton - imported by socks (conditional, optional)
+missing module named collections.Callable - imported by collections (optional), socks (optional)
+missing module named cryptography.x509.UnsupportedExtension - imported by cryptography.x509 (optional), urllib3.contrib.pyopenssl (optional)
+missing module named chardet - imported by requests (optional), bs4.dammit (optional)
+missing module named 'pyodide.ffi' - imported by urllib3.contrib.emscripten.fetch (delayed, optional)
+missing module named pyodide - imported by urllib3.contrib.emscripten.fetch (top-level)
+missing module named js - imported by urllib3.contrib.emscripten.fetch (top-level)
+missing module named wikitextparser - imported by pywikibot.textlib (optional)
+missing module named mwoauth - imported by pywikibot.login (optional)
+missing module named requests_oauthlib - imported by pywikibot.comms.http (optional)
+missing module named data - imported by pywikibot.site._generators (conditional)
+missing module named stdnum - imported by pywikibot.cosmetic_changes (optional)
+missing module named cchardet - imported by bs4.dammit (optional)
+missing module named htmlentitydefs - imported by lxml.html.soupparser (optional)
+missing module named BeautifulSoup - imported by lxml.html.soupparser (optional)
+missing module named urlparse - imported by lxml.ElementInclude (optional), lxml.html.html5parser (optional)
+missing module named urllib2 - imported by lxml.ElementInclude (optional), lxml.html.html5parser (optional)
+missing module named 'html5lib.treebuilders' - imported by bs4.builder._html5lib (top-level), lxml.html._html5builder (top-level), lxml.html.html5parser (top-level)
+missing module named html5lib - imported by bs4.builder._html5lib (top-level), lxml.html.html5parser (top-level)
+missing module named 'cython.cimports' - imported by lxml.html.diff (optional)
+missing module named cython - imported by lxml.html.diff (optional), lxml.html._difflib (optional)
+missing module named lxml_html_clean - imported by lxml.html.clean (optional)
+missing module named cgi - imported by lxml.doctestcompare (optional)
+missing module named 'html5lib.constants' - imported by bs4.builder._html5lib (top-level)

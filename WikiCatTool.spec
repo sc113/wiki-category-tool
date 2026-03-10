@@ -1,8 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('icon.ico', '.')]
+# Включаем локали и ассеты в сборку (onefile/onedir),
+# чтобы в frozen-режиме не пропадали подписи и иконки интерфейса.
+for _src_dir, _dst_root in (('locales', 'locales'), ('assets', 'assets')):
+    if not os.path.isdir(_src_dir):
+        continue
+    for _root, _dirs, _files in os.walk(_src_dir):
+        _dirs[:] = [d for d in _dirs if d != '__pycache__']
+        _rel = os.path.relpath(_root, _src_dir)
+        _dst_dir = _dst_root if _rel in ('.', '') else os.path.join(_dst_root, _rel)
+        for _name in _files:
+            if _src_dir == 'locales' and not _name.lower().endswith('.json'):
+                continue
+            _src = os.path.join(_root, _name)
+            datas.append((_src, _dst_dir))
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('wiki_cat_tool')
