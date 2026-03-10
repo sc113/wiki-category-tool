@@ -6,7 +6,7 @@ import csv
 
 from .base_worker import BaseWorker
 from ..core.api_client import WikimediaAPIClient
-from ..utils import write_row, format_russian_pages_nominative
+from ..utils import write_row
 
 
 class ParseWorker(BaseWorker):
@@ -44,7 +44,7 @@ class ParseWorker(BaseWorker):
             self.output_file = open(self.out_path, 'w', newline='', encoding='utf-8-sig')
             self.writer = csv.writer(self.output_file, delimiter='\t')
         except Exception as e:
-            self.progress.emit(f"Ошибка создания файла: {e}")
+            self.progress.emit(self._fmt('log.parse.file_create_error', error=e))
             return
         
         processed_count = 0
@@ -112,13 +112,13 @@ class ParseWorker(BaseWorker):
 
                 if lines is None:
                     # Ничего не вернулось для этого заголовка (missing/ошибка)
-                    self.progress.emit(f"{original}: не найдено")
+                    self.progress.emit(self._fmt('log.parse.not_found', title=original))
                     # В файл не пишем пустые результаты
                     processed_count += 1
                 else:
                     # Записываем с тем названием, которое вернул API (found_key), а не с original
                     title_to_write = found_key if found_key else original
-                    self.progress.emit(f"{original}: {len(lines)} строк(и)")
+                    self.progress.emit(self._fmt('log.parse.lines_count', title=original, lines=len(lines)))
                     self._write_result_immediately((title_to_write, lines))
                     processed_count += 1
         
@@ -127,11 +127,11 @@ class ParseWorker(BaseWorker):
             if self.output_file:
                 self.output_file.close()
             if processed_count > 0:
-                self.progress.emit(f"Сохранено {format_russian_pages_nominative(processed_count)} в {self.out_path}")
+                self.progress.emit(self._fmt('log.parse.saved_to_file', count=processed_count, path=self.out_path))
             else:
-                self.progress.emit("Нет данных для сохранения")
+                self.progress.emit(self._t('log.parse.no_data_to_save'))
         except Exception as e:
-            self.progress.emit(f"Ошибка закрытия файла: {e}")
+            self.progress.emit(self._fmt('log.parse.file_close_error', error=e))
     
     def _write_result_immediately(self, result):
         """Немедленная запись результата в файл"""
@@ -141,7 +141,7 @@ class ParseWorker(BaseWorker):
                 self.writer.writerow([title, *lines])
                 self.output_file.flush()  # Принудительная запись на диск
         except Exception as e:
-            self.progress.emit(f"Ошибка записи результата: {e}")
+            self.progress.emit(self._fmt('log.parse.result_write_error', error=e))
     
     def request_stop(self):
         """Переопределяем метод остановки для корректного закрытия файла"""
@@ -173,11 +173,11 @@ class ParseWorker(BaseWorker):
                 return None
                 
             if lines:
-                self.progress.emit(f"{title_decoded}: {len(lines)} строк(и)")
+                self.progress.emit(self._fmt('log.parse.lines_count', title=title_decoded, lines=len(lines)))
                 return (title_decoded, lines)
             else:
-                self.progress.emit(f"{title_decoded}: не найдено")
+                self.progress.emit(self._fmt('log.parse.not_found', title=title_decoded))
                 return (title_decoded, [])
         except Exception as e:
-            self.progress.emit(f"{title}: ошибка - {e}")
+            self.progress.emit(self._fmt('log.parse.single_error', title=title, error=e))
             return None

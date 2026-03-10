@@ -14,6 +14,8 @@ from PySide6.QtGui import QFont, QTextCursor
 from datetime import datetime
 import os
 
+from ...core.localization import translate_key
+
 
 class DebugDialog(QDialog):
     """
@@ -37,11 +39,24 @@ class DebugDialog(QDialog):
             get_debug_bridge().message.connect(self.append_log)
         except Exception:
             pass
+
+    def _ui_lang(self) -> str:
+        return getattr(self.parent(), '_ui_lang', 'ru') if self.parent() is not None else 'ru'
+
+    def _t(self, key: str) -> str:
+        return translate_key(key, self._ui_lang(), '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
     
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
         # Заголовок окна: "Debug log"
-        self.setWindowTitle("Debug log")
+        self.setWindowTitle(self._t('ui.debug_log'))
         
         # Размер окна: 800x600 с возможностью изменения
         self.resize(800, 600)
@@ -69,9 +84,9 @@ class DebugDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         
-        self.clear_button = QPushButton("Очистить")
-        self.save_button = QPushButton("Сохранить в файл")
-        self.close_button = QPushButton("Закрыть")
+        self.clear_button = QPushButton(self._t('ui.clear'))
+        self.save_button = QPushButton(self._t('ui.save_to_file'))
+        self.close_button = QPushButton(self._t('ui.close'))
         
         button_layout.addWidget(self.clear_button)
         button_layout.addWidget(self.save_button)
@@ -115,7 +130,7 @@ class DebugDialog(QDialog):
         """
         from ...utils import DEBUG_BUFFER
         if not DEBUG_BUFFER:
-            QMessageBox.information(self, "Информация", "Нет логов для сохранения")
+            QMessageBox.information(self, self._t('ui.info'), self._t('ui.no_logs_to_save'))
             return
         
         # Предлагаем имя файла с текущей датой и временем
@@ -124,18 +139,18 @@ class DebugDialog(QDialog):
         
         filename, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить лог в файл",
+            self._t('ui.save_log_to_file'),
             default_filename,
-            "Текстовые файлы (*.txt);;Все файлы (*)"
+            self._t('ui.text_files_filter')
         )
         
         if filename:
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write('\n'.join(DEBUG_BUFFER))
-                QMessageBox.information(self, "Успех", f"Лог сохранен в файл:\n{filename}")
+                QMessageBox.information(self, self._t('ui.success'), self._fmt('ui.log_saved_to_file', filename=filename))
             except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
+                QMessageBox.critical(self, self._t('ui.error'), self._fmt('ui.failed_to_save_file', error=str(e)))
     
     def append_log(self, message: str):
         """

@@ -54,6 +54,60 @@ class _DebugBridge(QObject):
 DEBUG_BRIDGE = _DebugBridge()
 
 
+def _translate_runtime_text(key: str, default: str = '') -> str:
+    try:
+        from .core.localization import translate_runtime
+        return translate_runtime(key, default)
+    except Exception:
+        return default
+
+
+def _translate_project_text(key: str, lang: str, default: str = '') -> str:
+    try:
+        from .core.localization import translate_project_key
+        return translate_project_key(key, lang, default)
+    except Exception:
+        return default
+
+
+def _current_ui_lang() -> str:
+    try:
+        from .core.localization import get_runtime_ui_language
+        return get_runtime_ui_language()
+    except Exception:
+        return 'ru'
+
+
+def _plural_variant(n: int, lang: str) -> str:
+    try:
+        value = abs(int(n))
+    except Exception:
+        value = 0
+    if str(lang or 'ru').lower().startswith('ru'):
+        mod10 = value % 10
+        mod100 = value % 100
+        if mod10 == 1 and mod100 != 11:
+            return 'one'
+        if 2 <= mod10 <= 4 and not (12 <= mod100 <= 14):
+            return 'few'
+        return 'many'
+    return 'one' if value == 1 else 'many'
+
+
+def _format_runtime_count(n: int, key_prefix: str, one: str, many: str) -> str:
+    lang = _current_ui_lang()
+    variant = _plural_variant(n, lang)
+    template = _translate_runtime_text(f'{key_prefix}.{variant}', '')
+    if not template and variant == 'few':
+        template = _translate_runtime_text(f'{key_prefix}.many', '')
+    if not template:
+        template = '{n} ' + (one if _plural_variant(n, 'en') == 'one' else many)
+    try:
+        return template.format(n=n)
+    except Exception:
+        return f"{n}"
+
+
 def get_debug_bridge():
     """Вернуть глобальный мост для debug-сообщений."""
     return DEBUG_BRIDGE
@@ -212,63 +266,47 @@ def build_ws_fuzzy_pattern(text: str) -> str:
 
 def default_summary(lang: str) -> str:
     """Возвращает стандартный комментарий для правок в зависимости от языка."""
-    mapping = {
-        'ru': 'Замена содержимого страницы на единообразное наполнение: $1 $2 $3',
-        'uk': 'Заміна вмісту сторінки на одноманітне наповнення: $1 $2 $3',
-        'be': 'Замена зместу старонкі на адзіную структуру: $1 $2 $3',
-        'en': 'Replacement of the page content with uniform filling: $1 $2 $3',
-        'fr': 'Remplacement du contenu pour cohérence: $1 $2 $3',
-        'es': 'Sustitución del contenido para uniformidad: $1 $2 $3',
-        'de': 'Ersetzung des Seiteninhalts für Konsistenz: $1 $2 $3'
-    }
-    return mapping.get(lang, 'Consistency content replacement: $1 $2 $3')
+    return _translate_project_text(
+        'summary.replace',
+        lang,
+        'Consistency content replacement: $1 $2 $3',
+    )
 
 
 def default_create_summary(lang: str) -> str:
     """Возвращает стандартный комментарий для создания страниц в зависимости от языка."""
-    mapping = {
-        'ru': 'Создание новой категории с заготовленным содержимым: $1 $2 $3',
-        'uk': 'Створення нової категорії з уніфікованим наповненням: $1 $2 $3',
-        'be': 'Стварэнне новай катэгорыі з адзінай структурай: $1 $2 $3',
-        'en': 'Creation of a new category with prepared content: $1 $2 $3',
-        'fr': 'Création d\'une nouvelle catégorie avec contenu préparé: $1 $2 $3',
-        'es': 'Creación de una nueva categoría con contenido preparado: $1 $2 $3',
-        'de': 'Erstellung einer neuen Kategorie mit vorbereitetem Inhalt: $1 $2 $3'
-    }
-    return mapping.get(lang, 'Category creation with prepared content: $1 $2 $3')
+    return _translate_project_text(
+        'summary.create',
+        lang,
+        'Category creation with prepared content: $1 $2 $3',
+    )
 
 
 def default_redundant_category_summary(lang: str) -> str:
     """Стандартный шаблон описания правки для удаления избыточных категорий."""
-    mapping = {
-        'ru': 'Удалена категория {link_broad}, так как существует более точная {link_precise}',
-        'uk': 'Вилучено категорію {link_broad}, оскільки існує точніша {link_precise}',
-        'be': 'Выдалена катэгорыя {link_broad}, бо існуе больш дакладная {link_precise}',
-        'en': 'Removed category {link_broad} because a more precise {link_precise} exists',
-        'fr': 'Catégorie {link_broad} retirée car il existe une catégorie plus précise : {link_precise}',
-        'es': 'Se retiró la categoría {link_broad} porque existe una más precisa: {link_precise}',
-        'de': 'Kategorie {link_broad} entfernt, da eine genauere {link_precise} vorhanden ist',
-    }
-    return mapping.get(lang, 'Removed category {link_broad} because a more precise {link_precise} exists')
+    return _translate_project_text(
+        'summary.redundant.single',
+        lang,
+        'Removed category {link_broad} because a more precise {link_precise} exists',
+    )
 
 
 def default_redundant_category_multi_summary(lang: str) -> str:
     """Стандартный шаблон для множественного удаления категорий."""
-    mapping = {
-        'ru': 'Удалены категории, так как существуют более точные: {pair}.',
-        'uk': 'Вилучено категорії, оскільки існують точніші: {pair}.',
-        'be': 'Выдалены катэгорыі, бо існуюць больш дакладныя: {pair}.',
-        'en': 'Removed categories because more precise ones exist: {pair}.',
-        'fr': 'Catégories retirées car des catégories plus précises existent : {pair}.',
-        'es': 'Se retiraron categorías porque existen otras más precisas: {pair}.',
-        'de': 'Kategorien entfernt, da genauere vorhanden sind: {pair}.',
-    }
-    return mapping.get(lang, 'Removed categories because more precise ones exist: {pair}.')
+    return _translate_project_text(
+        'summary.redundant.multi',
+        lang,
+        'Removed categories because more precise ones exist: {pair}.',
+    )
 
 
 def default_redundant_category_pair_format(_lang: str) -> str:
     """Формат одной пары внутри множественного комментария."""
-    return '{link_broad} → {link_precise}'
+    return _translate_project_text(
+        'summary.redundant.pair_format',
+        _lang,
+        '{link_broad} -> {link_precise}',
+    )
 
 
 def adjust_combo_popup_width(combo) -> None:
@@ -386,12 +424,12 @@ def ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
 
 def format_russian_pages_nominative(n: int) -> str:
     """Возвращает строку вида "N страница/страницы/страниц" (именительный падеж)."""
-    return f"{n} {ru_plural(n, 'страница', 'страницы', 'страниц')}"
+    return _format_runtime_count(n, 'ui.count.page.nominative', 'page', 'pages')
 
 
 def format_russian_pages_accusative(n: int) -> str:
     """Возвращает строку вида "N страницу/страницы/страниц" (винительный падеж для глагола "создать")."""
-    return f"{n} {ru_plural(n, 'страницу', 'страницы', 'страниц')}"
+    return _format_runtime_count(n, 'ui.count.page.accusative', 'page', 'pages')
 
 
 def format_russian_pages_genitive_for_content(n: int) -> str:
@@ -399,7 +437,7 @@ def format_russian_pages_genitive_for_content(n: int) -> str:
 
     Для 1: "1 страницы" (род. ед.), для 2–4 и 5+: "страниц" (род. мн.).
     """
-    return f"{n} {ru_plural(n, 'страницы', 'страниц', 'страниц')}"
+    return _format_runtime_count(n, 'ui.count.page.genitive_content', 'page', 'pages')
 
 
 # ==============================
@@ -407,9 +445,9 @@ def format_russian_pages_genitive_for_content(n: int) -> str:
 # ==============================
 def format_russian_categories_nominative(n: int) -> str:
     """N категория/категории/категорий (именительный падеж)."""
-    return f"{n} {ru_plural(n, 'категория', 'категории', 'категорий')}"
+    return _format_runtime_count(n, 'ui.count.category.nominative', 'category', 'categories')
 
 
 def format_russian_subcategories_nominative(n: int) -> str:
     """N подкатегория/подкатегории/подкатегорий (именительный падеж)."""
-    return f"{n} {ru_plural(n, 'подкатегория', 'подкатегории', 'подкатегорий')}"
+    return _format_runtime_count(n, 'ui.count.subcategory.nominative', 'subcategory', 'subcategories')

@@ -12,25 +12,25 @@
 """
 
 import os
-import json
-from typing import Optional
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, 
-    QComboBox, QPushButton, QToolButton, QTextEdit, QSizePolicy, QProgressBar,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
+    QComboBox, QPushButton, QToolButton, QSizePolicy, QProgressBar,
     QMessageBox, QCheckBox, QGroupBox
 )
-from PySide6.QtCore import Qt, Signal, QUrl
-from PySide6.QtGui import QFont, QDesktopServices
+from PySide6.QtCore import Qt, Signal, QUrl, QEvent
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QHeaderView
 
 from ...constants import PREFIX_TOOLTIP
+from ...core.localization import translate_key
 from ...utils import debug
 from ...workers.rename_worker import RenameWorker
 from ...core.template_manager import TemplateManager
 from ...core.pywikibot_config import apply_pwb_config, _dist_configs_dir
 from ..widgets.ui_helpers import (
-    embed_button_in_lineedit, add_info_button, pick_file, 
+    add_info_button, pick_file, 
     open_from_edit, set_start_stop_ratio,
     init_log_tree, log_tree_parse_and_add, log_tree_add, log_tree_add_event
 )
@@ -58,72 +58,63 @@ class RenameTab(QWidget):
         self.current_user = None
         self.current_lang = None
         self.current_family = None
+        self._last_theme_mode = ''
         
         # Создание UI
         self.setup_ui()
         
     def setup_ui(self):
         """Создает пользовательский интерфейс вкладки"""
+        ui_lang = getattr(self.parent_window, '_ui_lang', 'ru') if self.parent_window is not None else 'ru'
         # Основной layout
         v = QVBoxLayout(self)
+        try:
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(6)
+        except Exception:
+            pass
         
         # Текст справки
-        rename_help = (
-            'TSV‑вход: OldTitle<TAB>NewTitle[<TAB>Комментарий]\n'
-            '— Одна строка = одно переименование/перенос.\n'
-            '— Комментарий в 3‑й колонке опционален (но табуляция важна). Поле ниже «Комментарий к правке» переопределяет все.\n\n'
-            'Префиксы/пространства имён:\n'
-            '— Список пространств имён нормализует оба столбца к выбранному NS.\n'
-            '— Можно писать названия без префикса или с локальным/английским — распознаётся.\n'
-            '— «Авто» не меняет заголовки из файла.\n\n'
-            'Переименование страниц:\n'
-            '— Управляется галкой «Переименовывать страницы»; перенаправления настраиваются отдельно для категорий и прочих.\n\n'
-            'Перенос содержимого категорий (если включено):\n'
-            '1) Прямые включения: [[Категория:Старая|Ключ]] → [[Категория:Новая|Ключ]]. Ключ «|…» сохраняется.\n'
-            '   Для «Шаблон:»/«Модуль:» дополнительно обрабатываются основная страница и её /doc.\n'
-            '2) Через параметры шаблонов: исправляются значения параметров с названием категории.\n'
-            '   Полные совпадения можно применить/пропустить «для всех», частичные подтверждаются в диалоге с редактированием.\n'
-            '   Принятые решения сохраняются в configs/template_rules.json и переиспользуются.\n\n'
-            'Поведение и лог:\n'
-            '— Ограничения API обрабатываются автоматически (повторы/замедление).\n'
-            '— В логе — детальный ход и сводка: Прямые / Через шаблоны / Осталось.\n\n'
-            'Важно:\n'
-            '— Фильтр «Фильтр содержимого категории…» влияет только на участников категории и не ограничивает переименования из TSV.'
-        )
+        rename_help = translate_key('help.rename.main', ui_lang, '')
         
         # Строка выбора файла и настроек
         h = QHBoxLayout()
+        try:
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+        except Exception:
+            pass
         
         # Поле файла с кнопкой
         self.rename_file_edit = QLineEdit('categories.tsv')
         self.rename_file_edit.setMinimumWidth(0)
         self.rename_file_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
-        h.addWidget(QLabel('Список для переименования (.tsv):'))
+        h.addWidget(QLabel(self._t('ui.rename_list_tsv')))
         h.addWidget(self.rename_file_edit, 1)
         # Кнопка «…» справа
         btn_browse_rename = QToolButton()
         btn_browse_rename.setText('…')
         btn_browse_rename.setAutoRaise(False)
         try:
-            btn_browse_rename.setFixedSize(28, 28)
+            btn_browse_rename.setFixedSize(27, 27)
             btn_browse_rename.setCursor(Qt.PointingHandCursor)
-            btn_browse_rename.setToolTip('Выбрать файл')
+            btn_browse_rename.setToolTip(self._t('ui.choose_file', 'Choose file'))
         except Exception:
             pass
         btn_browse_rename.clicked.connect(lambda: pick_file(self, self.rename_file_edit, '*.tsv'))
         h.addWidget(btn_browse_rename)
         
         # Кнопка "Открыть"
-        btn_open_tsv_rename = QPushButton('Открыть')
+        btn_open_tsv_rename = QPushButton(self._t('ui.open', 'Open'))
         btn_open_tsv_rename.clicked.connect(lambda: open_from_edit(self, self.rename_file_edit))
         btn_open_tsv_rename.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         h.addWidget(btn_open_tsv_rename)
         
         # Компактный выбор префикса (выпадающий список)
-        prefix_label_rename = QLabel('Префиксы:')
-        prefix_label_rename.setToolTip(PREFIX_TOOLTIP)
-        h.addWidget(prefix_label_rename)
+        self.prefix_label_rename = QLabel(self._t('ui.prefixes', 'Prefixes:'))
+        self.prefix_label_rename.setToolTip(PREFIX_TOOLTIP)
+        h.addWidget(self.prefix_label_rename)
         
         self.rename_ns_combo = QComboBox()
         self.rename_ns_combo.setEditable(False)
@@ -131,41 +122,44 @@ class RenameTab(QWidget):
         h.addWidget(self.rename_ns_combo)
         
         # Кнопка ℹ в строке выбора файла
-        add_info_button(self, h, rename_help)
+        self.prefix_help_btn_rename = add_info_button(self, h, rename_help)
         
         v.addLayout(h)
         
         # Опции в две колонки
         # Подсказки для опций переноса
-        phase1_help = (
-            'Прямые ссылки на категорию на страницах-участниках.\n\n'
-            'Пример: [[Категория:Старая|Ключ]] → [[Категория:Новая|Ключ]].\n'
-            'Ключ сортировки после «|» сохраняется. Для «Шаблон:»/«Модуль:» проверяются также основная страница и её /doc.\n'
-        )
-        phase2_help = (
-            'Категория в параметрах шаблонов (позиционные и именованные).\n\n'
-            'Режимы:\n'
-            '— Полные совпадения значения параметра: можно «Подтверждать/Пропускать все аналогичные».\n'
-            '— Поиск по частям названия: каждый случай подтверждается в диалоге с предпросмотром и возможностью ручного правки.\n\n'
-            'Выбранные правила автоприменения сохраняются и доступны через «Открыть/Очистить правила».\n'
-            'Префикс «Категория:» в параметрах обычно опускают — это учитывается.'
-        )
-        locative_help = (
-            'Обработка локативов в параметрах шаблонов.\n'
-            'По умолчанию выключено; используйте, когда категории называются в одном падеже, но задаются в шаблоне через другой падеж (напр. {{МестоРождения|Москва}}).\n\n'
-            'Если прямая категоризация не найдена, но шаблон присваивает категории через склонение названий\n'
-            '(\"в Москве\" → категория \"Родившиеся в Москве\"), будет предложено правило замены для начальной формы (именительного падежа) значения параметра.\n'
-        )
+        phase1_help = translate_key('help.rename.phase1', ui_lang, '')
+        phase2_help = translate_key('help.rename.phase2', ui_lang, '')
+        locative_help = translate_key('help.rename.locative', ui_lang, '')
         
         # Первая опция: прямые ссылки
         row_p1 = QHBoxLayout()
-        self.phase1_enabled_cb = QCheckBox('Обычный перенос (категории указаны текстом)')
+        phase1_main_label = translate_key(
+            'ui.transfer_plain_main',
+            ui_lang,
+            'Direct transfer',
+        )
+        phase1_mode_label = translate_key(
+            'ui.transfer_plain_hint',
+            ui_lang,
+            '(categories in plain text)',
+        )
+        self.phase1_enabled_cb = QCheckBox(phase1_main_label)
         self.phase1_enabled_cb.setChecked(True)
         try:
             self.phase1_enabled_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         except Exception:
             pass
         row_p1.addWidget(self.phase1_enabled_cb)
+        self.phase1_mode_hint = QLabel(phase1_mode_label)
+        self.phase1_mode_hint.setObjectName('mutedParenText')
+        try:
+            if not self.phase1_mode_hint.text().startswith(' '):
+                self.phase1_mode_hint.setText(' ' + self.phase1_mode_hint.text())
+            self.phase1_mode_hint.setStyleSheet('color: rgba(148, 166, 183, 0.78); font-size: 11px;')
+        except Exception:
+            pass
+        row_p1.addWidget(self.phase1_mode_hint)
         add_info_button(self, row_p1, phase1_help, inline=True)
         try:
             row_p1.addStretch(1)
@@ -174,7 +168,7 @@ class RenameTab(QWidget):
         
         # Опция: переименовывать саму категорию
         row_move_cat = QHBoxLayout()
-        self.move_members_cb = QCheckBox('Переименовывать')
+        self.move_members_cb = QCheckBox(self._t('ui.rename_pages'))
         self.move_members_cb.setChecked(True)
         try:
             self.move_members_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
@@ -188,13 +182,32 @@ class RenameTab(QWidget):
         
         # Вторая опция: параметры шаблонов
         row_p2 = QHBoxLayout()
-        self.find_in_templates_cb = QCheckBox('Категоризация через шаблоны (название категории указано в параметрах)')
+        phase2_main_label = translate_key(
+            'ui.transfer_template_main',
+            ui_lang,
+            'Template-based categorization',
+        )
+        phase2_mode_label = translate_key(
+            'ui.transfer_template_hint',
+            ui_lang,
+            '(category name in template params)',
+        )
+        self.find_in_templates_cb = QCheckBox(phase2_main_label)
         self.find_in_templates_cb.setChecked(True)
         try:
             self.find_in_templates_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         except Exception:
             pass
         row_p2.addWidget(self.find_in_templates_cb)
+        self.phase2_mode_hint = QLabel(phase2_mode_label)
+        self.phase2_mode_hint.setObjectName('mutedParenText')
+        try:
+            if not self.phase2_mode_hint.text().startswith(' '):
+                self.phase2_mode_hint.setText(' ' + self.phase2_mode_hint.text())
+            self.phase2_mode_hint.setStyleSheet('color: rgba(148, 166, 183, 0.78); font-size: 11px;')
+        except Exception:
+            pass
+        row_p2.addWidget(self.phase2_mode_hint)
         add_info_button(self, row_p2, phase2_help, inline=True)
         try:
             row_p2.addStretch(1)
@@ -203,13 +216,32 @@ class RenameTab(QWidget):
 
         # Опция: Локативы
         row_loc = QHBoxLayout()
-        self.locatives_cb = QCheckBox('Ручной режим изменения в параметрах падежей у гео-объектов')
+        locative_main_label = translate_key(
+            'ui.locative_changes_main',
+            ui_lang,
+            'Geocase inflection changes in parameters',
+        )
+        locative_mode_label = translate_key(
+            'ui.locative_changes_mode',
+            ui_lang,
+            '(manual mode)'
+        )
+        self.locatives_cb = QCheckBox(locative_main_label)
         self.locatives_cb.setChecked(False)
         try:
             self.locatives_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         except Exception:
             pass
         row_loc.addWidget(self.locatives_cb)
+        self.locatives_mode_hint = QLabel(locative_mode_label)
+        self.locatives_mode_hint.setObjectName('mutedParenText')
+        try:
+            if not self.locatives_mode_hint.text().startswith(' '):
+                self.locatives_mode_hint.setText(' ' + self.locatives_mode_hint.text())
+            self.locatives_mode_hint.setStyleSheet('color: rgba(148, 166, 183, 0.78); font-size: 11px;')
+        except Exception:
+            pass
+        row_loc.addWidget(self.locatives_mode_hint)
         add_info_button(self, row_loc, locative_help, inline=True)
         try:
             row_loc.addStretch(1)
@@ -217,22 +249,22 @@ class RenameTab(QWidget):
             pass
         
         # Кнопки правил (будут прикреплены к правому заголовку)
-        btn_show_rules = QPushButton('Показать правила замен')
-        btn_clear_rules = QPushButton('Очистить правила')
+        btn_show_rules = QPushButton(self._t('ui.show_replacement_rules'))
+        btn_clear_rules = QPushButton(self._t('ui.clear_replacement_rules'))
         
         # Подключаем обработчики кнопок правил
         btn_show_rules.clicked.connect(self._open_rules_dialog)
         btn_clear_rules.clicked.connect(self._clear_rules)
         
         # Чекбоксы перенаправлений
-        self.leave_cat_redirect_cb = QCheckBox('Оставлять перенаправления для категорий')
+        self.leave_cat_redirect_cb = QCheckBox(self._t('ui.leave_category_redirects'))
         try:
             self.leave_cat_redirect_cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         except Exception:
             pass
         self.leave_cat_redirect_cb.setChecked(False)
         
-        self.leave_other_redirect_cb = QCheckBox('Оставлять перенаправления для остальных')
+        self.leave_other_redirect_cb = QCheckBox(self._t('ui.leave_other_redirects'))
         try:
             self.leave_other_redirect_cb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         except Exception:
@@ -248,32 +280,6 @@ class RenameTab(QWidget):
         except Exception:
             pass
         
-        # Сетка 2x3 — выравнивание строк между колонками
-        grid = QGridLayout()
-        try:
-            grid.setHorizontalSpacing(24)
-            grid.setVerticalSpacing(4)
-            grid.setContentsMargins(0, 0, 0, 0)
-        except Exception:
-            pass
-        
-        # Заголовки
-        lbl_left = QLabel('<b>Переименование</b>')
-        grid.addWidget(lbl_left, 0, 0)
-        # Правый заголовок + кнопки правил справа
-        right_header = QWidget()
-        right_header_lay = QHBoxLayout(right_header)
-        try:
-            right_header_lay.setContentsMargins(0, 0, 0, 0)
-            right_header_lay.setSpacing(6)
-        except Exception:
-            pass
-        right_header_lay.addWidget(QLabel('<b>Перенос содержимого категорий</b>'))
-        right_header_lay.addStretch(1)
-        right_header_lay.addWidget(btn_show_rules)
-        right_header_lay.addWidget(btn_clear_rules)
-        grid.addWidget(right_header, 0, 1)
-        
         # Утилита-обёртка для QHBoxLayout
         def _wrap(layout_obj):
             try:
@@ -285,58 +291,119 @@ class RenameTab(QWidget):
                 return w
             except Exception:
                 return QWidget()
-        
-        # Левая колонка: 3 строки
-        grid.addWidget(_wrap(row_move_cat), 1, 0)
+
+        # Рамка «Переименование»
+        rename_opts_group = QGroupBox(self._t('ui.rename'))
+        rename_opts_layout = QVBoxLayout(rename_opts_group)
+        try:
+            rename_opts_layout.setContentsMargins(10, 8, 10, 8)
+            rename_opts_layout.setSpacing(2)
+        except Exception:
+            pass
+        rename_opts_layout.addWidget(_wrap(row_move_cat))
         row_redirect_cat = QHBoxLayout()
         row_redirect_cat.addWidget(self.leave_cat_redirect_cb)
         row_redirect_cat.addStretch(1)
         row_redirect_other = QHBoxLayout()
         row_redirect_other.addWidget(self.leave_other_redirect_cb)
         row_redirect_other.addStretch(1)
-        grid.addWidget(_wrap(row_redirect_cat), 2, 0)
-        grid.addWidget(_wrap(row_redirect_other), 3, 0)
-        
-        # Правая колонка: 3 строки
-        grid.addWidget(_wrap(row_p1), 1, 1)
-        grid.addWidget(_wrap(row_p2), 2, 1)
-        grid.addWidget(_wrap(row_loc), 3, 1)
-        
+        rename_opts_layout.addWidget(_wrap(row_redirect_cat))
+        rename_opts_layout.addWidget(_wrap(row_redirect_other))
+
+        # Рамка «Перенос содержимого категорий»
+        transfer_opts_group = QGroupBox(self._t('ui.transfer_category_content'))
+        transfer_opts_layout = QVBoxLayout(transfer_opts_group)
         try:
-            grid.setColumnStretch(0, 1)
-            grid.setColumnStretch(1, 1)
+            transfer_opts_layout.setContentsMargins(10, 8, 10, 8)
+            transfer_opts_layout.setSpacing(2)
         except Exception:
             pass
-        v.addLayout(grid)
+        transfer_body = QHBoxLayout()
+        try:
+            transfer_body.setContentsMargins(0, 0, 0, 0)
+            transfer_body.setSpacing(8)
+        except Exception:
+            pass
+        transfer_opts_col = QVBoxLayout()
+        try:
+            transfer_opts_col.setContentsMargins(0, 0, 0, 0)
+            transfer_opts_col.setSpacing(2)
+        except Exception:
+            pass
+        transfer_opts_col.addWidget(_wrap(row_p1))
+        transfer_opts_col.addWidget(_wrap(row_p2))
+        transfer_opts_col.addWidget(_wrap(row_loc))
+        transfer_opts_col.addStretch(1)
+        rules_col = QVBoxLayout()
+        try:
+            rules_col.setContentsMargins(0, 0, 0, 0)
+            rules_col.setSpacing(4)
+        except Exception:
+            pass
+        rules_col.addWidget(btn_show_rules)
+        rules_col.addWidget(btn_clear_rules)
+        rules_col.addStretch(1)
+        transfer_body.addLayout(transfer_opts_col, 1)
+        transfer_body.addLayout(rules_col, 0)
+        transfer_opts_layout.addLayout(transfer_body)
+
+        # Две рамки в одну строку
+        opts_row = QHBoxLayout()
+        try:
+            opts_row.setContentsMargins(0, 0, 0, 0)
+            opts_row.setSpacing(12)
+        except Exception:
+            pass
+        opts_row.addWidget(rename_opts_group, 4)
+        opts_row.addWidget(transfer_opts_group, 5)
+        v.addLayout(opts_row)
 
         # Комментарий к правке — перенесён вниз (между фильтром и прогрессом)
         self.rename_comment_edit = QLineEdit()
         try:
-            self.rename_comment_edit.setPlaceholderText('Единый комментарий ко всем действиям (перезапишет комментарии из файла)')
+            self.rename_comment_edit.setPlaceholderText(self._t('ui.rename_comment_placeholder'))
         except Exception:
             pass
 
         # Постоянно видимые шкалы прогресса (создаём сейчас, добавим в нижний ряд)
         # Левая: общий прогресс по TSV
-        self.rename_outer_label = QLabel('Обработано 0/0')
+        self.rename_outer_label = QLabel(
+            translate_key('ui.processed_counter_initial', ui_lang, 'Processed 0/0')
+        )
+        try:
+            self.rename_outer_label.setVisible(False)
+        except Exception:
+            pass
         self.rename_outer_bar = QProgressBar()
         try:
             self.rename_outer_bar.setMaximum(1)
             self.rename_outer_bar.setValue(0)
-            self.rename_outer_bar.setTextVisible(False)
+            self.rename_outer_bar.setTextVisible(True)
+            self.rename_outer_bar.setFormat(
+                translate_key('ui.processed_counter_initial', ui_lang, 'Processed 0/0')
+            )
             self.rename_outer_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.rename_outer_bar.setMinimumWidth(220)
+            self.rename_outer_bar.setMinimumWidth(60)
         except Exception:
             pass
         # Правая: прогресс переноса участников текущей категории
-        self.rename_inner_label = QLabel('Перенесено: 0/0')
+        self.rename_inner_label = QLabel(
+            translate_key('ui.moved_counter_initial', ui_lang, 'Moved 0/0')
+        )
+        try:
+            self.rename_inner_label.setVisible(False)
+        except Exception:
+            pass
         self.rename_inner_bar = QProgressBar()
         try:
             self.rename_inner_bar.setMaximum(1)
             self.rename_inner_bar.setValue(0)
-            self.rename_inner_bar.setTextVisible(False)
+            self.rename_inner_bar.setTextVisible(True)
+            self.rename_inner_bar.setFormat(
+                translate_key('ui.moved_counter_initial', ui_lang, 'Moved 0/0')
+            )
             self.rename_inner_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.rename_inner_bar.setMinimumWidth(220)
+            self.rename_inner_bar.setMinimumWidth(60)
         except Exception:
             pass
 
@@ -344,59 +411,34 @@ class RenameTab(QWidget):
         
         # Лог выполнения: заголовок + легенда (ℹ)
         log_header_row = QHBoxLayout()
-        log_header_row.addWidget(QLabel('<b>Лог выполнения:</b>'))
+        log_header_row.addWidget(QLabel(self._t('ui.execution_log')))
         v.addLayout(log_header_row)
 
         # Дерево лога вместо QTextEdit
         self.rename_log_tree = init_log_tree(self)
+        self.rename_log_tree.setObjectName('renameLogTree')
+        self._configure_log_header()
+        self._apply_rename_log_tree_theme()
 
         from ..widgets.ui_helpers import create_tree_log_wrap
         rename_wrap = create_tree_log_wrap(self, self.rename_log_tree, with_header=False)
         v.addWidget(rename_wrap, 1)
         
         # Поле фильтрации переносимых страниц по заголовку (регулярное выражение)
-        regex_help = (
-            'Что делает фильтр:\n'
-            '— Обрабатывает только содержимое категории (участники). На переименование из TSV не влияет.\n\n'
-            'Простые примеры:\n'
-            '— Содержит слово: «Москва».\n'
-            '— Кусок внутри слова: «ана» (найдёт «Канал» и «Банан», но не «Аналог»).\n'
-            '— Начинается с: «^Категория:».\n'
-            '— Заканчивается на: «биологи$».\n'
-            '— Между словами что‑то есть: «Москва.*река».\n'
-            '— Две формы регистра: «(Москва|москва)» или короче «[Мм]осква».\n'
-            '— Исключить все, где встречается слово/фрагмент в любой части: «^(?!.*слово).*$».\n'
-            '  Игнорировать регистр: «^(?!.*(?i:слово)).*$».\n\n'
-            'Регистр (большие/маленькие буквы):\n'
-            '— По умолчанию учитывается.\n'
-            '— Игнорировать регистр: «(?i)москва» или «(?i:скв)» или указывать через квадратные скобки.\n\n'
-            'Отдельное слово:\n'
-            '— «\\bключ\\b» — именно слово «ключ», работает и в начале/конце строки.\n\n'
-            'Варианты и наборы букв:\n'
-            '— Скобки ( … ): «москв(а|е|ой)» — варианты слова.\n'
-            '— Квадратные скобки [ … ]: «[Мм]осква», «[0-9]», «[А-Яа-я]».\n\n'
-            'Повторы части:\n'
-            '— ( … )+ — один или больше раз: «(аб)+» → «аб», «абаб».\n'
-            '— ( … )* — ноль или больше раз (может отсутствовать): «(аб)*».\n'
-            'Памятка по символам:\n'
-            '— ^ начало строки, $ конец строки, . любой символ, * сколько угодно, | «или».\n\n'
-            'Если в названии есть «особые» символы (. * + ? ( ) [ ] { } | ^ $ \\):\n'
-            '— Пишите с обратным слешем: \\. \\* \\+ \\? \\( \\) \\[ \\] \\{ \\} \\| \\^ \\$.\n\n'
-            'Пустое поле — фильтр выключен.'
-        )
+        regex_help = translate_key('help.rename.regex', ui_lang, '')
 
         filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel('Фильтр содержимого категории по заголовкам:'))
+        filter_row.addWidget(QLabel(self._t('ui.filter_category_content_by_titles')))
         self.title_regex_edit = QLineEdit()
         try:
-            self.title_regex_edit.setPlaceholderText('Укажите регулярное выражение для заголовков страниц, которые будут исключены из перемещния')
+            self.title_regex_edit.setPlaceholderText(self._t('ui.specify_a_regex_for_titles_to_exclude_from'))
         except Exception:
             pass
         filter_row.addWidget(self.title_regex_edit, 1)
         add_info_button(self, filter_row, regex_help, inline=True)
         v.addLayout(filter_row)
         comment_row_bottom = QHBoxLayout()
-        comment_row_bottom.addWidget(QLabel('Комментарий к правке (опционально):'))
+        comment_row_bottom.addWidget(QLabel(self._t('ui.edit_summary_singular', 'Edit summary:')))
         comment_row_bottom.addWidget(self.rename_comment_edit, 1)
         v.addLayout(comment_row_bottom)
 
@@ -408,14 +450,19 @@ class RenameTab(QWidget):
             pass
 
         # Кнопки управления
-        self.rename_btn = QPushButton('Начать переименование')
+        self.rename_btn = QPushButton(self._t('ui.start_rename'))
         self.rename_btn.clicked.connect(self.start_rename)
         
-        self.rename_stop_btn = QPushButton('Остановить')
+        self.rename_stop_btn = QPushButton(self._t('ui.stop', 'Stop'))
         self.rename_stop_btn.setEnabled(False)
         self.rename_stop_btn.clicked.connect(self.stop_rename)
         
         row_run = QHBoxLayout()
+        try:
+            row_run.setContentsMargins(0, 0, 0, 0)
+            row_run.setSpacing(6)
+        except Exception:
+            pass
         # Группа прогресса, растягивается до кнопки «Начать»
         progress_wrap = QWidget()
         progress_layout = QHBoxLayout(progress_wrap)
@@ -447,6 +494,165 @@ class RenameTab(QWidget):
         # Устанавливаем соотношение размеров кнопок
         set_start_stop_ratio(self.rename_btn, self.rename_stop_btn, 3)
 
+    def _theme_mode(self) -> str:
+        try:
+            return str(getattr(self.parent_window, '_theme_mode', 'teal') or 'teal').strip().lower()
+        except Exception:
+            return 'teal'
+
+    def _ui_lang(self) -> str:
+        try:
+            raw = str(getattr(self.parent_window, '_ui_lang', 'ru')).lower()
+        except Exception:
+            raw = 'ru'
+        return 'en' if raw.startswith('en') else 'ru'
+
+    def _processed_label(self) -> str:
+        return translate_key('ui.processed_short', self._ui_lang(), 'Processed')
+
+    def _moved_label(self) -> str:
+        return translate_key('ui.moved_short', self._ui_lang(), 'Moved')
+
+    def _t(self, key: str, default: str = '') -> str:
+        return translate_key(key, self._ui_lang(), default)
+
+    def _fmt(self, key: str, default: str = '', **kwargs) -> str:
+        text = self._t(key, default)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+
+    def _is_light_theme(self) -> bool:
+        mode = self._theme_mode()
+        return mode == 'light' or mode.startswith('light')
+
+    def _is_dark_black_theme(self) -> bool:
+        mode = self._theme_mode()
+        return mode == 'dark' or mode.startswith('dark')
+
+    def _apply_rename_log_tree_theme(self):
+        if not getattr(self, 'rename_log_tree', None):
+            return
+        if self._is_light_theme():
+            self.rename_log_tree.setStyleSheet(
+                """
+                QTreeWidget#renameLogTree {
+                    background: #ffffff;
+                    alternate-background-color: #f4f8fc;
+                    color: #1f2f3a;
+                    border: 1px solid #bcd1e2;
+                    border-radius: 8px;
+                }
+                QTreeWidget#renameLogTree::item:selected {
+                    background: #d7eaf9;
+                    color: #102a43;
+                }
+                QTreeWidget#renameLogTree QHeaderView::section {
+                    background: #e7f0f7;
+                    color: #1e4763;
+                    border: 1px solid #bcd1e2;
+                    padding: 4px 6px;
+                }
+                """
+            )
+        elif self._is_dark_black_theme():
+            self.rename_log_tree.setStyleSheet(
+                """
+                QTreeWidget#renameLogTree {
+                    background: #171d25;
+                    alternate-background-color: #1f2630;
+                    color: #e4eaf2;
+                    border: 1px solid #4f5b6a;
+                    border-radius: 8px;
+                }
+                QTreeWidget#renameLogTree::item:selected {
+                    background: #3b4656;
+                    color: #f2f6fb;
+                }
+                QTreeWidget#renameLogTree QHeaderView::section {
+                    background: #2a3340;
+                    color: #e6edf6;
+                    border: 1px solid #4f5b6a;
+                    padding: 4px 6px;
+                }
+                """
+            )
+        else:
+            self.rename_log_tree.setStyleSheet(
+                """
+                QTreeWidget#renameLogTree {
+                    background: #0a2533;
+                    alternate-background-color: #0e3042;
+                    color: #e6f3f6;
+                    border: 1px solid rgba(115, 170, 182, 0.45);
+                    border-radius: 8px;
+                }
+                QTreeWidget#renameLogTree::item:selected {
+                    background: rgba(82, 148, 168, 0.55);
+                    color: #f2fcff;
+                }
+                QTreeWidget#renameLogTree QHeaderView::section {
+                    background: #144055;
+                    color: #e8f7fa;
+                    border: 1px solid rgba(115, 170, 182, 0.45);
+                    padding: 4px 6px;
+                }
+                """
+            )
+
+    def showEvent(self, event):
+        try:
+            super().showEvent(event)
+        finally:
+            current_theme = self._theme_mode()
+            if current_theme != self._last_theme_mode:
+                self._last_theme_mode = current_theme
+                self._apply_rename_log_tree_theme()
+
+    def changeEvent(self, event):
+        try:
+            super().changeEvent(event)
+        finally:
+            try:
+                evt_type = event.type() if event is not None else None
+            except Exception:
+                evt_type = None
+            if evt_type in (QEvent.StyleChange, QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+                self._apply_rename_log_tree_theme()
+
+    def _configure_log_header(self):
+        """Растягивает полезные колонки лога на всю ширину, с адаптацией при сжатии окна."""
+        try:
+            hdr = self.rename_log_tree.header()
+            fm = self.rename_log_tree.fontMetrics()
+            try:
+                hdr.setSectionResizeMode(0, QHeaderView.Fixed)
+                self.rename_log_tree.setColumnWidth(0, fm.horizontalAdvance('00:00:00') + 8)
+            except Exception:
+                pass
+            try:
+                hdr.setSectionResizeMode(1, QHeaderView.Fixed)
+                self.rename_log_tree.setColumnWidth(1, max(40, fm.horizontalAdvance(self._t('ui.type', 'Type')) + 14))
+            except Exception:
+                pass
+            try:
+                hdr.setSectionResizeMode(2, QHeaderView.Fixed)
+                self.rename_log_tree.setColumnWidth(2, max(84, fm.horizontalAdvance(self._t('ui.skipped', 'Skipped')) + 20))
+            except Exception:
+                pass
+            for col in (3, 4, 5):
+                try:
+                    hdr.setSectionResizeMode(col, QHeaderView.Stretch)
+                except Exception:
+                    pass
+            try:
+                hdr.setStretchLastSection(True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _on_title_regex_changed(self, _=None):
         """Проверяет валидность регулярного выражения и подсвечивает поле."""
         try:
@@ -475,7 +681,7 @@ class RenameTab(QWidget):
             self._title_regex_valid = False
             try:
                 self.title_regex_edit.setStyleSheet('background-color:#fdecea')
-                self.title_regex_edit.setToolTip(f'Ошибка RegEx: {e}')
+                self.title_regex_edit.setToolTip(self._fmt('ui.regex_error', error=e))
             except Exception:
                 pass
         
@@ -512,9 +718,9 @@ class RenameTab(QWidget):
                 dir_url = QUrl.fromLocalFile(os.path.dirname(os.path.abspath(path)))
                 ok = QDesktopServices.openUrl(dir_url)
             if not ok:
-                raise RuntimeError('Не удалось открыть файл или папку с правилами')
+                raise RuntimeError(self._t('ui.rules_open_failed'))
         except Exception:
-            QMessageBox.warning(self, 'Ошибка', 'Не удалось открыть файл правил замен.')
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), self._t('ui.rules_open_failed'))
     
     def _clear_rules(self):
         """Очистить правила замен"""
@@ -546,11 +752,11 @@ class RenameTab(QWidget):
                     except Exception:
                         pass
             if cleared:
-                QMessageBox.information(self, 'Готово', 'Правила замен очищены.')
+                QMessageBox.information(self, self._t('ui.done', 'Done'), self._t('ui.rules_cleared'))
             else:
-                QMessageBox.information(self, 'Инфо', 'Кэш правил замен уже пуст.')
+                QMessageBox.information(self, self._t('ui.info', 'Info'), self._t('ui.rules_cache_empty'))
         except Exception:
-            QMessageBox.warning(self, 'Ошибка', 'Не удалось очистить правила замен.')
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), self._t('ui.rules_clear_failed'))
 
     def _resolve_rules_path(self) -> str:
         """Единая точка получения пути к файлу правил шаблонов."""
@@ -579,12 +785,12 @@ class RenameTab(QWidget):
         debug(f'Start rename: file={self.rename_file_edit.text()}')
         
         if not self.rename_file_edit.text():
-            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), self._t('ui.specify_tsv', 'Specify TSV'))
             return
         
         # Получаем данные авторизации от родительского окна
         if not self.parent_window:
-            QMessageBox.warning(self, 'Ошибка', 'Нет доступа к данным авторизации.')
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), self._t('ui.no_access_auth_data'))
             return
         
         # Получаем данные из родительского окна (будет реализовано в main_window)
@@ -593,11 +799,15 @@ class RenameTab(QWidget):
         lang = getattr(self.parent_window, 'current_lang', 'ru')
         fam = getattr(self.parent_window, 'current_family', 'wikipedia')
         
-        debug(f'Rename: получены данные авторизации - user={user}, pwd={"***" if pwd else None}, lang={lang}, fam={fam}')
+        debug(self._fmt('log.rename_tab.auth_data_received', user=user, password='***' if pwd else None, lang=lang, family=fam))
         
         if not user or not pwd:
-            debug(f'Rename: ошибка авторизации - user={user}, pwd={"установлен" if pwd else "не установлен"}')
-            QMessageBox.warning(self, 'Ошибка', 'Необходимо войти в систему.')
+            debug(self._fmt(
+                'log.rename_tab.auth_error',
+                user=user,
+                password_state=self._t('ui.password_set') if pwd else self._t('ui.password_not_set'),
+            ))
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), self._t('ui.must_log_in'))
             return
         
         # Предупреждение, если выбран «Авто» и в TSV, похоже, названия без префиксов
@@ -632,26 +842,27 @@ class RenameTab(QWidget):
                 if checked > 0 and plain_rows == checked:
                     # Информируем в лог
                     try:
-                        info_msg = 'В файле заголовки без префиксов; «Авто» начнёт переименование статей.'
+                        info_msg = self._t('ui.rename_plain_titles_info')
                         log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, info_msg, 'manual', 'info', None, None, True)
                     except Exception:
                         pass
-                    msg = (
-                        'В файле обнаружены заголовки без префиксов пространств имён.\n'
-                        'В списке «Префиксы» выбран режим «Авто».\n\n'
-                        'Будет запущено переименование обычных статей; перенос содержимого категорий выполнен не будет.\n\n'
-                        'Вы уверены, что хотите продолжить?'
+                    msg = self._t('ui.rename_plain_titles_confirm')
+                    res = QMessageBox.question(
+                        self,
+                        self._t('ui.confirm_launch'),
+                        msg,
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
                     )
-                    res = QMessageBox.question(self, 'Подтвердите запуск', msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                     if res != QMessageBox.Yes:
                         try:
-                            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, 'Запуск отменён пользователем.', 'manual', 'info', None, None, True)
+                            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, self._t('ui.rename_plain_titles_cancelled'), 'manual', 'info', None, None, True)
                         except Exception:
                             pass
                         return
                     else:
                         try:
-                            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, 'Подтверждено: запуск переименования статей без нормализации NS.', 'manual', 'info', None, None, True)
+                            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, self._t('ui.rename_plain_titles_confirmed'), 'manual', 'info', None, None, True)
                         except Exception:
                             pass
             except Exception:
@@ -665,13 +876,15 @@ class RenameTab(QWidget):
         self.rename_stop_btn.setEnabled(True)
         try:
             self.rename_outer_bar.setVisible(True)
-            self.rename_outer_label.setVisible(True)
+            self.rename_outer_label.setVisible(False)
             self.rename_outer_bar.setMaximum(1)
             self.rename_outer_bar.setValue(0)
+            self.rename_outer_bar.setFormat(f'{self._processed_label()} 0/0')
             self.rename_inner_bar.setVisible(True)
-            self.rename_inner_label.setVisible(True)
+            self.rename_inner_label.setVisible(False)
             self.rename_inner_bar.setMaximum(1)
             self.rename_inner_bar.setValue(0)
+            self.rename_inner_bar.setFormat(f'{self._moved_label()} 0/0')
         except Exception:
             pass
         
@@ -684,7 +897,7 @@ class RenameTab(QWidget):
                 import re as _re
                 _re.compile(title_regex)
             except Exception as e:
-                QMessageBox.warning(self, 'Ошибка', f'Некорректное регулярное выражение фильтра заголовков:\n{e}')
+                QMessageBox.warning(self, self._t('ui.error', 'Error'), self._fmt('ui.invalid_title_filter_regex', error=e))
                 return
 
         # Создаем и запускаем worker
@@ -748,9 +961,20 @@ class RenameTab(QWidget):
     
     def _on_rename_finished(self):
         """Обработчик завершения процесса переименования"""
+        stopped = bool(getattr(self, 'mrworker', None) and getattr(self.mrworker, '_stop', False))
+        worker = getattr(self, 'mrworker', None)
+        try:
+            edits = int(getattr(worker, 'saved_edits', 0) or 0)
+        except Exception:
+            edits = 0
+        try:
+            if edits > 0 and self.parent_window and hasattr(self.parent_window, 'record_operation'):
+                self.parent_window.record_operation('rename', edits)
+        except Exception:
+            pass
         self.rename_btn.setEnabled(True)
         self.rename_stop_btn.setEnabled(False)
-        msg = 'Остановлено!' if getattr(self, 'mrworker', None) and getattr(self.mrworker, '_stop', False) else 'Переименование завершено!'
+        msg = self._t('ui.stopped', 'Stopped!') if stopped else self._t('ui.rename_completed')
         try:
             # Служебное системное сообщение: статус ℹ️, без иконки объекта
             log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, msg, 'manual', 'info', None, None, True)
@@ -759,20 +983,21 @@ class RenameTab(QWidget):
         # Прогресс-бары остаются видимыми по требованию UX
         try:
             self.rename_outer_bar.setVisible(True)
-            self.rename_outer_label.setVisible(True)
+            self.rename_outer_label.setVisible(False)
             self.rename_inner_bar.setVisible(True)
-            self.rename_inner_label.setVisible(True)
+            self.rename_inner_label.setVisible(False)
         except Exception:
             pass
 
     def _rename_outer_init(self, total: int):
         try:
             self.rename_outer_bar.setVisible(True)
-            self.rename_outer_label.setVisible(True)
+            self.rename_outer_label.setVisible(False)
             self.rename_outer_bar.setMaximum(max(1, int(total)))
             self.rename_outer_bar.setValue(0)
+            self.rename_outer_bar.setFormat(f"{self._processed_label()} 0/{max(1, int(total))}")
             try:
-                self.rename_outer_label.setText(f"Обработано 0/{max(1, int(total))}")
+                self.rename_outer_label.setText(f"{self._processed_label()} 0/{max(1, int(total))}")
             except Exception:
                 pass
         except Exception:
@@ -782,8 +1007,9 @@ class RenameTab(QWidget):
         try:
             val = self.rename_outer_bar.value() + 1
             self.rename_outer_bar.setValue(val)
+            self.rename_outer_bar.setFormat(f"{self._processed_label()} {val}/{self.rename_outer_bar.maximum()}")
             try:
-                self.rename_outer_label.setText(f"Обработано {val}/{self.rename_outer_bar.maximum()}")
+                self.rename_outer_label.setText(f"{self._processed_label()} {val}/{self.rename_outer_bar.maximum()}")
             except Exception:
                 pass
         except Exception:
@@ -792,11 +1018,12 @@ class RenameTab(QWidget):
     def _rename_inner_init(self, total: int):
         try:
             self.rename_inner_bar.setVisible(True)
-            self.rename_inner_label.setVisible(True)
+            self.rename_inner_label.setVisible(False)
             self.rename_inner_bar.setMaximum(max(1, int(total)))
             self.rename_inner_bar.setValue(0)
+            self.rename_inner_bar.setFormat(f"{self._moved_label()} 0/{max(1, int(total))}")
             try:
-                self.rename_inner_label.setText(f"Перенесено: 0/{max(1, int(total))}")
+                self.rename_inner_label.setText(f"{self._moved_label()} 0/{max(1, int(total))}")
             except Exception:
                 pass
         except Exception:
@@ -806,8 +1033,9 @@ class RenameTab(QWidget):
         try:
             val = self.rename_inner_bar.value() + 1
             self.rename_inner_bar.setValue(val)
+            self.rename_inner_bar.setFormat(f"{self._moved_label()} {val}/{self.rename_inner_bar.maximum()}")
             try:
-                self.rename_inner_label.setText(f"Перенесено: {val}/{self.rename_inner_bar.maximum()}")
+                self.rename_inner_label.setText(f"{self._moved_label()} {val}/{self.rename_inner_bar.maximum()}")
             except Exception:
                 pass
         except Exception:
@@ -817,6 +1045,7 @@ class RenameTab(QWidget):
         try:
             self.rename_inner_bar.setMaximum(1)
             self.rename_inner_bar.setValue(0)
+            self.rename_inner_bar.setFormat(f"{self._moved_label()} 0/0")
             try:
                 self.rename_inner_label.setText('')
             except Exception:
@@ -827,7 +1056,7 @@ class RenameTab(QWidget):
     def _on_review_request(self, payload):
         """Обработчик запроса на проверку изменений в шаблоне"""
         try:
-            debug(f'Получен запрос на диалог подтверждения: {payload}')
+            debug(self._fmt('log.rename_tab.review_request_received', payload=payload))
             
             # Добавим контекст проекта (family/lang) для корректных ссылок «открыть/история»
             try:
@@ -857,7 +1086,7 @@ class RenameTab(QWidget):
             dialog = TemplateReviewDialog(self, payload)
             result = dialog.exec()
             
-            debug(f'Результат диалога: {result}')
+            debug(self._fmt('log.rename_tab.review_result', result=result))
             
             # Отправляем результат обратно в worker
             # Если пользователь выбрал «Подтверждать все аналогичные» — пометим правило auto=approve
@@ -878,7 +1107,7 @@ class RenameTab(QWidget):
                 'dedupe_mode': dm_resp
             }
             
-            debug(f'Отправляем ответ: {response_data}')
+            debug(self._fmt('log.rename_tab.review_response_sent', response=response_data))
             
             # Установим флаг авто для правила сразу при подтверждении всех аналогичных
             try:
@@ -908,14 +1137,14 @@ class RenameTab(QWidget):
             if hasattr(self.mrworker, 'review_response'):
                 self.mrworker.review_response.emit(response_data)
             else:
-                debug('Worker не имеет сигнала review_response')
+                debug(self._t('log.rename_tab.worker_missing_review_response'))
                 
         except Exception as e:
-            debug(f'Ошибка в диалоге подтверждения шаблона: {e}')
+            debug(self._fmt('log.rename_tab.template_review_dialog_error', error=e))
             # При ошибке безопасно пропускаем кейс, не останавливая процесс
             try:
                 # Логируем как ошибку, но продолжаем
-                msg = f"Ошибка диалога подтверждения: {e}. Случай пропущен, продолжаем."
+                msg = self._fmt('log.rename_tab.template_review_dialog_continue', error=e)
                 log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, msg, 'manual', 'error', None, None, True)
             except Exception:
                 pass
@@ -968,3 +1197,22 @@ class RenameTab(QWidget):
         self.current_user = None
         self.current_lang = None
         self.current_family = None
+
+    def set_prefix_controls_visible(self, visible: bool):
+        """Показать/скрыть локальные контролы префиксов."""
+        state = bool(visible)
+        try:
+            if getattr(self, 'prefix_label_rename', None) is not None:
+                self.prefix_label_rename.setVisible(state)
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'rename_ns_combo', None) is not None:
+                self.rename_ns_combo.setVisible(state)
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'prefix_help_btn_rename', None) is not None:
+                self.prefix_help_btn_rename.setVisible(state)
+        except Exception:
+            pass

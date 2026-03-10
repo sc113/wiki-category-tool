@@ -107,13 +107,13 @@ class TemplateManager:
         return f"{(lang or '').strip().lower()}:{(family or '').strip().lower()}"
 
     def _load_rules(self):
-        """Load template rules from JSON file supporting legacy and new formats.
+        """Load template rules from JSON.
 
-        New format consolidates approve/skip into a single string field 'auto':
+        Preferred format uses a single string field 'auto':
         - 'approve' → approve=True,  skip=False
         - 'skip'    → approve=False, skip=True
         - 'none' or missing/unknown → approve=False, skip=False
-        Legacy boolean fields 'approve' and 'skip' continue to be accepted.
+        Boolean fields 'approve' and 'skip' are also accepted for compatibility.
         'auto' has priority if present.
         """
         try:
@@ -123,7 +123,7 @@ class TemplateManager:
                 if isinstance(data, dict):
                     # Формат V2: ключи верхнего уровня — 'lang:family'
                     # Значения — dict с шаблонами напрямую или в поле 'templates'.
-                    # Формат V1 (legacy): data['rename_worker'] содержит словарь
+                    # Совместимый формат: data['rename_worker'] содержит словарь
                     # '{fam::lang::name_cf}' → bucket.
                     if 'rename_worker' in data and isinstance(data.get('rename_worker'), dict):
                         scoped = data.get('rename_worker') or {}

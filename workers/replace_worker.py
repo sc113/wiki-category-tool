@@ -87,6 +87,13 @@ class ReplaceWorker(BaseWorker):
         self.ns_sel = ns_selection
         self.summary = summary
         self.minor = minor
+        self.stats = {
+            'total': 0,
+            'updated': 0,
+            'missing': 0,
+            'failed': 0,
+            'invalid': 0,
+        }
 
     def run(self):
         """Основной метод выполнения замены страниц."""
@@ -99,7 +106,8 @@ class ReplaceWorker(BaseWorker):
                 site.login(user=self.username)
             except Exception as e:
                 self.progress.emit(
-                    f"Ошибка авторизации: {type(e).__name__}: {e}")
+                    self._fmt('log.worker.auth_error', error_type=type(e).__name__, error=e)
+                )
                 return
 
         try:
@@ -110,6 +118,8 @@ class ReplaceWorker(BaseWorker):
                     if self._stop:
                         break
                     if len(row) < 2:
+                        if row:
+                            self.stats['invalid'] += 1
                         continue
 
                     raw_title = row[0] if row[0] is not None else ''
@@ -120,6 +130,10 @@ class ReplaceWorker(BaseWorker):
                         _html = None
                     title_raw = raw_title.strip().lstrip('\ufeff')
                     title = (_html.unescape(title_raw) if _html else title_raw)
+                    if not title:
+                        self.stats['invalid'] += 1
+                        continue
+                    self.stats['total'] += 1
                     lines_raw = [(s or '').lstrip('\ufeff') for s in row[1:]]
                     lines = [(_html.unescape(s) if _html else s)
                              for s in lines_raw]
@@ -135,15 +149,21 @@ class ReplaceWorker(BaseWorker):
                         ok = self._save_with_retry(
                             page, content, formatted_summary, self.minor)
                         if ok:
+                            self.stats['updated'] += 1
                             self.progress.emit(
-                                f"{title}: записано {len(lines)} строк")
+                                self._fmt('log.replace.written_lines', title=title, lines=len(lines))
+                            )
                         else:
+                            self.stats['failed'] += 1
                             self.progress.emit(
-                                f"{title}: не удалось сохранить после повторных попыток")
+                                self._fmt('log.replace.failed_save', title=title)
+                            )
                     else:
-                        self.progress.emit(f"{title}: страница отсутствует")
+                        self.stats['missing'] += 1
+                        self.progress.emit(self._fmt('log.replace.page_missing', title=title))
         except Exception as e:
-            self.progress.emit(f"Ошибка работы с файлом TSV: {e}")
+            self.stats['failed'] += 1
+            self.progress.emit(self._fmt('log.replace.tsv_error', error=e))
         finally:
             # Финальные сообщения об окончании теперь пишет UI
             pass

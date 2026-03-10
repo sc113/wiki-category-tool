@@ -11,6 +11,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 import webbrowser
 
+from ...core.localization import translate_key
+
 
 class UpdateDialog(QDialog):
     """Диалоговое окно для уведомления о новой версии"""
@@ -20,7 +22,7 @@ class UpdateDialog(QDialog):
         self.download_url = download_url
         self.skip_version = False
 
-        self.setWindowTitle("Доступно обновление")
+        self.setWindowTitle(self._t("ui.update_available"))
         self.setMinimumWidth(450)
         self.setModal(True)
 
@@ -29,7 +31,7 @@ class UpdateDialog(QDialog):
         layout.setSpacing(15)
 
         # Заголовок
-        title_label = QLabel("🎉 Доступна новая версия!")
+        title_label = QLabel(self._t("ui.new_version_available_title"))
         title_font = title_label.font()
         title_font.setPointSize(14)
         title_font.setBold(True)
@@ -41,22 +43,18 @@ class UpdateDialog(QDialog):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(8)
 
-        current_label = QLabel(f"Текущая версия: <b>{current_version}</b>")
+        current_label = QLabel(self._fmt("ui.current_version_label", version=current_version))
         current_label.setStyleSheet("font-size: 10pt;")
         info_layout.addWidget(current_label)
 
-        new_label = QLabel(
-            f"Новая версия: <b style='color: #0b6623;'>{new_version}</b>")
+        new_label = QLabel(self._fmt("ui.new_version_label", version=new_version))
         new_label.setStyleSheet("font-size: 10pt;")
         info_layout.addWidget(new_label)
 
         layout.addLayout(info_layout)
 
         # Описание
-        desc_label = QLabel(
-            "Рекомендуется обновить приложение до последней версии\n"
-            "для получения новых функций и исправлений ошибок."
-        )
+        desc_label = QLabel(self._t("ui.update_recommended"))
         desc_label.setWordWrap(True)
         desc_label.setStyleSheet(
             "color: #666; font-size: 9pt; padding: 10px 0;")
@@ -64,7 +62,7 @@ class UpdateDialog(QDialog):
         layout.addWidget(desc_label)
 
         # Чекбокс для пропуска версии
-        self.skip_checkbox = QCheckBox(f"Не напоминать об этой версии")
+        self.skip_checkbox = QCheckBox(self._t("ui.skip_version_reminder"))
         self.skip_checkbox.setStyleSheet("font-size: 9pt;")
         layout.addWidget(self.skip_checkbox)
 
@@ -72,7 +70,7 @@ class UpdateDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(10)
 
-        later_button = QPushButton("Позже")
+        later_button = QPushButton(self._t("ui.later"))
         later_button.setStyleSheet(
             "QPushButton { "
             "  background-color: #e5e7eb; "
@@ -85,7 +83,7 @@ class UpdateDialog(QDialog):
         )
         later_button.clicked.connect(self.on_later)
 
-        download_button = QPushButton("Скачать обновление")
+        download_button = QPushButton(self._t("ui.download_update"))
         download_button.setStyleSheet(
             "QPushButton { "
             "  background-color: #0b6623; "
@@ -108,6 +106,19 @@ class UpdateDialog(QDialog):
         layout.addLayout(button_layout)
 
         self.setLayout(layout)
+
+    def _ui_lang(self) -> str:
+        return getattr(self.parent(), '_ui_lang', 'ru') if self.parent() is not None else 'ru'
+
+    def _t(self, key: str) -> str:
+        return translate_key(key, self._ui_lang(), '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
 
     def on_download(self):
         """Открывает страницу загрузки и закрывает диалог"""

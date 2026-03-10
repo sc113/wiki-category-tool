@@ -5,6 +5,7 @@ Login worker for authenticating with Wikimedia projects.
 from PySide6.QtCore import QThread, Signal
 
 from ..core.pywikibot_config import write_pwb_credentials, apply_pwb_config, _delete_all_cookies, reset_pywikibot_session
+from ..core.localization import translate_runtime, translate_key
 
 
 class LoginWorker(QThread):
@@ -37,6 +38,20 @@ class LoginWorker(QThread):
         self.lang = lang
         self.family = family
         self._stop = False
+
+    def _t(self, key: str) -> str:
+        return translate_runtime(key, '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+
+    def _log(self, key: str, **kwargs) -> None:
+        from ..utils import debug
+        debug(self._fmt(key, **kwargs))
     
     def request_stop(self):
         """Запрос на корректную остановку операции."""
@@ -48,29 +63,27 @@ class LoginWorker(QThread):
 
     def run(self):
         """Основной метод выполнения авторизации."""
-        from ..utils import debug
-        
         try:
             if self._stop:
                 return
-            debug(f'LoginWorker: начинаем авторизацию {self.username}@{self.lang}.{self.family}')
+            self._log('log.login.start', user=self.username, lang=self.lang, family=self.family)
             
             if self._stop:
                 return
             # Записываем учетные данные в конфигурацию pywikibot
-            debug('LoginWorker: записываем учетные данные в конфигурацию')
+            self._log('log.login.write_credentials')
             write_pwb_credentials(self.lang, self.username, self.password, self.family)
             
             # Применяем конфигурацию и получаем путь к директории
-            debug('LoginWorker: применяем конфигурацию pywikibot')
+            self._log('log.login.apply_config')
             cfg_dir = apply_pwb_config(self.lang, self.family)
             
             # Удаляем старые cookies
-            debug('LoginWorker: удаляем старые cookies')
+            self._log('log.login.delete_cookies')
             _delete_all_cookies(cfg_dir)
             
             # Сбрасываем сессию pywikibot
-            debug('LoginWorker: сбрасываем сессию pywikibot')
+            self._log('log.login.reset_session')
             reset_pywikibot_session(self.lang)
             
             # Импортируем pywikibot только после применения конфигурации
@@ -78,72 +91,71 @@ class LoginWorker(QThread):
             from pywikibot import config as pwb_config
 
             # Ограничиваем таймауты сетевых запросов pywikibot
-            debug('LoginWorker: настраиваем таймауты')
+            self._log('log.login.set_timeouts')
             try:
                 pwb_config.socket_timeout = 20
             except Exception:
                 pass
             
             # Создаем объект сайта и выполняем авторизацию
-            debug(f'LoginWorker: создаем объект сайта для {self.lang}.{self.family}')
+            self._log('log.login.create_site', lang=self.lang, family=self.family)
             site = pywikibot.Site(self.lang, self.family)
             
-            debug('LoginWorker: выполняем logout (очистка)')
+            self._log('log.login.logout_cleanup')
             try:
                 site.logout()
             except Exception:
                 pass
             
-            debug(f'LoginWorker: выполняем login для пользователя {self.username}')
+            self._log('log.login.login_user', user=self.username)
             site.login(user=self.username)
             
             # Проверяем подключение к сайту
-            debug('LoginWorker: проверяем подключение к сайту')
+            self._log('log.login.check_site')
             try:
                 site_name = site.siteinfo.get('name')
-                debug(f'LoginWorker: подключение к сайту успешно, название: {site_name}')
+                self._log('log.login.site_ok', site=site_name)
             except Exception as e:
-                debug(f'LoginWorker: предупреждение при проверке сайта: {e}')
+                self._log('log.login.site_warning', error=e)
                 pass
             
             # Получаем имя авторизованного пользователя для проверки
-            debug('LoginWorker: получаем имя авторизованного пользователя')
+            self._log('log.login.fetch_user')
             usr = None
             try:
                 usr = site.user()
-                debug(f'LoginWorker: авторизованный пользователь: {usr}')
+                self._log('log.login.user_ok', user=usr)
             except Exception as e:
-                debug(f'LoginWorker: ошибка получения пользователя: {e}')
+                self._log('log.login.user_error', error=e)
                 usr = None
             
             if not usr:
-                raise Exception('Сервер не вернул имя авторизованного пользователя')
+                raise Exception(self._t('log.login.user_missing'))
             
             # Авторизация успешна
-            debug(f'LoginWorker: авторизация успешна для {usr}')
+            self._log('log.login.success', user=usr)
             self.success.emit(self.username, self.password, self.lang, self.family)
             
         except Exception as e:
             # Авторизация не удалась
-            debug(f'LoginWorker: ошибка авторизации: {type(e).__name__}: {e}')
+            self._log('log.login.error', error_type=type(e).__name__, error=e)
             # Дружественное сообщение при требовании смены пароля/доп.запросах аутентификации
             try:
                 emsg = str(e)
             except Exception:
                 emsg = ''
+            marker_ru = translate_key('log.login.password_change_marker', 'ru', '')
+            marker_en = translate_key('log.login.password_change_marker', 'en', '')
             if (
                 'PasswordAuthenticationRequest' in emsg or
-                'Новый пароль' in emsg or
+                (marker_ru and marker_ru in emsg) or
+                (marker_en and marker_en in emsg) or
                 'retype' in emsg
             ):
-                friendly = (
-                    'Требуется смена пароля аккаунта. Зайдите на сайт через браузер и смените пароль, '
-                    'либо (рекомендовано) создайте BotPassword на странице Special:BotPasswords и авторизуйтесь '
-                    'как "Имя@Метка" с паролем бота.'
-                )
+                friendly = self._t('log.login.password_change_required')
                 self.failure.emit(friendly)
             else:
                 self.failure.emit(f"{type(e).__name__}: {e}")
         finally:
             # Гарантируем корректное завершение потока
-            debug('LoginWorker: завершение работы')
+            self._log('log.login.finish')

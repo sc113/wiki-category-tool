@@ -6,6 +6,10 @@ from .replace_worker import ReplaceWorker
 from .create_worker import CreateWorker
 from .rename_worker import RenameWorker
 from .login_worker import LoginWorker
+from .category_content_sync_worker import (
+    CategoryContentSyncWorker,
+    CategoryContentSyncPreviewWorker,
+)
 
 __all__ = [
     'BaseWorker',
@@ -13,5 +17,7 @@ __all__ = [
     'ReplaceWorker',
     'CreateWorker',
     'RenameWorker',
-    'LoginWorker'
+    'LoginWorker',
+    'CategoryContentSyncWorker',
+    'CategoryContentSyncPreviewWorker'
 ]

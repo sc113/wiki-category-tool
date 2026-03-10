@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Optional, List
 
 from ..constants import REQUEST_HEADERS, MIN_REQUEST_INTERVAL, MAX_RATE_INTERVAL
+from .localization import translate_runtime
 
 
 class WikimediaAPIClient:
@@ -18,6 +19,16 @@ class WikimediaAPIClient:
         self._rate_lock = Lock()
         self._last_req_ts = 0.0
         self._min_interval = MIN_REQUEST_INTERVAL
+
+    def _t(self, key: str) -> str:
+        return translate_runtime(key, '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
         
     def _rate_wait(self):
         """Wait to respect rate limiting between requests."""
@@ -309,7 +320,7 @@ class WikimediaAPIClient:
         from ..constants import GITHUB_API_RELEASES
         
         try:
-            debug('Проверка обновлений...')
+            debug(self._t('log.auth.check_updates_start'))
             self._rate_wait()
             r = self.session.get(GITHUB_API_RELEASES, headers=REQUEST_HEADERS, timeout=10)
             
@@ -319,7 +330,7 @@ class WikimediaAPIClient:
                 
             return r.json()
         except Exception as e:
-            debug(f'Ошибка проверки обновлений: {e}')
+            debug(self._fmt('log.auth.check_updates_error', error=e))
             return {}
     
     @staticmethod

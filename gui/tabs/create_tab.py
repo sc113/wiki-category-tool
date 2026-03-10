@@ -10,23 +10,22 @@
 - Проверку существования страниц перед созданием
 """
 
-import os
-from typing import Optional
-
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QTextEdit, QSizePolicy, QProgressBar,
     QMessageBox
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 from ...constants import PREFIX_TOOLTIP
-from ...utils import debug, default_create_summary, format_russian_pages_nominative
+from ...core.localization import translate_key
+from ...utils import debug, default_create_summary
 from ...workers.create_worker import CreateWorker
 from ...core.pywikibot_config import apply_pwb_config
 from ..widgets.shared_panels import TsvPreviewPanel
 from ..widgets.ui_helpers import (
-    embed_button_in_lineedit, add_info_button, pick_file,
+    add_info_button, pick_file,
     open_from_edit, log_message, set_start_stop_ratio,
     tsv_preview_from_path, init_progress, inc_progress,
     is_default_summary, count_non_empty_titles
@@ -55,26 +54,39 @@ class CreateTab(QWidget):
         # Создание UI
         self.setup_ui()
 
+    def _ui_lang(self) -> str:
+        return getattr(self.parent_window, '_ui_lang', 'ru') if self.parent_window is not None else 'ru'
+
+    def _t(self, key: str) -> str:
+        return translate_key(key, self._ui_lang(), '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+
     def setup_ui(self):
         """Создает пользовательский интерфейс вкладки"""
         # Основной layout
         v = QVBoxLayout(self)
+        try:
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(6)
+        except Exception:
+            pass
 
         # Текст справки
-        create_help = (
-            'TSV: Title<TAB>line1<TAB>line2…\n'
-            '— Создаёт только отсутствующие страницы; существующие будут пропущены (в логе).\n\n'
-            'Одна строка — одна новая страница.\n\n'
-            'Пустая колонка в файле добавляет новую строку.\n\n'
-            'Как формируется текст: всё после первого столбца склеивается переводами строк.\n\n'
-            'Префиксы/NS: список «Префиксы» нормализует заголовок к выбранному пространству имён; «Авто» — без изменения.\n'
-            'Комментарий: поле ниже применяется ко всем правкам. Малая правка при создании не используется.\n'
-            'Предпросмотр: слева заголовки, справа итоговое содержимое.\n'
-            'Очистка лога (метла) также очищает предпросмотр и возвращает кнопку «Предпросмотр».'
-        )
+        create_help = self._t('help.create.main')
 
         # Строка выбора файла и настроек
         h = QHBoxLayout()
+        try:
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+        except Exception:
+            pass
 
         # Поле файла с кнопкой
         self.tsv_path_create = QLineEdit('categories.tsv')
@@ -82,16 +94,16 @@ class CreateTab(QWidget):
         self.tsv_path_create.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        h.addWidget(QLabel('Список для создания (.tsv):'))
+        h.addWidget(QLabel(self._t('ui.create_list_tsv')))
         h.addWidget(self.tsv_path_create, 1)
         # Кнопка «…» справа от поля
         btn_browse_tsv_create = QToolButton()
         btn_browse_tsv_create.setText('…')
         btn_browse_tsv_create.setAutoRaise(False)
         try:
-            btn_browse_tsv_create.setFixedSize(28, 28)
+            btn_browse_tsv_create.setFixedSize(27, 27)
             btn_browse_tsv_create.setCursor(Qt.PointingHandCursor)
-            btn_browse_tsv_create.setToolTip('Выбрать файл')
+            btn_browse_tsv_create.setToolTip(self._t('ui.choose_file'))
         except Exception:
             pass
         btn_browse_tsv_create.clicked.connect(
@@ -99,7 +111,7 @@ class CreateTab(QWidget):
         h.addWidget(btn_browse_tsv_create)
 
         # Кнопка "Открыть"
-        btn_open_tsv_create = QPushButton('Открыть')
+        btn_open_tsv_create = QPushButton(self._t('ui.open'))
         btn_open_tsv_create.clicked.connect(
             lambda: open_from_edit(self, self.tsv_path_create))
         btn_open_tsv_create.setSizePolicy(
@@ -107,9 +119,9 @@ class CreateTab(QWidget):
         h.addWidget(btn_open_tsv_create)
 
         # Компактный выбор префикса (выпадающий список)
-        prefix_label_create = QLabel('Префиксы:')
-        prefix_label_create.setToolTip(PREFIX_TOOLTIP)
-        h.addWidget(prefix_label_create)
+        self.prefix_label_create = QLabel(self._t('ui.prefixes'))
+        self.prefix_label_create.setToolTip(PREFIX_TOOLTIP)
+        h.addWidget(self.prefix_label_create)
 
         self.ns_combo_create = QComboBox()
         self.ns_combo_create.setEditable(False)
@@ -117,11 +129,11 @@ class CreateTab(QWidget):
         h.addWidget(self.ns_combo_create)
 
         # Кнопка ℹ в строке выбора файла
-        add_info_button(self, h, create_help)
+        self.prefix_help_btn_create = add_info_button(self, h, create_help)
 
         # Строка комментария
         sum_layout = QHBoxLayout()
-        sum_layout.addWidget(QLabel('Комментарий к правкам:'))
+        sum_layout.addWidget(QLabel(self._t('ui.edit_summary')))
 
         self.summary_edit_create = QLineEdit()
         self.summary_edit_create.setText(default_create_summary('ru'))
@@ -129,28 +141,33 @@ class CreateTab(QWidget):
 
         self.preview_panel = TsvPreviewPanel(
             self,
-            left_header='Название страницы',
-            right_header='Содержимое для создания',
+            left_header=self._t('ui.page_title'),
+            right_header=self._t('ui.content_to_create'),
         )
         self.create_preview_titles = self.preview_panel.titles_edit
         self.create_preview_rest = self.preview_panel.content_edit
         self.create_preview_content = self.create_preview_rest
 
         # Кнопки управления
-        self.preview_create_btn = QPushButton('Предпросмотр')
+        self.preview_create_btn = QPushButton(self._t('ui.preview'))
         self.preview_create_btn.clicked.connect(self.preview_create)
 
-        self.create_btn = QPushButton('Создать')
+        self.create_btn = QPushButton(self._t('ui.create_button'))
         self.create_btn.setEnabled(False)  # Активируется после предпросмотра
         self.create_btn.clicked.connect(self.start_create)
 
-        self.create_stop_btn = QPushButton('Остановить')
+        self.create_stop_btn = QPushButton(self._t('ui.stop'))
         self.create_stop_btn.setEnabled(False)
         self.create_stop_btn.clicked.connect(self.stop_create)
 
         # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
         self.create_log = QTextEdit()
         self.create_log.setReadOnly(True)
+        mono_font = QFont('Consolas', 9)
+        if not mono_font.exactMatch():
+            mono_font = QFont('Courier New', 9)
+        mono_font.setFixedPitch(True)
+        self.create_log.setFont(mono_font)
 
         from ..widgets.ui_helpers import create_log_wrap, make_clear_button
         create_wrap = create_log_wrap(self, self.create_log, with_header=True)
@@ -167,7 +184,7 @@ class CreateTab(QWidget):
             try:
                 # Возвращаем кнопку "Создать" в исходное состояние
                 self.create_btn.setEnabled(False)
-                self.create_btn.setText('Создать')
+                self.create_btn.setText(self._t('ui.create_button'))
             except Exception:
                 pass
 
@@ -216,12 +233,21 @@ class CreateTab(QWidget):
         except Exception:
             pass
         # Метка и полоса
-        self.create_label = QLabel('Обработано 0/0')
+        self.create_label = QLabel(
+            self._t('ui.processed_counter_initial')
+        )
+        try:
+            self.create_label.setVisible(False)
+        except Exception:
+            pass
         self.create_bar = QProgressBar()
         try:
             self.create_bar.setMaximum(1)
             self.create_bar.setValue(0)
-            self.create_bar.setTextVisible(False)
+            self.create_bar.setTextVisible(True)
+            self.create_bar.setFormat(
+                self._t('ui.processed_counter_initial')
+            )
         except Exception:
             pass
         progress_layout.addWidget(self.create_label)
@@ -249,14 +275,14 @@ class CreateTab(QWidget):
         """Загружает TSV, показывает две колонки: первая — заголовок, остальные — склеенные через \\t"""
         path = (self.tsv_path_create.text() or '').strip()
         if not path:
-            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
+            QMessageBox.warning(self, self._t('ui.error'), self._t('ui.specify_tsv'))
             return
 
         try:
             left, right, count = tsv_preview_from_path(path)
         except Exception as e:
             QMessageBox.critical(
-                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+                self, self._t('ui.error'), self._fmt('ui.failed_read_tsv', error=e))
             return
 
         self.preview_panel.set_preview(left, right)
@@ -271,7 +297,7 @@ class CreateTab(QWidget):
         debug(f'Start create: file={self.tsv_path_create.text()}')
 
         if not self.tsv_path_create.text():
-            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
+            QMessageBox.warning(self, self._t('ui.error'), self._t('ui.specify_tsv'))
             return
 
         # Подсчитываем количество страниц для создания
@@ -279,18 +305,18 @@ class CreateTab(QWidget):
             page_count = count_non_empty_titles(self.tsv_path_create.text())
         except Exception as e:
             QMessageBox.critical(
-                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+                self, self._t('ui.error'), self._fmt('ui.failed_read_tsv', error=e))
             return
 
         if page_count == 0:
             QMessageBox.warning(
-                self, 'Ошибка', 'В файле нет страниц для создания.')
+                self, self._t('ui.error'), self._t('ui.create.no_pages_in_file'))
             return
 
         # Получаем данные авторизации от родительского окна
         if not self.parent_window:
             QMessageBox.warning(
-                self, 'Ошибка', 'Нет доступа к данным авторизации.')
+                self, self._t('ui.error'), self._t('ui.no_access_auth_data'))
             return
 
         # Получаем данные из родительского окна (будет реализовано в main_window)
@@ -300,7 +326,7 @@ class CreateTab(QWidget):
         fam = getattr(self.parent_window, 'current_family', 'wikipedia')
 
         if not user or not pwd:
-            QMessageBox.warning(self, 'Ошибка', 'Необходимо войти в систему.')
+            QMessageBox.warning(self, self._t('ui.error'), self._t('ui.you_need_to_sign_in'))
             return
 
         apply_pwb_config(lang, fam)
@@ -323,6 +349,10 @@ class CreateTab(QWidget):
         self.cworker = CreateWorker(
             self.tsv_path_create.text(), user, pwd, lang, fam, ns_sel, summary, minor
         )
+        log_message(
+            self.create_log,
+            self._fmt('log.create.run_started', pages=page_count, lang=lang, family=fam, ns=ns_sel),
+        )
         self.cworker.progress.connect(lambda m: [inc_progress(
             self.create_label, self.create_bar), log_message(self.create_log, m)])
         self.cworker.finished.connect(self._on_create_finished)
@@ -336,11 +366,43 @@ class CreateTab(QWidget):
 
     def _on_create_finished(self):
         """Обработчик завершения процесса создания"""
+        worker = getattr(self, 'cworker', None)
+        stopped = bool(worker and getattr(worker, '_stop', False))
+        stats = {}
+        try:
+            stats = dict(getattr(worker, 'stats', {}) or {})
+            if stats:
+                log_message(
+                    self.create_log,
+                    self._fmt(
+                        'log.create.summary',
+                        total=stats.get('total', 0),
+                        created=stats.get('created', 0),
+                        exists=stats.get('exists', 0),
+                        failed=stats.get('failed', 0),
+                        invalid=stats.get('invalid', 0),
+                    ),
+                )
+        except Exception:
+            pass
+        try:
+            edits = int(getattr(worker, 'saved_edits', 0) or 0)
+        except Exception:
+            edits = 0
+        try:
+            created_stats = int((stats or {}).get('created', 0) or 0)
+        except Exception:
+            created_stats = 0
+        edits = max(0, edits, created_stats)
+        try:
+            if edits > 0 and self.parent_window and hasattr(self.parent_window, 'record_operation'):
+                self.parent_window.record_operation('create', edits)
+        except Exception:
+            pass
         self.preview_create_btn.setEnabled(True)
         self.create_btn.setEnabled(True)
         self.create_stop_btn.setEnabled(False)
-        msg = 'Остановлено!' if getattr(self, 'cworker', None) and getattr(
-            self.cworker, '_stop', False) else 'Создание завершено!'
+        msg = self._t('ui.stopped') if stopped else self._t('log.create.finished')
         log_message(self.create_log, msg)
         init_progress(self.create_label, self.create_bar, 0)
 
@@ -404,6 +466,25 @@ class CreateTab(QWidget):
         except Exception:
             pass
 
+    def set_prefix_controls_visible(self, visible: bool):
+        """Показать/скрыть локальные контролы префиксов."""
+        state = bool(visible)
+        try:
+            if getattr(self, 'prefix_label_create', None) is not None:
+                self.prefix_label_create.setVisible(state)
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'ns_combo_create', None) is not None:
+                self.ns_combo_create.setVisible(state)
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'prefix_help_btn_create', None) is not None:
+                self.prefix_help_btn_create.setVisible(state)
+        except Exception:
+            pass
+
     def update_summary(self, lang: str):
         """Автообновление summary при смене языка"""
         self.update_language(lang)
@@ -419,15 +500,15 @@ class CreateTab(QWidget):
         if not existing_pages:
             return True
 
-        msg = f"Следующие страницы уже существуют:\n\n"
+        msg = self._t('ui.create.existing_pages_intro')
         msg += "\n".join(existing_pages[:10])  # Показываем первые 10
         if len(existing_pages) > 10:
             rest = len(existing_pages) - 10
-            msg += f"\n... и еще {format_russian_pages_nominative(rest)}"
-        msg += "\n\nПродолжить создание остальных страниц?"
+            msg += self._fmt('ui.create.existing_pages_more', count=rest)
+        msg += f"\n\n{self._t('ui.create.existing_pages_continue')}"
 
         reply = QMessageBox.question(
-            self, 'Страницы уже существуют', msg,
+            self, self._t('ui.pages_already_exist'), msg,
             QMessageBox.Yes | QMessageBox.No
         )
         return reply == QMessageBox.Yes

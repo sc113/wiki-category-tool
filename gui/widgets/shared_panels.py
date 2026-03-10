@@ -5,24 +5,29 @@
 
 import urllib.parse
 import webbrowser
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QToolButton, QTextEdit, QMessageBox, QSpinBox,
-    QGridLayout, QSizePolicy, QGroupBox, QSplitter
+    QGridLayout, QSizePolicy, QGroupBox, QSplitter, QAbstractSpinBox
 )
 
 from ...constants import PREFIX_TOOLTIP, REQUEST_HEADERS
 from ...core.api_client import WikimediaAPIClient, REQUEST_SESSION, _rate_wait
-from ...utils import debug, format_russian_subcategories_nominative
+from ...core.localization import translate_key
+from ...utils import debug
 from .ui_helpers import add_info_button, pick_file, open_from_edit, log_message
 
 
 _GROUP_STYLE = (
-    "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } "
-    "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
+    ""
 )
+
+_FETCH_MODE_CATEGORIES_ONLY = 'categories_only'
+_FETCH_MODE_NON_CATEGORIES_ONLY = 'non_categories_only'
+_FETCH_MODE_BOTH = 'both'
 
 
 class CategorySourcePanel(QGroupBox):
@@ -34,29 +39,134 @@ class CategorySourcePanel(QGroupBox):
         parent_window=None,
         log_widget: QTextEdit | None = None,
         help_text: str = '',
-        group_title: str = 'Источник',
-        category_section_label: str = '<b>Получить содержимое категории:</b>',
-        category_placeholder: str = 'Название корневой категории',
-        manual_label: str = '<b>Список страниц:</b>',
-        manual_placeholder: str = 'Список страниц (по одной на строку)',
-        file_section_label: str = '<b>Или загрузить из файла:</b>',
-        file_caption: str = 'Файл (.txt):',
+        group_title: str = '',
+        category_section_label: str = '',
+        category_placeholder: str = '',
+        manual_label: str = '',
+        manual_placeholder: str = '',
+        file_section_label: str = '',
+        file_caption: str = '',
         default_input_path: str = '',
     ):
-        super().__init__(group_title, parent)
         self.parent_window = parent_window or parent
+        super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
-        self.setStyleSheet(_GROUP_STYLE)
+        if _GROUP_STYLE:
+            self.setStyleSheet(_GROUP_STYLE)
         self._setup_ui(
-            category_section_label=category_section_label,
-            category_placeholder=category_placeholder,
-            manual_label=manual_label,
-            manual_placeholder=manual_placeholder,
-            file_section_label=file_section_label,
-            file_caption=file_caption,
+            category_section_label=category_section_label or self._t('ui.fetch_category_content', '<b>Fetch category content</b>'),
+            category_placeholder=category_placeholder or self._t('ui.root_category_name', 'Root category name'),
+            manual_label=manual_label or self._t('ui.list_of_pages_to_process', '<b>List of pages</b>'),
+            manual_placeholder=manual_placeholder or self._t('ui.page_list_one_per_line', 'Page list (one per line)'),
+            file_section_label=file_section_label or self._t('ui.or_load_list_from_file', '<b>Or load list from file</b>'),
+            file_caption=file_caption or self._t('ui.file_txt', 'File (.txt):'),
             default_input_path=default_input_path,
         )
+        self._refresh_fetch_mode_combo_texts()
+
+    def _ui_lang(self) -> str:
+        try:
+            raw = str(getattr(self.parent_window, '_ui_lang', 'ru')).lower()
+        except Exception:
+            raw = 'ru'
+        return 'en' if raw.startswith('en') else 'ru'
+
+    def _t(self, key: str, fallback: str) -> str:
+        try:
+            return translate_key(key, self._ui_lang(), fallback)
+        except Exception:
+            return fallback
+
+    def _refresh_fetch_mode_combo_texts(self) -> None:
+        try:
+            current_data = str(self.fetch_mode_combo.currentData() or 'categories_only')
+        except Exception:
+            current_data = 'categories_only'
+
+        labels = {
+            'categories_only': self._t(
+                'ui.source.fetch_mode.categories_only', 'Categories only'
+            ),
+            'non_categories_only': self._t(
+                'ui.source.fetch_mode.non_categories_only_alt', 'Except categories',
+            ),
+            'both': self._t('ui.source.fetch_mode.both_alt', 'All pages'),
+        }
+        try:
+            for idx in range(self.fetch_mode_combo.count()):
+                data = str(self.fetch_mode_combo.itemData(idx) or '')
+                self.fetch_mode_combo.setItemText(idx, labels.get(data, ''))
+        except Exception:
+            pass
+
+        try:
+            self.fetch_mode_combo.setToolTip(
+                self._t(
+                    'ui.source.fetch_mode_tooltip',
+                    'What to load from the category: only categories, everything except categories, or all pages.',
+                )
+            )
+        except Exception:
+            pass
+
+        try:
+            self.fetch_mode_combo.view().setTextElideMode(Qt.ElideNone)
+            popup_width = max(
+                self.fetch_mode_combo.fontMetrics().horizontalAdvance(
+                    self.fetch_mode_combo.itemText(i)
+                )
+                for i in range(self.fetch_mode_combo.count())
+            ) + 48
+            self.fetch_mode_combo.setMinimumWidth(max(136, popup_width))
+            self.fetch_mode_combo.setMaximumWidth(16777215)
+            self.fetch_mode_combo.view().setMinimumWidth(popup_width)
+        except Exception:
+            pass
+
+        try:
+            idx = self.fetch_mode_combo.findData(current_data)
+            if idx >= 0:
+                self.fetch_mode_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    def refresh_localized_texts(self) -> None:
+        try:
+            self.replace_list_btn.setText(self._t('ui.source.replace_list_short', 'Replace'))
+            self.append_list_btn.setText(self._t('ui.source.append_list_short', 'Append'))
+        except Exception:
+            pass
+        self._refresh_fetch_mode_combo_texts()
+        self._sync_source_action_button_widths()
+
+    def _sync_source_action_button_widths(self) -> None:
+        buttons = (
+            getattr(self, 'replace_list_btn', None),
+            getattr(self, 'append_list_btn', None),
+            getattr(self, 'open_petscan_btn', None),
+        )
+        widths: list[int] = []
+        for btn in buttons:
+            if btn is None:
+                continue
+            try:
+                txt = str(btn.text() or '').replace('&', '').strip()
+                need = btn.fontMetrics().horizontalAdvance(txt) + 28
+            except Exception:
+                need = 0
+            widths.append(max(96, int(need)))
+        if not widths:
+            return
+        target = max(widths)
+        for btn in buttons:
+            if btn is None:
+                continue
+            try:
+                btn.setMinimumWidth(target)
+                btn.setMaximumWidth(16777215)
+            except Exception:
+                pass
 
     def _setup_ui(
         self,
@@ -77,19 +187,23 @@ class CategorySourcePanel(QGroupBox):
             pass
 
         prefix_layout = QHBoxLayout()
-        prefix_label = QLabel('Префиксы:')
-        prefix_label.setToolTip(PREFIX_TOOLTIP)
-        prefix_layout.addWidget(prefix_label)
+        self.prefix_row = QWidget(self)
+        self.prefix_label = QLabel(self._t('ui.prefixes', 'Prefixes:'), self.prefix_row)
+        self.prefix_label.setToolTip(PREFIX_TOOLTIP)
+        prefix_layout.addWidget(self.prefix_label)
 
         self.ns_combo = QComboBox()
         self.ns_combo.setEditable(False)
         prefix_layout.addWidget(self.ns_combo)
         prefix_layout.addStretch(1)
-        add_info_button(self, prefix_layout, self.help_text, inline=True)
-        layout.addLayout(prefix_layout)
+        self.prefix_help_btn = add_info_button(self, prefix_layout, self.help_text, inline=True)
+        try:
+            self.prefix_row.setLayout(prefix_layout)
+        except Exception:
+            pass
+        layout.addWidget(self.prefix_row)
 
         layout.addSpacing(6)
-        layout.addWidget(QLabel(category_section_label))
 
         self.cat_edit = QLineEdit()
         self.cat_edit.setPlaceholderText(category_placeholder)
@@ -100,59 +214,158 @@ class CategorySourcePanel(QGroupBox):
             category_fetch_layout.setHorizontalSpacing(8)
             category_fetch_layout.setVerticalSpacing(6)
             category_fetch_layout.setColumnStretch(0, 1)
+            category_fetch_layout.setColumnStretch(4, 1)
         except Exception:
             pass
-        category_fetch_layout.addWidget(self.cat_edit, 0, 0)
+        self.fetch_mode_combo = QComboBox()
+        self.fetch_mode_combo.setObjectName('sourceFetchModeCombo')
+        self.fetch_mode_combo.addItem('', _FETCH_MODE_CATEGORIES_ONLY)
+        self.fetch_mode_combo.addItem('', _FETCH_MODE_NON_CATEGORIES_ONLY)
+        self.fetch_mode_combo.addItem('', _FETCH_MODE_BOTH)
+        try:
+            self.fetch_mode_combo.setCurrentIndex(0)
+        except Exception:
+            pass
+        try:
+            self.fetch_mode_combo.setSizeAdjustPolicy(
+                QComboBox.AdjustToMinimumContentsLengthWithIcon
+            )
+            self.fetch_mode_combo.setMinimumContentsLength(1)
+            self.fetch_mode_combo.setMinimumWidth(132)
+            self.fetch_mode_combo.setMaximumWidth(16777215)
+            self.fetch_mode_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        except Exception:
+            pass
 
-        self.get_pages_btn = QPushButton('Получить страницы')
-        self.get_pages_btn.setToolTip(
-            'Получить страницы категории через API с учётом глубины')
-        self.get_pages_btn.clicked.connect(self.fetch_category_pages)
+        self.replace_list_btn = QPushButton(
+            self._t('ui.source.replace_list_short', 'Replace')
+        )
+        self.replace_list_btn.setObjectName('sourceActionButton')
+        self.replace_list_btn.setToolTip(
+            self._t(
+                'ui.source.replace_list_tooltip',
+                'Replace the current list with fetched results.',
+            )
+        )
+        self.replace_list_btn.clicked.connect(self.fetch_selected_mode_replace)
 
-        self.petscan_btn = QPushButton('Получить подкатегории')
-        self.petscan_btn.setToolTip(
-            'Получить подкатегории через API с учётом глубины')
-        self.petscan_btn.clicked.connect(self.open_petscan)
+        self.append_list_btn = QPushButton(
+            self._t('ui.source.append_list_short', 'Append')
+        )
+        self.append_list_btn.setObjectName('sourceActionButton')
+        self.append_list_btn.setToolTip(
+            self._t(
+                'ui.source.append_list_tooltip',
+                'Append fetched results to the end of the current list on a new line.',
+            )
+        )
+        self.append_list_btn.clicked.connect(self.fetch_selected_mode_append)
 
-        self.open_petscan_btn = QPushButton('PetScan')
+        self.open_petscan_btn = QPushButton(
+            self._t('ui.source.open_petscan_short', 'PetScan')
+        )
+        self.open_petscan_btn.setObjectName('sourceActionButton')
         self.open_petscan_btn.setToolTip(
-            'Открыть PetScan с расширенными настройками для указанной категории')
+            self._t(
+                'ui.source.open_petscan_tooltip',
+                'Open PetScan with advanced settings for the selected category',
+            )
+        )
         self.open_petscan_btn.clicked.connect(self.open_petscan_in_browser)
 
-        depth_label = QLabel('Глубина:')
+        depth_label = QLabel(self._t('ui.depth', 'Depth:'))
         depth_label.setToolTip(
-            'Глубина рекурсивного обхода категории. '
-            'Для «Получить страницы»: 0 = только корневая категория, 1 = + прямые подкатегории. '
-            'Для «Получить подкатегории»: 0 = только прямые подкатегории.'
+            self._t(
+                'ui.source.depth_tooltip',
+                'Category recursion depth. For "Pages": 0 = root category only, 1 = include direct subcategories. For "Subcategories": 0 = direct subcategories only.',
+            )
         )
         self.depth_spin = QSpinBox()
+        self.depth_spin.setObjectName('depthSpin')
         self.depth_spin.setMinimum(0)
-        self.depth_spin.setMaximum(10)
+        self.depth_spin.setMaximum(99)
         self.depth_spin.setValue(0)
         self.depth_spin.setToolTip(
-            'Глубина рекурсивного обхода категории для страниц и подкатегорий')
+            self._t(
+                'ui.category_recursion_depth_for_pages_and_subcategories',
+                'Category recursion depth for pages and subcategories',
+            )
+        )
         try:
-            self.depth_spin.setFixedWidth(60)
+            self.depth_spin.setFixedWidth(38)
+            self.depth_spin.setAlignment(Qt.AlignCenter)
+            self.depth_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         except Exception:
             pass
 
-        category_fetch_layout.addWidget(depth_label, 0, 1)
-        category_fetch_layout.addWidget(self.depth_spin, 0, 2)
+        self.depth_plus_btn = QToolButton()
+        self.depth_plus_btn.setObjectName('depthStepButton')
+        self.depth_plus_btn.setText('+')
+        self.depth_plus_btn.setToolTip(
+            self._t('ui.sync.depth_plus', 'Increase depth')
+        )
+        self.depth_plus_btn.clicked.connect(self.depth_spin.stepUp)
+        self.depth_minus_btn = QToolButton()
+        self.depth_minus_btn.setObjectName('depthStepButton')
+        self.depth_minus_btn.setText('-')
+        self.depth_minus_btn.setToolTip(
+            self._t('ui.sync.depth_minus', 'Decrease depth')
+        )
+        self.depth_minus_btn.clicked.connect(self.depth_spin.stepDown)
+        try:
+            self.depth_plus_btn.setFixedSize(14, 14)
+            self.depth_minus_btn.setFixedSize(14, 14)
+        except Exception:
+            pass
+
+        depth_step_layout = QVBoxLayout()
+        try:
+            depth_step_layout.setContentsMargins(0, 0, 0, 0)
+            depth_step_layout.setSpacing(0)
+        except Exception:
+            pass
+        depth_step_layout.addWidget(self.depth_plus_btn)
+        depth_step_layout.addWidget(self.depth_minus_btn)
+
+        depth_wrap = QWidget()
+        depth_wrap_layout = QHBoxLayout(depth_wrap)
+        try:
+            depth_wrap_layout.setContentsMargins(0, 0, 0, 0)
+            depth_wrap_layout.setSpacing(2)
+        except Exception:
+            pass
+        depth_wrap_layout.addWidget(self.depth_spin)
+        depth_wrap_layout.addLayout(depth_step_layout)
+
+        layout.addWidget(QLabel(category_section_label))
+
+        row_two_layout = QHBoxLayout()
+        try:
+            row_two_layout.setContentsMargins(0, 0, 0, 0)
+            row_two_layout.setSpacing(8)
+        except Exception:
+            pass
+        row_two_layout.addWidget(self.cat_edit, 1)
+        row_two_layout.addWidget(depth_label, 0)
+        row_two_layout.addWidget(depth_wrap, 0)
+        category_fetch_layout.addLayout(row_two_layout, 0, 0, 1, 5)
 
         buttons_layout = QHBoxLayout()
         try:
             buttons_layout.setContentsMargins(0, 0, 0, 0)
-            buttons_layout.setSpacing(8)
+            buttons_layout.setSpacing(4)
         except Exception:
             pass
-        for button in (
-            self.get_pages_btn,
-            self.petscan_btn,
-            self.open_petscan_btn,
-        ):
-            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            buttons_layout.addWidget(button)
-        category_fetch_layout.addLayout(buttons_layout, 1, 0, 1, 3)
+        self.replace_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.append_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.open_petscan_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        buttons_layout.addWidget(self.replace_list_btn, 1)
+        buttons_layout.addWidget(self.append_list_btn, 1)
+        buttons_layout.addWidget(self.open_petscan_btn, 1)
+        buttons_layout.addSpacing(6)
+        buttons_layout.addWidget(self.fetch_mode_combo, 1)
+        self._sync_source_action_button_widths()
+        category_fetch_layout.addLayout(buttons_layout, 1, 0, 1, 5)
         layout.addLayout(category_fetch_layout)
 
         layout.addSpacing(6)
@@ -179,16 +392,16 @@ class CategorySourcePanel(QGroupBox):
         btn_browse_in.setText('…')
         btn_browse_in.setAutoRaise(False)
         try:
-            btn_browse_in.setFixedSize(28, 28)
+            btn_browse_in.setFixedSize(27, 27)
             btn_browse_in.setCursor(Qt.PointingHandCursor)
-            btn_browse_in.setToolTip('Выбрать файл')
+            btn_browse_in.setToolTip(self._t('ui.choose_file', 'Choose file'))
         except Exception:
             pass
         btn_browse_in.clicked.connect(
             lambda: pick_file(self, self.in_path, '*.txt'))
         file_layout.addWidget(btn_browse_in)
 
-        btn_open_in = QPushButton('Открыть')
+        btn_open_in = QPushButton(self._t('ui.open', 'Open'))
         btn_open_in.clicked.connect(lambda: open_from_edit(self, self.in_path))
         file_layout.addWidget(btn_open_in)
 
@@ -197,6 +410,18 @@ class CategorySourcePanel(QGroupBox):
 
     def set_log_widget(self, log_widget: QTextEdit | None) -> None:
         self.log_widget = log_widget
+
+    def set_prefix_controls_visible(self, visible: bool) -> None:
+        try:
+            self.prefix_row.setVisible(bool(visible))
+        except Exception:
+            try:
+                self.ns_combo.setVisible(bool(visible))
+                self.prefix_label.setVisible(bool(visible))
+                if getattr(self, 'prefix_help_btn', None) is not None:
+                    self.prefix_help_btn.setVisible(bool(visible))
+            except Exception:
+                pass
 
     def _log(self, message: str) -> None:
         if self.log_widget is not None:
@@ -273,7 +498,11 @@ class CategorySourcePanel(QGroupBox):
     def open_petscan_in_browser(self) -> None:
         category = self.cat_edit.text().strip()
         if not category:
-            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
+            QMessageBox.warning(
+                self,
+                self._t('ui.error', 'Error'),
+                self._t('ui.enter_category_name', 'Enter a category name.'),
+            )
             return
 
         lang = self.get_current_language()
@@ -284,91 +513,193 @@ class CategorySourcePanel(QGroupBox):
         webbrowser.open_new_tab(petscan_url)
 
     def open_petscan(self) -> None:
-        category = self.cat_edit.text().strip()
-        if not category:
-            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
-            return
-
-        lang = self.get_current_language()
-        fam = self.get_current_family()
-
-        from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
-        if has_prefix_by_policy(fam, lang, category, {14}):
-            cat_full = category
-        else:
-            cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
-            cat_full = cat_prefix + category
-
-        depth = self.depth_spin.value()
-        api_client = WikimediaAPIClient()
-        try:
-            subcats = self._fetch_subcats_recursive(
-                api_client, cat_full, lang, fam, depth, 0, set())
-            if subcats:
-                subcats_sorted = sorted(subcats, key=lambda value: value.casefold())
-                self.manual_list.setPlainText('\n'.join(subcats_sorted))
-                self._log(
-                    f'Получено {format_russian_subcategories_nominative(len(subcats_sorted))} '
-                    f'(глубина: {depth}, отсортировано)'
-                )
-            else:
-                self._log('Подкатегории не найдены.')
-        except Exception as exc:
-            self._log(f'Ошибка API: {exc}')
-        self.petscan_btn.setEnabled(True)
+        self.fetch_titles(mode='categories_only', append=False)
 
     def fetch_category_pages(self) -> None:
+        self.fetch_titles(mode='non_categories_only', append=False)
+
+    def fetch_selected_mode_replace(self) -> None:
+        self.fetch_titles(append=False)
+
+    def fetch_selected_mode_append(self) -> None:
+        self.fetch_titles(append=True)
+
+    def _get_selected_fetch_mode(self) -> str:
+        try:
+            mode = str(self.fetch_mode_combo.currentData() or '').strip()
+        except Exception:
+            mode = ''
+        if mode in {'categories_only', 'non_categories_only', 'both'}:
+            return mode
+        return 'non_categories_only'
+
+    def _get_fetch_mode_label(self, mode: str) -> str:
+        labels = {
+            'categories_only': self._t(
+                'ui.source.fetch_mode.categories_only', 'Categories only'
+            ),
+            'non_categories_only': self._t(
+                'ui.source.fetch_mode.non_categories_only_alt', 'Except categories',
+            ),
+            'both': self._t('ui.source.fetch_mode.both_alt', 'All pages'),
+        }
+        return labels.get(mode, labels['non_categories_only'])
+
+    def _set_fetch_controls_enabled(self, enabled: bool) -> None:
+        for control_name in (
+            'replace_list_btn',
+            'append_list_btn',
+            'fetch_mode_combo',
+        ):
+            try:
+                getattr(self, control_name).setEnabled(bool(enabled))
+            except Exception:
+                pass
+
+    def _replace_or_append_titles(self, titles: list[str], *, append: bool) -> None:
+        new_text = '\n'.join(titles)
+        if not append:
+            self.manual_list.setPlainText(new_text)
+            return
+
+        current_text = self.manual_list.toPlainText()
+        if not current_text.strip():
+            self.manual_list.setPlainText(new_text)
+            return
+        if not new_text.strip():
+            return
+
+        separator = '\n' if not current_text.endswith('\n') else ''
+        self.manual_list.setPlainText(current_text + separator + new_text)
+
+    def _resolve_category_title(self, fam: str, lang: str, category: str) -> str:
+        from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
+        if has_prefix_by_policy(fam, lang, category, {14}):
+            return category
+        cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
+        return cat_prefix + category
+
+    def fetch_titles(self, *, mode: str | None = None, append: bool = False) -> None:
         category = self.cat_edit.text().strip()
         if not category:
-            QMessageBox.warning(self, 'Ошибка', 'Введите название категории.')
+            QMessageBox.warning(
+                self,
+                self._t('ui.error', 'Error'),
+                self._t('ui.enter_category_name', 'Enter a category name.'),
+            )
             return
 
         lang = self.get_current_language()
         fam = self.get_current_family()
+        selected_mode = mode or self._get_selected_fetch_mode()
 
         try:
-            self.get_pages_btn.setEnabled(False)
+            self._set_fetch_controls_enabled(False)
+            cat_full = self._resolve_category_title(fam, lang, category)
         except Exception:
-            pass
-
-        from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
-        if has_prefix_by_policy(fam, lang, category, {14}):
+            self._set_fetch_controls_enabled(False)
             cat_full = category
-        else:
-            cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
-            cat_full = cat_prefix + category
 
         depth = self.depth_spin.value()
         api_client = WikimediaAPIClient()
 
         try:
-            categories = [cat_full]
-            if depth > 0:
-                categories.extend(self._fetch_subcats_recursive(
-                    api_client, cat_full, lang, fam, depth - 1, 0, set()))
-            categories = list(dict.fromkeys(categories))
-
-            titles: list[str] = []
-            for current_category in categories:
-                titles.extend(self._fetch_pages_for_category(
-                    api_client, current_category, lang, fam))
-
+            titles, stats = self._fetch_titles_for_mode(
+                api_client,
+                category=cat_full,
+                lang=lang,
+                fam=fam,
+                depth=depth,
+                mode=selected_mode,
+            )
             if titles:
-                titles_sorted = sorted(set(titles), key=lambda value: value.casefold())
-                self.manual_list.setPlainText('\n'.join(titles_sorted))
+                self._replace_or_append_titles(titles, append=append)
                 self._log(
-                    f'Получено страниц: {len(titles_sorted)} '
-                    f'(глубина: {depth}, отсортировано)'
+                    self._t(
+                        'ui.source.fetch_result_appended' if append else 'ui.source.fetch_result_replaced',
+                        'List appended: {count} (mode: {mode}, categories: {categories}, others: {non_categories}, depth: {depth})'
+                        if append else
+                        'List replaced: {count} (mode: {mode}, categories: {categories}, others: {non_categories}, depth: {depth})',
+                    ).format(
+                        count=len(titles),
+                        mode=self._get_fetch_mode_label(selected_mode),
+                        categories=stats['categories'],
+                        non_categories=stats['non_categories'],
+                        depth=depth,
+                    )
                 )
             else:
-                self._log('Страницы в категории не найдены.')
+                self._log(
+                    self._t(
+                        'ui.source.fetch_result_empty',
+                        'Nothing was found for the selected mode.',
+                    )
+                )
         except Exception as exc:
-            self._log(f'Ошибка API: {exc}')
+            self._log(
+                self._t('ui.source.api_error', 'API error: {error}').format(error=exc)
+            )
         finally:
-            try:
-                self.get_pages_btn.setEnabled(True)
-            except Exception:
-                pass
+            self._set_fetch_controls_enabled(True)
+
+    def _fetch_titles_for_mode(
+        self,
+        api_client,
+        *,
+        category: str,
+        lang: str,
+        fam: str,
+        depth: int,
+        mode: str,
+    ) -> tuple[list[str], dict[str, int]]:
+        categories_only: list[str] = []
+        non_categories_only: list[str] = []
+
+        if mode in {'categories_only', 'both'}:
+            categories_only = sorted(
+                set(
+                    self._fetch_subcats_recursive(
+                        api_client, category, lang, fam, depth, 0, set()
+                    )
+                ),
+                key=lambda value: value.casefold(),
+            )
+
+        if mode in {'non_categories_only', 'both'}:
+            categories_for_pages = [category]
+            if depth > 0:
+                categories_for_pages.extend(
+                    self._fetch_subcats_recursive(
+                        api_client, category, lang, fam, depth - 1, 0, set()
+                    )
+                )
+            categories_for_pages = list(dict.fromkeys(categories_for_pages))
+
+            page_titles: list[str] = []
+            for current_category in categories_for_pages:
+                page_titles.extend(
+                    self._fetch_pages_for_category(
+                        api_client, current_category, lang, fam
+                    )
+                )
+            non_categories_only = sorted(
+                set(page_titles),
+                key=lambda value: value.casefold(),
+            )
+
+        combined_titles = list(categories_only)
+        existing_keys = {value.casefold() for value in combined_titles}
+        for title in non_categories_only:
+            title_key = title.casefold()
+            if title_key in existing_keys:
+                continue
+            combined_titles.append(title)
+            existing_keys.add(title_key)
+
+        return combined_titles, {
+            'categories': len(categories_only),
+            'non_categories': len(non_categories_only),
+        }
 
     def _fetch_pages_for_category(self, api_client, category: str, lang: str, fam: str) -> list[str]:
         api_url = api_client._build_api_url(fam, lang)
@@ -388,13 +719,20 @@ class CategorySourcePanel(QGroupBox):
                 api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
             if response.status_code != 200:
                 self._log(
-                    f'HTTP {response.status_code} при запросе страниц для {category}')
+                    self._t(
+                        'ui.source.http_error_pages',
+                        'HTTP {status} while fetching pages for {category}'  ).format(status=response.status_code, category=category)
+                )
                 break
 
             try:
                 payload = response.json()
             except Exception:
-                self._log(f'Не удалось распарсить JSON для {category}')
+                self._log(
+                    self._t(
+                        'ui.source.json_parse_error',
+                        'Failed to parse JSON for {category}').format(category=category)
+                )
                 break
 
             batch = [
@@ -446,12 +784,19 @@ class CategorySourcePanel(QGroupBox):
                     api_url, params=params, timeout=10, headers=REQUEST_HEADERS)
                 if response.status_code != 200:
                     debug(
-                        f'HTTP {response.status_code} при запросе подкатегорий для {category}')
+                        self._t(
+                            'ui.source.http_error_subcategories',
+                            'HTTP {status} while fetching subcategories for {category}' ).format(status=response.status_code, category=category)
+                    )
                     break
                 try:
                     payload = response.json()
                 except Exception:
-                    debug(f'Не удалось распарсить JSON для {category}')
+                    debug(
+                        self._t(
+                            'ui.source.json_parse_error',
+                            'Failed to parse JSON for {category}'    ).format(category=category)
+                    )
                     break
 
                 batch = [
@@ -466,9 +811,22 @@ class CategorySourcePanel(QGroupBox):
                     break
 
             debug(
-                f'Глубина {current_depth}: {category} -> {len(direct_subcats)} подкатегорий')
+                self._t(
+                    'ui.source.depth_subcategories_debug',
+                    'Depth {depth}: {category} -> {count} subcategories'
+                ).format(
+                    depth=current_depth,
+                    category=category,
+                    count=len(direct_subcats),
+                )
+            )
         except Exception as exc:
-            debug(f'Ошибка получения подкатегорий для {category}: {exc}')
+            debug(
+                self._t(
+                    'ui.source.fetch_subcategories_error',
+                    'Failed to fetch subcategories for {category}: {error}'
+                ).format(category=category, error=exc)
+            )
             return []
 
         if current_depth >= max_depth:
@@ -487,7 +845,7 @@ class TsvPreviewPanel(QWidget):
     def __init__(
         self,
         parent=None,
-        header_text: str = '<b>Предпросмотр:</b>',
+        header_text: str = '',
         left_header: str = '',
         right_header: str = '',
         left_stretch: int = 1,
@@ -495,7 +853,7 @@ class TsvPreviewPanel(QWidget):
     ):
         super().__init__(parent)
         self._setup_ui(
-            header_text=header_text,
+            header_text=header_text or translate_key('ui.preview_header', getattr(parent, '_ui_lang', 'ru') if parent is not None else 'ru', '<b>Preview</b>'),
             left_header=left_header,
             right_header=right_header,
             left_stretch=left_stretch,
@@ -518,14 +876,28 @@ class TsvPreviewPanel(QWidget):
         except Exception:
             pass
 
+        body_layout = layout
         if header_text:
-            layout.addWidget(QLabel(header_text))
+            title = re.sub(r'<[^>]+>', '', str(header_text or '')).strip()
+            preview_group = QGroupBox(title or translate_key('ui.preview', getattr(self.parent(), '_ui_lang', 'ru') if self.parent() is not None else 'ru', 'Preview'))
+            preview_group.setObjectName('previewGroup')
+            preview_layout = QVBoxLayout(preview_group)
+            try:
+                preview_layout.setContentsMargins(6, 8, 6, 6)
+                preview_layout.setSpacing(2)
+            except Exception:
+                pass
+            layout.addWidget(preview_group, 1)
+            body_layout = preview_layout
+        self._body_layout = body_layout
 
         self.titles_edit = QTextEdit()
+        self.titles_edit.setObjectName('tsvPreviewLeft')
         self.titles_edit.setReadOnly(True)
         self._configure_preview_edit(self.titles_edit)
 
         self.content_edit = QTextEdit()
+        self.content_edit.setObjectName('tsvPreviewRight')
         self.content_edit.setReadOnly(True)
         self._configure_preview_edit(self.content_edit)
 
@@ -562,11 +934,17 @@ class TsvPreviewPanel(QWidget):
         right_layout.addWidget(self.content_edit, 1)
 
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setObjectName('tsvPreviewSplitter')
+        try:
+            self.splitter.setChildrenCollapsible(False)
+            self.splitter.setHandleWidth(2)
+        except Exception:
+            pass
         self.splitter.addWidget(left_pane)
         self.splitter.addWidget(right_pane)
         self.splitter.setStretchFactor(0, left_stretch)
         self.splitter.setStretchFactor(1, right_stretch)
-        layout.addWidget(self.splitter, 1)
+        body_layout.addWidget(self.splitter, 1)
 
         try:
             bar_left = self.titles_edit.verticalScrollBar()
@@ -593,3 +971,15 @@ class TsvPreviewPanel(QWidget):
     def clear(self) -> None:
         self.titles_edit.clear()
         self.content_edit.clear()
+
+    def add_top_layout(self, extra_layout: QVBoxLayout | QHBoxLayout) -> None:
+        try:
+            self._body_layout.insertLayout(0, extra_layout)
+        except Exception:
+            pass
+
+    def add_top_widget(self, widget: QWidget) -> None:
+        try:
+            self._body_layout.insertWidget(0, widget)
+        except Exception:
+            pass

@@ -5,6 +5,7 @@ import os
 import sys
 import re
 from typing import Optional
+from .localization import translate_runtime
 
 # ВАЖНО: не импортировать pywikibot на уровне модуля, чтобы избежать
 # ошибки конфигурации до вызова ensure_base_env(). Импорт выполняется
@@ -13,6 +14,16 @@ from typing import Optional
 
 class PywikibotConfigManager:
     """Manages Pywikibot configuration, credentials, and cookies."""
+
+    def _t(self, key: str) -> str:
+        return translate_runtime(key, '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
     
     def _dist_configs_dir(self) -> str:
         """Get actual configs folder next to exe/script (for writing files)."""
@@ -183,9 +194,9 @@ class PywikibotConfigManager:
                 if name == 'pywikibot.lwp' or (name.startswith('pywikibot-') and name.endswith('.lwp')):
                     try:
                         os.remove(os.path.join(cfg_dir, name))
-                        debug(f"Удалён cookie: {name}")
+                        debug(self._fmt('log.pywikibot.cookie_deleted', name=name))
                     except Exception as e:
-                        debug(f"Не удалось удалить cookie {name}: {e}")
+                        debug(self._fmt('log.pywikibot.cookie_delete_failed', name=name, error=e))
         except Exception:
             pass
     

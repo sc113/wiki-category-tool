@@ -9,6 +9,7 @@ This module contains all the tab components for the main window:
 - CreateTab: Creating new pages
 - RenameTab: Renaming pages and categories
 - RedundantCategoriesTab: Removing redundant parent categories
+- CategoryContentSyncTab: Cross-language category content sync
 """
 
 from .auth_tab import AuthTab
@@ -17,6 +18,8 @@ from .replace_tab import ReplaceTab
 from .create_tab import CreateTab
 from .rename_tab import RenameTab
 from .redundant_categories_tab import RedundantCategoriesTab
+from .category_content_sync_tab import CategoryContentSyncTab
+from .overview_tab import OverviewTab
 
 __all__ = [
     'AuthTab',
@@ -25,4 +28,6 @@ __all__ = [
     'CreateTab',
     'RenameTab',
     'RedundantCategoriesTab',
+    'CategoryContentSyncTab',
+    'OverviewTab',
 ]

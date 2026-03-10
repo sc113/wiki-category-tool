@@ -68,6 +68,13 @@ class CreateWorker(BaseWorker):
         self.summary = summary
         # Малая правка НЕ применяется при создании страниц
         self.minor = False
+        self.stats = {
+            'total': 0,
+            'created': 0,
+            'exists': 0,
+            'failed': 0,
+            'invalid': 0,
+        }
 
     def run(self):
         """Основной метод выполнения создания страниц."""
@@ -80,7 +87,8 @@ class CreateWorker(BaseWorker):
                 site.login(user=self.username)
             except Exception as e:
                 self.progress.emit(
-                    f"Ошибка авторизации: {type(e).__name__}: {e}")
+                    self._fmt('log.worker.auth_error', error_type=type(e).__name__, error=e)
+                )
                 return
 
         try:
@@ -93,6 +101,10 @@ class CreateWorker(BaseWorker):
                         continue
                     raw_title = row[0] if row[0] is not None else ''
                     title = raw_title.strip().lstrip('\ufeff')
+                    if not title:
+                        self.stats['invalid'] += 1
+                        continue
+                    self.stats['total'] += 1
                     lines = [((s or '').lstrip('\ufeff')) for s in row[1:]]
 
                     norm_title = normalize_title_by_selection(
@@ -106,15 +118,21 @@ class CreateWorker(BaseWorker):
                         ok = self._save_with_retry(
                             page, content, formatted_summary, self.minor)
                         if ok:
+                            self.stats['created'] += 1
                             self.progress.emit(
-                                f"{title}: создано ({len(lines)} строк)")
+                                self._fmt('log.create.created', title=title, lines=len(lines))
+                            )
                         else:
+                            self.stats['failed'] += 1
                             self.progress.emit(
-                                f"{title}: не удалось создать после повторных попыток")
+                                self._fmt('log.create.failed_create', title=title)
+                            )
                     else:
-                        self.progress.emit(f"{title}: уже существует")
+                        self.stats['exists'] += 1
+                        self.progress.emit(self._fmt('log.create.exists', title=title))
         except Exception as e:
-            self.progress.emit(f"Ошибка: {e}")
+            self.stats['failed'] += 1
+            self.progress.emit(self._fmt('log.create.error', error=e))
         finally:
             # Финальные сообщения об окончании теперь пишет UI
             pass

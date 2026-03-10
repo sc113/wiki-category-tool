@@ -12,6 +12,11 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.pywikibot_config import apply_pwb_config
+from ...core.localization import translate_key
+from ...core.redundant_category_logic import (
+    REDUNDANT_MODE_DEDUP,
+    detect_redundant_category_mode,
+)
 from ...utils import (
     debug,
     default_redundant_category_summary,
@@ -41,63 +46,70 @@ class RedundantCategoriesTab(QWidget):
         self.current_lang = None
         self.current_family = None
         self._preview_ready = False
-        self._action_handler = None
         self.setup_ui()
+
+    def _ui_lang(self) -> str:
+        try:
+            raw = str(getattr(self.parent_window, '_ui_lang', 'ru')).lower()
+        except Exception:
+            raw = 'ru'
+        return 'en' if raw.startswith('en') else 'ru'
+
+    def _t(self, key: str, fallback: str) -> str:
+        try:
+            return translate_key(key, self._ui_lang(), fallback)
+        except Exception:
+            return fallback
 
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
+        try:
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            main_layout.setSpacing(8)
+        except Exception:
+            pass
 
-        source_help = (
-            'Левая панель работает так же, как во вкладке «Чтение».\n'
-            'Можно получить страницы из категории, вручную вставить список или загрузить .txt.\n'
-            'Префиксы/NS нормализуют заголовки страниц для обработки; «Авто» оставляет список без изменений.'
-        )
-        pairs_help = (
-            'Формат файла пар: точная_категория<TAB>широкая_категория.\n'
-            'Левая колонка — точная категория, правая — широкая, которую нужно удалить.\n'
-            'Префикс категории необязателен: можно писать и с ним, и без него.\n'
-            'Допустим локальный префикс проекта или Category:, но обычно удобнее хранить названия без префикса.\n'
-            'Не используйте [[Категория:...]] / [[Category:...]] и не добавляйте ключ сортировки после "|".\n'
-            'Для одной точной категории можно указать несколько широких категорий отдельными строками.\n'
-            'Предпросмотр в центре показывает сам TSV, а не результат по страницам.'
-        )
-        summary_help = (
-            'Есть два шаблона комментария к правке.\n'
-            'Если на странице удаляется одна широкая категория, используется поле «Коммент при 1 удалении».\n'
-            'Если удаляется несколько категорий сразу, используется поле «Коммент при нескольких», '
-            'а {pair} заменяется списком пар из поля «Пара». Пары всегда разделяются запятой.\n'
-            'Переменные:\n'
-            '{title_broad} — название широкой категории без префикса.\n'
-            '{title_precise} — название точной категории без префикса.\n'
-            '{link_broad} — викиссылка на широкую категорию с локальным префиксом проекта.\n'
-            '{link_precise} — викиссылка на точную категорию с локальным префиксом проекта.\n'
-            'Для множественного шаблона доступны {pair} и {count}.\n'
-            '{pair} — список пар, собранный из поля «Пара».\n'
-            '{count} — число удаляемых широких категорий в этой правке.\n'
-            'Поле «Пара» — это шаблон одной пары; он повторяется для каждого удаления.\n'
-            'Пример для «Коммент при 1 удалении»: Удалена {link_broad}, так как существует более точная {link_precise}\n'
-            'Пример для «Коммент при нескольких»: Удалены категории, так как существуют более точные: {pair}.\n'
-            'Пример для «Пара»: {link_broad} → {link_precise}'
-        )
-        settings_help = pairs_help + '\n\n' + summary_help
+        source_help = self._t('help.cleanup.source', '')
+        pairs_help = self._t('help.cleanup.pairs', '')
+        summary_help = self._t('help.cleanup.summary', '')
 
         self.source_panel = CategorySourcePanel(
             self,
             parent_window=self.parent_window,
             help_text=source_help,
-            group_title='Источник страниц',
-            category_section_label='<b>Получить содержимое категории:</b>',
-            category_placeholder='Название корневой категории',
-            manual_label='<b>Список страниц для обработки:</b>',
-            manual_placeholder='Список страниц (по одной на строку)',
-            file_section_label='<b>Или загрузить список из файла:</b>',
-            file_caption='Файл (.txt):',
+            group_title=self._t('ui.pages_source', 'Pages source'),
+            category_section_label=self._t(
+                'ui.cleanup.fetch_category_content',
+                '<b>Fetch category contents</b>',
+            ),
+            category_placeholder=self._t(
+                'ui.root_category_name',
+                'Root category name',
+            ),
+            manual_label=self._t(
+                'ui.cleanup.list_of_pages_to_process',
+                '<b>List of pages to process</b>',
+            ),
+            manual_placeholder=self._t(
+                'ui.page_list_one_per_line',
+                'Page list (one per line)',
+            ),
+            file_section_label=self._t(
+                'ui.cleanup.or_load_list_from_file',
+                '<b>Or load list from file</b>',
+            ),
+            file_caption=self._t('ui.file_txt', 'File (.txt):'),
         )
         self.redundant_ns_combo = self.source_panel.ns_combo
         self.manual_list = self.source_panel.manual_list
         self.list_edit = self.source_panel.list_edit
         self.in_path = self.source_panel.in_path
         self.file_edit = self.source_panel.file_edit
+        try:
+            # Блок 1: сжимается вместе с блоком 2 раньше лога.
+            self.source_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        except Exception:
+            pass
         main_layout.addWidget(self.source_panel, 3)
 
         right_side = QWidget()
@@ -108,20 +120,47 @@ class RedundantCategoriesTab(QWidget):
         except Exception:
             pass
 
-        settings_group = QGroupBox('Пары категорий и комментарии')
-        settings_group.setStyleSheet(
-            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } "
-            "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-        )
-        settings_layout = QVBoxLayout(settings_group)
+        content_row = QHBoxLayout()
         try:
-            settings_layout.setContentsMargins(8, 12, 8, 8)
-            settings_layout.setSpacing(6)
+            content_row.setContentsMargins(0, 0, 0, 0)
+            content_row.setSpacing(8)
         except Exception:
             pass
 
+        preview_wrap = QWidget()
+        preview_layout = QVBoxLayout(preview_wrap)
+        try:
+            preview_layout.setContentsMargins(0, 0, 6, 0)
+            preview_layout.setSpacing(4)
+        except Exception:
+            pass
+        try:
+            # Блок 2: сжимается вместе с блоком 1 раньше лога.
+            preview_wrap.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        except Exception:
+            pass
+
+        self.preview_panel = TsvPreviewPanel(
+            self,
+            header_text=f"<b>{self._t('ui.cleanup.preview_for_categories', 'Category preview')}</b>",
+            left_header=self._t('ui.precise_category', 'Precise category'),
+            right_header=self._t('ui.broad_category', 'Broad category'),
+            left_stretch=1,
+            right_stretch=1,
+        )
+        pairs_block = QVBoxLayout()
+        try:
+            pairs_block.setContentsMargins(0, 0, 0, 0)
+            pairs_block.setSpacing(4)
+        except Exception:
+            pass
+        pairs_block.addWidget(QLabel(self._t('ui.category_pairs_tsv', 'Category pairs (.tsv):')))
         pairs_row = QHBoxLayout()
-        pairs_row.addWidget(QLabel('Пары категорий (.tsv):'))
+        try:
+            pairs_row.setContentsMargins(0, 0, 0, 0)
+            pairs_row.setSpacing(6)
+        except Exception:
+            pass
 
         self.categories_path_edit = QLineEdit('categories.tsv')
         self.categories_path_edit.setMinimumWidth(0)
@@ -134,78 +173,37 @@ class RedundantCategoriesTab(QWidget):
         btn_browse_pairs.setText('…')
         btn_browse_pairs.setAutoRaise(False)
         try:
-            btn_browse_pairs.setFixedSize(28, 28)
-            btn_browse_pairs.setToolTip('Выбрать файл')
+            btn_browse_pairs.setFixedSize(27, 27)
+            btn_browse_pairs.setToolTip(self._t('ui.choose_file', 'Choose file'))
         except Exception:
             pass
         btn_browse_pairs.clicked.connect(
             lambda: pick_file(self, self.categories_path_edit, '*.tsv'))
         pairs_row.addWidget(btn_browse_pairs)
 
-        btn_open_pairs = QPushButton('Открыть')
+        btn_open_pairs = QPushButton(self._t('ui.open', 'Open'))
         btn_open_pairs.clicked.connect(
-            lambda: open_from_edit(self, self.categories_path_edit))
-        pairs_row.addWidget(btn_open_pairs)
-        add_info_button(self, pairs_row, settings_help)
-        settings_layout.addLayout(pairs_row)
-
-        single_row = QHBoxLayout()
-        single_row.addWidget(QLabel('Коммент при 1 удалении:'))
-        self.redundant_summary_single_edit = QLineEdit()
-        self.redundant_summary_single_edit.setText(
-            default_redundant_category_summary('ru'))
-        self._configure_static_left_text(self.redundant_summary_single_edit)
-        single_row.addWidget(self.redundant_summary_single_edit, 1)
-        settings_layout.addLayout(single_row)
-
-        multi_row = QHBoxLayout()
-        multi_row.addWidget(QLabel('Коммент при нескольких:'))
-        self.redundant_summary_multi_edit = QLineEdit()
-        self.redundant_summary_multi_edit.setText(
-            default_redundant_category_multi_summary('ru'))
-        self._configure_static_left_text(self.redundant_summary_multi_edit)
-        multi_row.addWidget(self.redundant_summary_multi_edit, 2)
-
-        pair_label = QLabel('Пара:')
-        multi_row.addWidget(pair_label)
-        self.redundant_pair_format_edit = QLineEdit()
-        self.redundant_pair_format_edit.setText(
-            default_redundant_category_pair_format('ru'))
-        self._configure_static_left_text(self.redundant_pair_format_edit)
-        try:
-            self.redundant_pair_format_edit.setMaximumWidth(320)
-        except Exception:
-            pass
-        multi_row.addWidget(self.redundant_pair_format_edit, 1)
-        settings_layout.addLayout(multi_row)
-
-        right_layout.addWidget(settings_group)
-
-        content_row = QHBoxLayout()
-
-        preview_wrap = QWidget()
-        preview_layout = QVBoxLayout(preview_wrap)
-        try:
-            preview_layout.setContentsMargins(0, 0, 6, 0)
-        except Exception:
-            pass
-        self.preview_panel = TsvPreviewPanel(
-            self,
-            header_text='<b>Предпросмотр пар категорий:</b>',
-            left_header='Точная категория',
-            right_header='Широкая категория',
-            left_stretch=1,
-            right_stretch=1,
+            lambda: open_from_edit(self, self.categories_path_edit)
         )
+        pairs_row.addWidget(btn_open_pairs)
+        add_info_button(self, pairs_row, pairs_help, inline=True)
+        pairs_block.addLayout(pairs_row)
+        self.preview_panel.add_top_layout(pairs_block)
         self.preview_titles = self.preview_panel.titles_edit
         self.preview_rest = self.preview_panel.content_edit
         preview_layout.addWidget(self.preview_panel, 1)
-        content_row.addWidget(preview_wrap, 1)
+        content_row.addWidget(preview_wrap, 6)
 
         log_wrap = QWidget()
         log_layout = QVBoxLayout(log_wrap)
         try:
             log_layout.setContentsMargins(6, 0, 0, 0)
+        except Exception:
+            pass
+        try:
+            # Блок 3 (лог) держим читаемым дольше остальных.
+            log_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            log_wrap.setMinimumWidth(200)
         except Exception:
             pass
         self.run_log = QTextEdit()
@@ -235,17 +233,75 @@ class RedundantCategoriesTab(QWidget):
             pass
 
         log_layout.addWidget(wrapped_log, 1)
-        content_row.addWidget(log_wrap, 1)
+        content_row.addWidget(log_wrap, 5)
+        try:
+            content_row.setStretch(0, 6)
+            content_row.setStretch(1, 5)
+        except Exception:
+            pass
+        try:
+            content_row.setStretch(0, 1)
+            content_row.setStretch(1, 1)
+        except Exception:
+            pass
 
         right_layout.addLayout(content_row, 1)
 
+        comments_group = QGroupBox(self._t('ui.cleanup.comments_group', 'Edit summaries'))
+        comments_layout = QVBoxLayout(comments_group)
+        try:
+            comments_layout.setContentsMargins(8, 12, 8, 8)
+            comments_layout.setSpacing(6)
+        except Exception:
+            pass
+
+        single_row = QHBoxLayout()
+        single_row.addWidget(QLabel(self._t('ui.comment_for_single_removal', 'Comment for single removal:')))
+        self.redundant_summary_single_edit = QLineEdit()
+        self.redundant_summary_single_edit.setText(
+            default_redundant_category_summary(self._ui_lang()))
+        self._configure_static_left_text(self.redundant_summary_single_edit)
+        single_row.addWidget(self.redundant_summary_single_edit, 1)
+        add_info_button(self, single_row, summary_help, inline=True)
+        comments_layout.addLayout(single_row)
+
+        multi_row = QHBoxLayout()
+        multi_row.addWidget(
+            QLabel(self._t('ui.comment_for_multiple_removals', 'Comment for multiple removals:'))
+        )
+        self.redundant_summary_multi_edit = QLineEdit()
+        self.redundant_summary_multi_edit.setText(
+            default_redundant_category_multi_summary(self._ui_lang()))
+        self._configure_static_left_text(self.redundant_summary_multi_edit)
+        multi_row.addWidget(self.redundant_summary_multi_edit, 2)
+
+        pair_label = QLabel(self._t('ui.pair', 'Pair:'))
+        multi_row.addWidget(pair_label)
+        self.redundant_pair_format_edit = QLineEdit()
+        self.redundant_pair_format_edit.setText(
+            default_redundant_category_pair_format(self._ui_lang()))
+        self._configure_static_left_text(self.redundant_pair_format_edit)
+        try:
+            self.redundant_pair_format_edit.setMaximumWidth(320)
+        except Exception:
+            pass
+        multi_row.addWidget(self.redundant_pair_format_edit, 1)
+        comments_layout.addLayout(multi_row)
+
+        right_layout.addWidget(comments_group)
+
         controls_row = QHBoxLayout()
-        self.progress_label = QLabel('Обработано 0/0')
+        self.progress_label = QLabel(self._t('ui.processed_counter_initial', 'Processed 0/0'))
+        try:
+            self.progress_label.setVisible(False)
+        except Exception:
+            pass
         self.progress_bar = QProgressBar()
         try:
             self.progress_bar.setMaximum(1)
             self.progress_bar.setValue(0)
-            self.progress_bar.setTextVisible(False)
+            self.progress_bar.setTextVisible(True)
+            self.progress_bar.setFormat(self._t('ui.processed_counter_initial', 'Processed 0/0'))
         except Exception:
             pass
 
@@ -260,39 +316,51 @@ class RedundantCategoriesTab(QWidget):
         progress_layout.addWidget(self.progress_bar)
         controls_row.addWidget(progress_wrap, 1)
 
-        self.action_btn = QPushButton()
-        controls_row.addWidget(self.action_btn)
+        self.preview_btn = QPushButton(self._t('ui.preview', 'Preview'))
+        self.preview_btn.clicked.connect(self.preview_pairs)
+        controls_row.addWidget(self.preview_btn)
 
-        self.stop_btn = QPushButton('Остановить')
+        self.start_btn = QPushButton(self._t('ui.cleanup.start_removal', 'Start removal'))
+        self.start_btn.setEnabled(False)
+        self.start_btn.clicked.connect(self.start_run)
+        controls_row.addWidget(self.start_btn)
+
+        self.stop_btn = QPushButton(self._t('ui.stop', 'Stop'))
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_run)
         controls_row.addWidget(self.stop_btn)
-        set_start_stop_ratio(self.action_btn, self.stop_btn, 3)
+        set_start_stop_ratio(self.start_btn, self.stop_btn, 3)
 
         right_layout.addLayout(controls_row)
 
         main_layout.addWidget(right_side, 7)
+        try:
+            # На среднем размере три верхних блока близки по ширине.
+            main_layout.setStretch(0, 1)
+            main_layout.setStretch(1, 2)
+        except Exception:
+            pass
         self.source_panel.set_log_widget(self.run_log)
         self._set_action_mode_preview()
 
     def _set_action_mode_preview(self):
         self._preview_ready = False
-        self._set_action_handler('Предпросмотр', self.preview_pairs)
+        try:
+            self.start_btn.setEnabled(False)
+        except Exception:
+            pass
 
     def _set_action_mode_run(self):
         self._preview_ready = True
-        self._set_action_handler('Удалять категории', self.start_run)
-
-    def _set_action_handler(self, text: str, handler):
         try:
-            if self._action_handler is not None:
-                self.action_btn.clicked.disconnect(self._action_handler)
+            worker = getattr(self, 'rcworker', None)
+            running = bool(worker and worker.isRunning())
+        except Exception:
+            running = False
+        try:
+            self.start_btn.setEnabled(not running)
         except Exception:
             pass
-        self._action_handler = handler
-        self.action_btn.setText(text)
-        self.action_btn.setEnabled(True)
-        self.action_btn.clicked.connect(handler)
 
     def _on_pairs_path_changed(self):
         worker = getattr(self, 'rcworker', None)
@@ -316,47 +384,79 @@ class RedundantCategoriesTab(QWidget):
         self._set_action_mode_preview()
 
     def preview_pairs(self):
+        worker = getattr(self, 'rcworker', None)
+        if worker and worker.isRunning():
+            return
+        self._set_action_mode_preview()
+
         path = (self.categories_path_edit.text() or '').strip()
         if not path:
-            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV с парами категорий.')
+            QMessageBox.warning(
+                self,
+                self._t('ui.error', 'Error'),
+                self._t('ui.cleanup.specify_tsv_categories', 'Specify a TSV file with category pairs.'),
+            )
             return
 
-        ok, message = check_tsv_format(path)
+        ok, message = check_tsv_format(path, allow_single_column=True, widget=self)
         if not ok:
-            QMessageBox.warning(self, 'Ошибка', message)
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), message)
             return
 
         try:
             left, right, count = tsv_preview_from_path(path)
         except Exception as exc:
             QMessageBox.critical(
-                self, 'Ошибка', f'Не удалось прочитать TSV: {exc}')
+                self,
+                self._t('ui.error', 'Error'),
+                self._t('ui.cleanup.failed_read_tsv', 'Failed to read TSV: {error}').format(error=exc),
+            )
             return
 
         self.preview_panel.set_preview(left, right)
         if count > 0:
             self._set_action_mode_run()
+        else:
+            self._set_action_mode_preview()
 
     def start_run(self):
-        path = (self.categories_path_edit.text() or '').strip()
-        if not path:
-            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV с парами категорий.')
+        if not self._preview_ready:
+            QMessageBox.warning(
+                self,
+                self._t('ui.error', 'Error'),
+                self._t('ui.cleanup.preview_required', 'Run preview first.'),
+            )
             return
 
-        ok, message = check_tsv_format(path)
+        path = (self.categories_path_edit.text() or '').strip()
+        if not path:
+            QMessageBox.warning(
+                self,
+                self._t('ui.error', 'Error'),
+                self._t('ui.cleanup.specify_tsv_categories', 'Specify a TSV file with category pairs.'),
+            )
+            return
+
+        ok, message = check_tsv_format(path, allow_single_column=True, widget=self)
         if not ok:
-            QMessageBox.warning(self, 'Ошибка', message)
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), message)
             return
 
         try:
             titles = self.source_panel.load_titles_from_inputs()
         except Exception as exc:
-            QMessageBox.critical(self, 'Ошибка', str(exc))
+            QMessageBox.critical(self, self._t('ui.error', 'Error'), str(exc))
             return
 
         if not titles:
             QMessageBox.warning(
-                self, 'Ошибка', 'Не указан ни файл со списком страниц, ни текст списка.')
+                self,
+                self._t('ui.error', 'Error'),
+                self._t(
+                    'ui.cleanup.no_input_pages',
+                    'Neither page list file nor manual page list is provided.',
+                ),
+            )
             return
 
         user = getattr(self.parent_window, 'current_user', None)
@@ -365,15 +465,65 @@ class RedundantCategoriesTab(QWidget):
         fam = getattr(self.parent_window, 'current_family', 'wikipedia')
 
         if not user or not pwd:
-            QMessageBox.warning(self, 'Ошибка', 'Необходимо войти в систему.')
+            QMessageBox.warning(
+                self,
+                self._t('ui.error', 'Error'),
+                self._t('ui.you_need_to_sign_in', 'You need to sign in.'),
+            )
+            return
+
+        try:
+            detected_mode = detect_redundant_category_mode(path, fam, lang)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                self._t('ui.error', 'Error'),
+                self._t(
+                    'ui.cleanup.detect_mode_error',
+                    'Failed to detect TSV processing mode: {error}',
+                ).format(error=exc),
+            )
             return
 
         apply_pwb_config(lang, fam)
 
-        self.action_btn.setEnabled(False)
+        self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.run_log.clear()
         init_progress(self.progress_label, self.progress_bar, len(titles))
+        mode_name = 'dedupe' if detected_mode == REDUNDANT_MODE_DEDUP else 'pairs'
+        log_message(
+            self.run_log,
+            self._t(
+                'ui.cleanup.run_started',
+                'Starting redundant category cleanup: pages={pages}, lang={lang}, family={family}, ns={ns}, mode={mode}',
+            ).format(
+                pages=len(titles),
+                lang=lang,
+                family=fam,
+                ns=self.redundant_ns_combo.currentData(),
+                mode=mode_name,
+            ),
+            debug,
+        )
+        if detected_mode == REDUNDANT_MODE_DEDUP:
+            info_text = self._t(
+                'ui.cleanup.dedupe_mode_info',
+                'Category dedupe mode is enabled.\nTSV contains one column: only duplicate occurrences of listed categories will be removed, first occurrence is kept.',
+            )
+            QMessageBox.information(
+                self,
+                self._t('ui.cleanup.dedupe_mode_title', 'Dedupe mode'),
+                info_text,
+            )
+            log_message(
+                self.run_log,
+                self._t(
+                    'ui.cleanup.dedupe_mode_log',
+                    'Dedupe mode: removing only duplicate occurrences of categories from the first TSV column.',
+                ),
+                debug,
+            )
 
         self.rcworker = RedundantCategoryWorker(
             titles=titles,
@@ -388,9 +538,11 @@ class RedundantCategoriesTab(QWidget):
             pair_template=self.redundant_pair_format_edit.text().strip(),
         )
         self.rcworker.progress.connect(
-            lambda message: log_message(self.run_log, message, debug))
+            lambda message: log_message(self.run_log, message, debug)
+        )
         self.rcworker.page_done.connect(
-            lambda: inc_progress(self.progress_label, self.progress_bar))
+            lambda: inc_progress(self.progress_label, self.progress_bar)
+        )
         self.rcworker.finished.connect(self._on_run_finished)
         self.rcworker.start()
 
@@ -405,10 +557,21 @@ class RedundantCategoriesTab(QWidget):
             self._set_action_mode_run()
         else:
             self._set_action_mode_preview()
-        if getattr(self, 'rcworker', None) and getattr(self.rcworker, '_stop', False):
-            log_message(self.run_log, 'Остановлено!', debug)
+        worker = getattr(self, 'rcworker', None)
+        stopped = bool(worker and getattr(worker, '_stop', False))
+        try:
+            edits = int(getattr(worker, 'saved_edits', 0) or 0)
+        except Exception:
+            edits = 0
+        try:
+            if edits > 0 and self.parent_window and hasattr(self.parent_window, 'record_operation'):
+                self.parent_window.record_operation('cleanup', edits)
+        except Exception:
+            pass
+        if stopped:
+            log_message(self.run_log, self._t('ui.stopped', 'Stopped!'), debug)
         else:
-            log_message(self.run_log, 'Готово!', debug)
+            log_message(self.run_log, self._t('ui.done_with_exclamation', 'Done!'), debug)
 
     def update_language(self, lang: str):
         if is_default_summary(
@@ -452,6 +615,11 @@ class RedundantCategoriesTab(QWidget):
         except Exception:
             pass
         try:
+            line_edit.textChanged.connect(
+                lambda _txt='', edit=line_edit: self._pin_line_edit_left(edit))
+        except Exception:
+            pass
+        try:
             line_edit.editingFinished.connect(
                 lambda edit=line_edit: self._pin_line_edit_left(edit))
         except Exception:
@@ -483,6 +651,12 @@ class RedundantCategoriesTab(QWidget):
 
     def update_namespace_combo(self, family: str, lang: str):
         self.source_panel.update_namespace_combo(family, lang)
+
+    def set_prefix_controls_visible(self, visible: bool):
+        try:
+            self.source_panel.set_prefix_controls_visible(visible)
+        except Exception:
+            pass
 
     def set_auth_data(self, username: str, lang: str, family: str):
         self.current_user = username

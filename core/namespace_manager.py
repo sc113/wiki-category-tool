@@ -7,6 +7,7 @@ import re
 from typing import Dict, Set, Tuple, List, Optional, Any
 
 from ..constants import DEFAULT_EN_NS, EN_PREFIX_ALIASES
+from .localization import translate_runtime
 
 
 class NamespaceManager:
@@ -18,6 +19,16 @@ class NamespaceManager:
                             Dict[int, Dict[str, Set[str] | str]]] = {}
         self.default_ns_prefixes: Dict[Tuple[str, str],
                                        Dict[int, Dict[str, Set[str] | str]]] = {}
+
+    def _t(self, key: str) -> str:
+        return translate_runtime(key, '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
 
     def _ns_cache_dir(self) -> str:
         """Get directory for namespace cache files."""
@@ -175,7 +186,7 @@ class NamespaceManager:
 
             if ns_map or aliases:
                 debug(
-                    f"Загружены namespace префиксы для {family}/{lang}: {len(ns_map)} пространств, {len(aliases)} алиасов")
+                    self._fmt('log.namespace.loaded_prefixes', family=family, lang=lang, namespaces=len(ns_map), aliases=len(aliases)))
 
                 for sid, meta in ns_map.items():
                     try:
@@ -215,7 +226,7 @@ class NamespaceManager:
                     except Exception:
                         continue
                 debug(
-                    f"Обработано {len(prefixes_by_id)} namespace префиксов для {family}/{lang}")
+                    self._fmt('log.namespace.processed_prefixes', family=family, lang=lang, count=len(prefixes_by_id)))
             # Если ничего не получили — оставим prefixes_by_id пустым
 
         except Exception as e:
@@ -440,16 +451,14 @@ class NamespaceManager:
         except Exception:
             pass
 
-        combo.addItem('Авто', 'auto')
-        combo.addItem('(нет) [0]', 0)
+        combo.addItem(self._t('ui.auto'), 'auto')
+        combo.addItem(self._t('ui.no_namespace_root'), 0)
 
         # Предпочитаем кэш, чтобы не дергать сеть лишний раз
         info = None
         if not force_load:
             info = self._get_cached_ns_info(
                 family or 'wikipedia', lang or 'ru')
-            if info:
-                debug(f"NS из кэша: {family}/{lang} → {len(info)}")
         if info is None and force_load:
             info = self._load_ns_info(family or 'wikipedia', lang or 'ru')
 

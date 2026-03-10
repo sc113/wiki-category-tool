@@ -15,6 +15,8 @@ from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextOption
 import html
 import urllib.parse
 
+from ...core.localization import translate_key
+
 
 # UI/Animation constants
 ANIM_DURATION_MS = 250            # Длительность анимаций
@@ -83,10 +85,22 @@ class TemplateReviewDialog(QDialog):
             QTimer.singleShot(150, lambda: self.highlight_and_focus_replacement(
                 self._search_text_to_highlight))
 
+    def _ui_lang(self) -> str:
+        return getattr(self.parent(), '_ui_lang', 'ru') if self.parent() is not None else 'ru'
+
+    def _t(self, key: str) -> str:
+        return translate_key(key, self._ui_lang(), '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
-        # Заголовок: "Замена по параметрам шаблона"
-        self.setWindowTitle("Замена по параметрам шаблона")
+        self.setWindowTitle(self._t('ui.template_review.window_title'))
 
         # Размер по умолчанию; дальнейшее распределение свободного места — в пользу редактора
         self.resize(900, 700)
@@ -122,7 +136,7 @@ class TemplateReviewDialog(QDialog):
         msg_box.setContentsMargins(0, 0, 0, 0)
         msg_box.setSpacing(0)
 
-        _msg_title = QLabel('<b>Сообщение:</b>')
+        _msg_title = QLabel(self._t('ui.template_review.message_label'))
         try:
             _msg_title.setStyleSheet('margin:0')
         except Exception:
@@ -132,7 +146,7 @@ class TemplateReviewDialog(QDialog):
         if is_locative:
             # Красная крупная строка + пояснение
             red = QLabel(
-                "<span style='color:#b91c1c;font-weight:bold;font-size:16px'>Обнаружено применение локативов в параметрах шаблона</span>")
+                self._t('ui.template_review.locative_warning'))
             red.setWordWrap(True)
             try:
                 red.setStyleSheet('margin:0')
@@ -140,7 +154,7 @@ class TemplateReviewDialog(QDialog):
                 pass
             msg_box.addWidget(red)
             msg_box.addSpacing(6)
-            desc = QLabel("С высокой вероятностью <b>нужны исправления вручную</b>. Ниже предлагается замена через автоматический подбор эвристик (логика на основе Шаблон:Локатив); проверьте корректность и при необходимости внесите исправления.")
+            desc = QLabel(self._t('ui.template_review.locative_desc'))
             desc.setWordWrap(True)
             try:
                 desc.setStyleSheet('margin:0')
@@ -148,7 +162,7 @@ class TemplateReviewDialog(QDialog):
                 pass
             msg_box.addWidget(desc)
         elif is_partial:
-            amber = QLabel("<b>Обнаружены совпадения по частям</b>")
+            amber = QLabel(self._t('ui.template_review.partial_warning'))
             amber.setWordWrap(True)
             try:
                 amber.setStyleSheet('margin:0')
@@ -157,7 +171,7 @@ class TemplateReviewDialog(QDialog):
             msg_box.addWidget(amber)
             msg_box.addSpacing(6)
             desc = QLabel(
-                "Категория на странице не найдена напрямую. Проверьте и при необходимости подредактируйте предложенную замену.")
+                self._t('ui.template_review.partial_desc'))
             desc.setWordWrap(True)
             try:
                 desc.setStyleSheet('margin:0')
@@ -166,7 +180,7 @@ class TemplateReviewDialog(QDialog):
             msg_box.addWidget(desc)
         else:
             basic = QLabel(
-                "Категория на странице не найдена напрямую. Обнаружено совпадение в параметрах шаблона.")
+                self._t('ui.template_review.direct_desc'))
             basic.setWordWrap(True)
             try:
                 basic.setStyleSheet('margin:0')
@@ -200,10 +214,10 @@ class TemplateReviewDialog(QDialog):
         # Заголовок с кнопкой сворачивания для редактора
         header3_layout = QHBoxLayout()
         header3_layout.setContentsMargins(0, 0, 0, 0)
-        header3_layout.addWidget(QLabel('<b>Ручное редактирование:</b>'))
+        header3_layout.addWidget(QLabel(self._t('ui.template_review.manual_edit')))
         self.btn_collapse_edit = QPushButton('−')
         self.btn_collapse_edit.setFixedSize(20, 20)
-        self.btn_collapse_edit.setToolTip('Свернуть/развернуть блок')
+        self.btn_collapse_edit.setToolTip(self._t('ui.template_review.toggle_block'))
         header3_layout.addWidget(self.btn_collapse_edit)
         header3_layout.addStretch()
         layout.addLayout(header3_layout)
@@ -224,27 +238,25 @@ class TemplateReviewDialog(QDialog):
 
     def create_dedupe_section(self, layout):
         """Блок предупреждения о дублях и выбор политики дедупликации."""
-        box = QGroupBox("Дубликаты позиционных параметров")
+        box = QGroupBox(self._t('ui.template_review.duplicate_params'))
         try:
             box.setStyleSheet(
                 "QGroupBox { border:1px solid #f59e0b; border-radius:6px; margin-top: 10px; } "
                 "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
             )
             box.setToolTip(
-                "В позиционных параметрах получатся одинаковые значения.\n"
-                "Выберите, что оставить при сохранении и в будущих аналогичных случаях."
+                self._t('ui.template_review.duplicate_tooltip')
             )
         except Exception:
             pass
         v = QVBoxLayout(box)
         msg = QLabel(
-            f"<b>Обнаружено два одинаковых значения</b> в параметрах {self.dup_idx1} и {self.dup_idx2}.")
+            self._fmt('ui.template_review.duplicate_message', idx1=self.dup_idx1, idx2=self.dup_idx2))
         msg.setWordWrap(True)
         v.addWidget(msg)
 
         hint = QLabel(
-            "При подтверждении можно: оставить оба значения, или удалить одно из дубликатов.\n"
-            "Выбранная политика будет сохранена в правила и применяться автоматически."
+            self._t('ui.template_review.duplicate_hint')
         )
         try:
             hint.setStyleSheet("color:#6b7280;font-size:12px")
@@ -254,16 +266,16 @@ class TemplateReviewDialog(QDialog):
         v.addWidget(hint)
 
         # Радио‑кнопки выбора
-        rb_keep_both = QRadioButton('Оставить оба')
-        rb_keep_first = QRadioButton('Оставлять параметр слева')
-        rb_keep_second = QRadioButton('Оставлять параметр справа')
+        rb_keep_both = QRadioButton(self._t('ui.template_review.keep_both'))
+        rb_keep_first = QRadioButton(self._t('ui.template_review.keep_left'))
+        rb_keep_second = QRadioButton(self._t('ui.template_review.keep_right'))
         try:
             rb_keep_both.setToolTip(
-                'Ничего не удалять: оба одинаковых значения останутся')
+                self._t('ui.template_review.keep_both_tooltip'))
             rb_keep_first.setToolTip(
-                'Удалить правый дубликат и оставить левый (первый)')
+                self._t('ui.template_review.keep_left_tooltip'))
             rb_keep_second.setToolTip(
-                'Удалить левый дубликат и оставить правый (последний)')
+                self._t('ui.template_review.keep_right_tooltip'))
         except Exception:
             pass
         rb_keep_both.setChecked(True)
@@ -337,10 +349,10 @@ class TemplateReviewDialog(QDialog):
         # Создаем блоки
         layout.addSpacing(4)
         self._create_template_block(
-            layout, 'Исходный вызов', highlighted_old, '#f6f8fa', '#e1e4e8', 'old')
+            layout, self._t('ui.template_review.source_call'), highlighted_old, '#f6f8fa', '#e1e4e8', 'old')
         layout.addSpacing(4)
         self._create_template_block(
-            layout, 'Предлагаемая замена', highlighted_new, '#ecfdf5', '#d1fae5', 'new')
+            layout, self._t('ui.template_review.proposed_replacement'), highlighted_new, '#ecfdf5', '#d1fae5', 'new')
 
     def prepare_highlighted_templates(self):
         """Подготовка highlighted версий шаблонов с подсветкой изменений"""
@@ -434,7 +446,7 @@ class TemplateReviewDialog(QDialog):
 
         btn = QPushButton('−')
         btn.setFixedSize(20, 20)
-        btn.setToolTip('Свернуть/развернуть блок')
+        btn.setToolTip(self._t('ui.template_review.toggle_block'))
         btn.clicked.connect(lambda: self._toggle_block(lbl, btn))
         header_layout.addWidget(btn)
         header_layout.addStretch()
@@ -456,7 +468,10 @@ class TemplateReviewDialog(QDialog):
 
     def _create_link_label(self, text: str, page_url: str, history_url: str) -> QLabel:
         """Создает QLabel со ссылками на страницу и историю"""
-        label_text = f"{text} (<a href='{page_url}'>открыть</a> · <a href='{history_url}'>история</a>)"
+        label_text = (
+            f"{text} (<a href='{page_url}'>{self._t('ui.template_review.open_link')}</a> · "
+            f"<a href='{history_url}'>{self._t('ui.template_review.history_link')}</a>)"
+        )
         label = QLabel(label_text)
         label.setTextFormat(Qt.RichText)
         label.setWordWrap(True)
@@ -504,7 +519,7 @@ class TemplateReviewDialog(QDialog):
                 start_height = widget.height()
                 end_height = 0
                 final_button_text = '+'
-                final_tooltip = 'Развернуть блок'
+                final_tooltip = self._t('ui.template_review.expand_block')
             else:
                 # Разворачивание
                 widget.show()
@@ -512,10 +527,10 @@ class TemplateReviewDialog(QDialog):
                 start_height = 0
                 end_height = widget.sizeHint().height()
                 final_button_text = '−'
-                final_tooltip = 'Свернуть блок'
+                final_tooltip = self._t('ui.template_review.toggle_block')
                 widget.setMaximumHeight(0)
                 button.setText('−')
-                button.setToolTip('Свернуть блок')
+                button.setToolTip(self._t('ui.template_review.toggle_block'))
 
             # Создаем анимацию
             animation = QPropertyAnimation(widget, b"maximumHeight")
@@ -565,13 +580,13 @@ class TemplateReviewDialog(QDialog):
             if collapse:
                 widget.hide()
                 button.setText('+')
-                button.setToolTip('Развернуть блок')
+                button.setToolTip(self._t('ui.template_review.expand_block'))
                 self._auto_shrink_if_needed()
             else:
                 widget.show()
                 widget.setMaximumHeight(MAX_WIDGET_HEIGHT)
                 button.setText('−')
-                button.setToolTip('Свернуть блок')
+                button.setToolTip(self._t('ui.template_review.toggle_block'))
                 self._auto_resize_if_needed()
 
     def _animate_collapse(self, widget, button):
@@ -730,7 +745,7 @@ class TemplateReviewDialog(QDialog):
         controls = QHBoxLayout()
 
         # Группа массовых действий
-        mass_group = QGroupBox("Массовые действия")
+        mass_group = QGroupBox(self._t('ui.template_review.mass_actions'))
         mass_group.setStyleSheet(
             "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } "
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
@@ -741,8 +756,8 @@ class TemplateReviewDialog(QDialog):
         mass_layout.setSpacing(6)
 
         # Чекбоксы: "Автоподтверждать прямые совпадения", "Автопропускать все"
-        self.btn_confirm_all = QPushButton('Подтверждать все аналогичные')
-        self.btn_skip_all = QPushButton('Пропускать все аналогичные')
+        self.btn_confirm_all = QPushButton(self._t('ui.template_review.confirm_all'))
+        self.btn_skip_all = QPushButton(self._t('ui.template_review.skip_all'))
 
         mass_layout.addWidget(self.btn_confirm_all)
         mass_layout.addWidget(self.btn_skip_all)
@@ -754,9 +769,9 @@ class TemplateReviewDialog(QDialog):
         # QDialogButtonBox с правильными ролями кнопок
         button_box = QDialogButtonBox()
 
-        self.btn_confirm = QPushButton('Подтвердить и сохранить')
-        self.btn_skip = QPushButton('Пропустить')
-        self.btn_cancel = QPushButton('Отмена')
+        self.btn_confirm = QPushButton(self._t('ui.template_review.confirm_save'))
+        self.btn_skip = QPushButton(self._t('ui.template_review.skip'))
+        self.btn_cancel = QPushButton(self._t('ui.template_review.cancel'))
 
         button_box.addButton(self.btn_confirm, QDialogButtonBox.AcceptRole)
         button_box.addButton(self.btn_skip, QDialogButtonBox.ActionRole)
@@ -789,8 +804,8 @@ class TemplateReviewDialog(QDialog):
                 self.btn_confirm_all.setEnabled(False)
                 self.btn_skip_all.setEnabled(False)
                 self.btn_confirm_all.setToolTip(
-                    'Недоступно для данного случая')
-                self.btn_skip_all.setToolTip('Недоступно для данного случая')
+                    self._t('ui.template_review.unavailable_case'))
+                self.btn_skip_all.setToolTip(self._t('ui.template_review.unavailable_case'))
         except Exception:
             pass
 

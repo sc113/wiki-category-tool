@@ -12,9 +12,43 @@ from .base_worker import BaseWorker
 from ..core.namespace_manager import normalize_title_by_selection, title_has_ns_prefix, _ensure_title_with_ns
 
 from ..core.template_manager import TemplateManager
+from ..core.localization import translate_runtime
 from ..constants import DEFAULT_EN_NS
 from ..utils import format_russian_pages_nominative
 from ..utils import align_first_letter_case
+from ..utils import debug
+
+
+def _chars(*codes: int) -> str:
+    return ''.join(chr(code) for code in codes)
+
+
+_CYR_II = _chars(1080, 1080)
+_CYR_IYA_LOWER = _chars(1080, 1103)
+_CYR_IYA_UPPER = _chars(1048, 1071)
+_CYR_LE = _chars(1083, 1077)
+_CYR_SOFT = _chars(1100)
+_CYR_GE = _chars(1075, 1077)
+_CYR_KE = _chars(1082, 1077)
+_CYR_HE = _chars(1093, 1077)
+_CYR_G_UP = _chars(1043)
+_CYR_G_LOW = _chars(1075)
+_CYR_K_UP = _chars(1050)
+_CYR_K_LOW = _chars(1082)
+_CYR_H_UP = _chars(1061)
+_CYR_H_LOW = _chars(1093)
+_CYR_A_UP = _chars(1040)
+_CYR_A_LOW = _chars(1072)
+_CYR_AE = _chars(1072, 1077)
+_CYR_OE = _chars(1086, 1077)
+_CYR_SHORT_I_LOW = _chars(1081)
+_CYR_SHORT_I_UP = _chars(1049)
+_CYR_E = _chars(1077)
+_CYR_I = _chars(1080)
+_CYR_OY = _chars(1086, 1081)
+_CYR_AYA = _chars(1072, 1103)
+_CYR_VOWELS = _chars(1072, 1077, 1105, 1080, 1086, 1091, 1099, 1101, 1102, 1103) + 'AEIOUY' + _chars(1040, 1054, 1069, 1048, 1059, 1067, 1045, 1025, 1070, 1071)
+_CYR_WORD_PATTERN = '[' + _chars(1072) + '-' + _chars(1103) + _chars(1105) + _chars(1040) + '-' + _chars(1071) + _chars(1025) + 'a-zA-Z\\-]+'
 
 
 class RenameWorker(BaseWorker):
@@ -108,6 +142,40 @@ class RenameWorker(BaseWorker):
         except Exception:
             return fallback
 
+    def _tr(self, key: str, default: str = '') -> str:
+        return translate_runtime(key, default)
+
+    def _tf(self, key: str, default: str = '', **kwargs) -> str:
+        text = self._tr(key, default)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+
+    def _emitf(self, key: str, default: str = '', **kwargs) -> None:
+        self.progress.emit(self._tf(key, default, **kwargs))
+
+    def _debugf(self, key: str, default: str = '', **kwargs) -> None:
+        debug(self._tf(key, default, **kwargs))
+
+    def _kind_label(self, kind: str) -> str:
+        return self._tr(f'log.rename_worker.kind.{kind}', kind.title())
+
+    def _kind_moved_text(self, kind: str) -> str:
+        return self._tr(f'log.rename_worker.kind_moved.{kind}', f'{self._kind_label(kind)} moved')
+
+    def _template_categories_label(self) -> str:
+        return f"{self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))}{self._tr('log.rename_worker.template_categories_name', 'Categories')}"
+
+    def _auto_note_text(self, count: int) -> str:
+        if int(count or 0) == 1:
+            return self._tr('log.rename_worker.auto_applied_single', 'automatically')
+        return self._tf(
+            'log.rename_worker.auto_applied_many',
+            'automatically ({count} changes)',
+            count=count,
+        )
+
     def _format_template_label(self, template_name: str, partial: bool = False) -> str:
         """Формирует локализованную метку шаблона с учётом политики NS-10.
 
@@ -125,7 +193,7 @@ class RenameWorker(BaseWorker):
             label = f"{DEFAULT_EN_NS.get(10, 'Template:')}{template_name}"
         if partial:
             try:
-                label = f"{label} [частично]"
+                label = f"{label}{self._tr('log.rename_worker.partial_tag', ' [partial]')}"
             except Exception:
                 pass
         return label
@@ -134,9 +202,9 @@ class RenameWorker(BaseWorker):
         """Возвращает тип объекта для сообщений лога: 'категория' | 'статья' | 'страница'."""
         try:
             nsid = page.namespace().id
-            return 'категория' if nsid == 14 else 'статья'
+            return 'category' if nsid == 14 else 'article'
         except Exception:
-            return 'страница'
+            return 'page'
 
     def _build_summary(self, old_full: str, new_full: str, mode: str = 'move', template_label: str = '') -> str:
         """Собрать комментарий к правке в требуемом формате.
@@ -159,11 +227,11 @@ class RenameWorker(BaseWorker):
                 labels = []
             if not labels:
                 try:
-                    labels = [f"{self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))}Название"]
+                    labels = [f"{self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))}{self._tr('log.rename_worker.summary.template_name_fallback', 'Name')}"]
                 except Exception:
-                    labels = [f"{DEFAULT_EN_NS.get(10, 'Template:')}Название"]
+                    labels = [f"{DEFAULT_EN_NS.get(10, 'Template:')}{self._tr('log.rename_worker.summary.template_name_fallback', 'Name')}"]
             formatted = ', '.join(f"[[{lbl}]]" for lbl in labels)
-            base = f"{base} (категоризация через {formatted})"
+            base = f"{base}{self._tf('log.rename_worker.summary.template_via', ' (categorization via {templates})', templates=formatted)}"
         if reason_text:
             return f"{base} — {reason_text}"
         return base
@@ -215,8 +283,7 @@ class RenameWorker(BaseWorker):
     def _on_review_response(self, response_data):
         """Handle response from template review dialog."""
         try:
-            from ..utils import debug
-            debug(f'Получен ответ от диалога: {response_data}')
+            self._debugf('log.rename_worker.dialog.response_received', 'Dialog response received: {payload}', payload=response_data)
             
             req_id = response_data.get('req_id')
             if req_id in self._prompt_results:
@@ -229,28 +296,37 @@ class RenameWorker(BaseWorker):
                     # Если dedupe_mode не передан (диалог без дублей) — оставляем неустановленным (None)
                     'dedupe_mode': (response_data.get('dedupe_mode') if response_data.get('dedupe_mode') else None)
                 }
-                debug(f'Сохранен результат для req_id {req_id}: {self._prompt_results[req_id]}')
+                self._debugf(
+                    'log.rename_worker.dialog.result_saved',
+                    'Saved result for req_id {req_id}: {result}',
+                    req_id=req_id,
+                    result=self._prompt_results[req_id],
+                )
                 
                 # Уведомляем ожидающий поток
                 if req_id in self._prompt_events:
                     self._prompt_events[req_id].set()
-                    debug(f'Событие установлено для req_id {req_id}')
+                    self._debugf('log.rename_worker.dialog.event_set', 'Event set for req_id {req_id}', req_id=req_id)
             else:
-                debug(f'Неизвестный req_id: {req_id}')
+                self._debugf('log.rename_worker.dialog.unknown_request', 'Unknown req_id: {req_id}', req_id=req_id)
         except Exception as e:
-            debug(f'Ошибка в _on_review_response: {e}')
+            self._debugf('log.rename_worker.dialog.response_error', 'Error in _on_review_response: {error}', error=e)
 
     def run(self):
         """Основной метод выполнения переименования."""
         site = pywikibot.Site(self.lang, self.family)
-        from ..utils import debug
         debug(f'Login attempt rename lang={self.lang}')
 
         if self.username and self.password:
             try:
                 site.login(user=self.username)
             except Exception as e:
-                self.progress.emit(f"Ошибка авторизации: {type(e).__name__}: {e}")
+                self._emitf(
+                    'log.rename_worker.auth_error',
+                    'Authorization error: {error_type}: {error}',
+                    error_type=type(e).__name__,
+                    error=e,
+                )
                 return
 
         try:
@@ -267,7 +343,11 @@ class RenameWorker(BaseWorker):
                     if self._stop:
                         break
                     if len(row) < 3:
-                        self.progress.emit(f"Некорректная строка (требуется 3 столбца): {row}")
+                        self._emitf(
+                            'log.rename_worker.invalid_row',
+                            'Invalid row (3 columns required): {row}',
+                            row=row,
+                        )
                         try:
                             self.tsv_progress_inc.emit()
                         except Exception:
@@ -303,9 +383,17 @@ class RenameWorker(BaseWorker):
                             old_full_check = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
                             if not pywikibot.Page(site, old_full_check).exists():
                                 try:
-                                    self.progress.emit(f"Категория <b>{html.escape(old_full_check)}</b> не существует. Перенос содержимого отключён.")
+                                    self._emitf(
+                                        'log.rename_worker.category_missing_transfer_disabled_html',
+                                        'Category <b>{title}</b> does not exist. Content transfer is disabled.',
+                                        title=html.escape(old_full_check),
+                                    )
                                 except Exception:
-                                    self.progress.emit(f"Категория {old_full_check} не существует. Перенос содержимого отключён.")
+                                    self._emitf(
+                                        'log.rename_worker.category_missing_transfer_disabled',
+                                        'Category {title} does not exist. Content transfer is disabled.',
+                                        title=old_full_check,
+                                    )
                                 continue
                         except Exception:
                             pass
@@ -315,7 +403,12 @@ class RenameWorker(BaseWorker):
                     # Если переименование категории выключено — пропускаем сам move для категорий
                     if is_category and not self.move_category:
                         try:
-                            self.progress.emit(f"Пропущено переименование категории <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>. Переносим содержимое…")
+                            self._emitf(
+                                'log.rename_worker.category_rename_skipped_html',
+                                'Category rename skipped <b>{old}</b> -> <b>{new}</b>. Transferring content...',
+                                old=html.escape(old_name),
+                                new=html.escape(new_name),
+                            )
                         except Exception:
                             pass
                     else:
@@ -324,19 +417,28 @@ class RenameWorker(BaseWorker):
                     # Если это категория и хотя бы одна фаза переноса включена — переносим участников
                     if is_category and self.move_members and (self.phase1_enabled or self.find_in_templates) and not self._stop:
                         try:
-                            from ..utils import debug
-                            debug(f'Начинаем перенос содержимого категории: {old_name} → {new_name}')
+                            self._debugf(
+                                'log.rename_worker.category_transfer_start_debug',
+                                'Starting category content transfer: {old} -> {new}',
+                                old=old_name,
+                                new=new_name,
+                            )
                             debug(f'move_members={self.move_members}, phase1_enabled={self.phase1_enabled}, find_in_templates={self.find_in_templates}')
                             self._move_category_members(site, old_name, new_name)
                         except Exception as e:
-                            self.progress.emit(f"Ошибка переноса содержимого категории '{old_name}': {e}")
+                            self._emitf(
+                                'log.rename_worker.category_transfer_error_named',
+                                "Category content transfer error for '{title}': {error}",
+                                title=old_name,
+                                error=e,
+                            )
                     # Инкремент общего прогресса по строкам TSV
                     try:
                         self.tsv_progress_inc.emit()
                     except Exception:
                         pass
         except Exception as e:
-            self.progress.emit(f"Ошибка работы с файлом TSV: {e}")
+            self._emitf('log.rename_worker.tsv_error', 'TSV file error: {error}', error=e)
         finally:
             # Финальные сообщения об окончании теперь пишет UI
             pass
@@ -362,14 +464,26 @@ class RenameWorker(BaseWorker):
                 try:
                     typ = self._page_kind(page)
                 except Exception:
-                    typ = 'страница'
-                if typ == 'категория':
+                    typ = 'page'
+                if typ == 'category':
                     try:
-                        self.progress.emit(f"<b>{html.escape(old_name)}</b> не найдена.")
+                        self._emitf(
+                            'log.rename_worker.not_found_html',
+                            '<b>{title}</b> not found.',
+                            title=html.escape(old_name),
+                        )
                     except Exception:
-                        self.progress.emit(f"{old_name} не найдена.")
+                        self._emitf(
+                            'log.rename_worker.not_found_plain',
+                            '{title} not found.',
+                            title=old_name,
+                        )
                 else:
-                    self.progress.emit(f"Страница <b>{html.escape(old_name)}</b> не найдена.")
+                    self._emitf(
+                        'log.rename_worker.page_not_found_html',
+                        'Page <b>{title}</b> not found.',
+                        title=html.escape(old_name),
+                    )
                 return
             if new_page.exists():
                 # Структурированное событие; текстовый лог используем только как фолбэк
@@ -377,9 +491,17 @@ class RenameWorker(BaseWorker):
                     self.log_event.emit({'type': 'destination_exists', 'title': new_name, 'status': 'info'})
                 except Exception:
                     try:
-                        self.progress.emit(f"Страница назначения <b>{html.escape(new_name)}</b> уже существует.")
+                        self._emitf(
+                            'log.rename_worker.destination_exists_html',
+                            'Destination page <b>{title}</b> already exists.',
+                            title=html.escape(new_name),
+                        )
                     except Exception:
-                        self.progress.emit(f"Страница назначения {new_name} уже существует.")
+                        self._emitf(
+                            'log.rename_worker.destination_exists_plain',
+                            'Destination page {title} already exists.',
+                            title=new_name,
+                        )
                 return
 
             # Сформируем комментарий к правке для операции переименования
@@ -390,9 +512,19 @@ class RenameWorker(BaseWorker):
 
             # Системное сообщение: начинаем переименование
             try:
-                self.progress.emit(f"Начинаем переименование: <b>{html.escape(old_name)}</b> → <b>{html.escape(new_name)}</b>")
+                self._emitf(
+                    'log.rename_worker.rename_started_html',
+                    'Starting rename: <b>{old}</b> -> <b>{new}</b>',
+                    old=html.escape(old_name),
+                    new=html.escape(new_name),
+                )
             except Exception:
-                self.progress.emit(f"Начинаем переименование: {old_name} → {new_name}")
+                self._emitf(
+                    'log.rename_worker.rename_started_plain',
+                    'Starting rename: {old} -> {new}',
+                    old=old_name,
+                    new=new_name,
+                )
 
             # Адаптивный retry для move операций
             for attempt in range(1, 4):
@@ -420,44 +552,81 @@ class RenameWorker(BaseWorker):
                                 })
                             except Exception:
                                 try:
-                                    self.progress.emit(
-                                        f"ℹ️ После переименования перенаправление осталось: "
-                                        f"{html.escape(old_name)} → {html.escape(new_name)} "
-                                        f"(возможно, недостаточно прав suppressredirect)."
+                                    self._emitf(
+                                        'log.rename_worker.redirect_retained_html',
+                                        'ℹ️ Redirect remained after rename: {old} -> {new} (possibly insufficient suppressredirect rights).',
+                                        old=html.escape(old_name),
+                                        new=html.escape(new_name),
                                     )
                                 except Exception:
-                                    self.progress.emit(
-                                        f"ℹ️ После переименования перенаправление осталось: "
-                                        f"{old_name} → {new_name} "
-                                        f"(возможно, недостаточно прав suppressredirect)."
+                                    self._emitf(
+                                        'log.rename_worker.redirect_retained_plain',
+                                        'ℹ️ Redirect remained after rename: {old} -> {new} (possibly insufficient suppressredirect rights).',
+                                        old=old_name,
+                                        new=new_name,
                                     )
 
                     # Сообщение после тире: оставляем только комментарий/причину, без "Old → New"
                     try:
                         tail = comment_text if comment_text else ''
-                        msg = f"Переименовано успешно — {html.escape(tail)}" if tail else "Переименовано успешно"
+                        msg = (
+                            self._tf(
+                                'log.rename_worker.rename_success_with_comment',
+                                'Renamed successfully - {comment}',
+                                comment=html.escape(tail),
+                            )
+                            if tail
+                            else self._tr('log.rename_worker.rename_success', 'Renamed successfully')
+                        )
                         self.progress.emit(msg)
                     except Exception:
-                        self.progress.emit("Переименовано успешно")
+                        self.progress.emit(self._tr('log.rename_worker.rename_success', 'Renamed successfully'))
                     return
                 except Exception as e:
                     if self._is_rate_error(e) and attempt < 3:
                         self._increase_save_interval(attempt)
                         try:
-                            self.progress.emit(f"Лимит запросов при переименовании: пауза {self._save_min_interval:.2f}s · попытка {attempt}/3")
+                            self._emitf(
+                                'log.rename_worker.rename_rate_limit',
+                                'Rename rate limit: pause {wait:.2f}s · attempt {attempt}/3',
+                                wait=self._save_min_interval,
+                                attempt=attempt,
+                            )
                         except Exception:
                             pass
                         continue
                     try:
-                        self.progress.emit(f"Ошибка переименования <b>{html.escape(old_name)}</b>: {type(e).__name__}: {e}")
+                        self._emitf(
+                            'log.rename_worker.rename_error_html',
+                            'Rename error <b>{title}</b>: {error_type}: {error}',
+                            title=html.escape(old_name),
+                            error_type=type(e).__name__,
+                            error=e,
+                        )
                     except Exception:
-                        self.progress.emit(f"Ошибка переименования {old_name}: {type(e).__name__}: {e}")
+                        self._emitf(
+                            'log.rename_worker.rename_error_plain',
+                            'Rename error {title}: {error_type}: {error}',
+                            title=old_name,
+                            error_type=type(e).__name__,
+                            error=e,
+                        )
                     return
         except Exception as e:
             try:
-                self.progress.emit(f"Критическая ошибка переименования <b>{html.escape(old_name)}</b>: {e}")
+                self._emitf(
+                    'log.rename_worker.rename_critical_error_html',
+                    'Critical rename error <b>{title}</b>: {error}',
+                    title=html.escape(old_name),
+                    error=e,
+                )
             except Exception:
-                self.progress.emit(f"Критическая ошибка переименования {old_name}: {e}")
+                self._emitf(
+                    'log.rename_worker.rename_critical_error_plain',
+                    'Critical rename error {title}: {error}',
+                    title=old_name,
+                    error=e,
+                )
 
     def _move_category_members(self, site: pywikibot.Site, old_name: str, new_name: str):
         """
@@ -469,24 +638,28 @@ class RenameWorker(BaseWorker):
             new_name: Новое название категории
         """
         try:
-            from ..utils import debug
             debug(f'_move_category_members: old_name={old_name}, new_name={new_name}')
             
             # Получаем полные названия категорий с префиксами
             old_cat_full = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
             new_cat_full = _ensure_title_with_ns(new_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
             
-            debug(f'После _ensure_title_with_ns: old_cat_full={old_cat_full}, new_cat_full={new_cat_full}')
+            self._debugf(
+                'log.rename_worker.category_transfer_titles_resolved',
+                'After _ensure_title_with_ns: old_cat_full={old}, new_cat_full={new}',
+                old=old_cat_full,
+                new=new_cat_full,
+            )
             
             old_cat_page = pywikibot.Page(site, old_cat_full)
-            debug(f'Проверяем существование категории: {old_cat_full}')
+            self._debugf('log.rename_worker.category_exists_check', 'Checking category existence: {title}', title=old_cat_full)
             
             # Проверяем существование категории (информативно, не блокируем процесс)
             try:
                 category_exists = old_cat_page.exists()
-                debug(f'Категория существует: {category_exists}')
+                self._debugf('log.rename_worker.category_exists_result', 'Category exists: {exists}', exists=category_exists)
             except Exception as e:
-                debug(f'Ошибка проверки существования категории: {e}')
+                self._debugf('log.rename_worker.category_exists_error', 'Category existence check error: {error}', error=e)
                 category_exists = True
 
             # Получаем список страниц в категории через MediaWiki API (как в оригинале)
@@ -508,14 +681,17 @@ class RenameWorker(BaseWorker):
                 }
                 members_titles: list[str] = []
                 
-                debug('Получаем список страниц в категории через API (с продолжениями)')
+                self._debugf(
+                    'log.rename_worker.category_fetch_members',
+                    'Fetching category members via API (with continuations)',
+                )
                 while True:
                     if self._stop:
                         break
                     _rate_wait()
                     r = REQUEST_SESSION.get(api_url, params=params, timeout=15, headers=REQUEST_HEADERS)
                     if r.status_code != 200:
-                        raise RuntimeError(f"HTTP {r.status_code} при запросе {api_url}")
+                        raise RuntimeError(f"HTTP {r.status_code} while requesting {api_url}")
                     data = r.json()
                     chunk = [m.get('title') for m in (data.get('query', {}).get('categorymembers', []) or []) if m.get('title')]
                     members_titles.extend(chunk)
@@ -524,9 +700,17 @@ class RenameWorker(BaseWorker):
                     else:
                         break
                 
-                debug(f"Найдено {format_russian_pages_nominative(len(members_titles))} в категории")
+                self._debugf(
+                    'log.rename_worker.category_members_found',
+                    'Found {count} in category',
+                    count=format_russian_pages_nominative(len(members_titles)),
+                )
                 if not members_titles:
-                    self.progress.emit(f"Категория <b>{html.escape(old_cat_full)}</b> пуста.")
+                    self._emitf(
+                        'log.rename_worker.category_empty_html',
+                        'Category <b>{title}</b> is empty.',
+                        title=html.escape(old_cat_full),
+                    )
                     try:
                         self.inner_progress_reset.emit()
                     except Exception:
@@ -540,14 +724,30 @@ class RenameWorker(BaseWorker):
                         cnt_str = format_russian_pages_nominative(cnt)
                         self.log_event.emit({'type': 'category_move_start', 'old_category': old_cat_full, 'new_category': new_cat_full, 'count': cnt, 'count_str': cnt_str, 'status': 'info'})
                     except Exception:
-                        # Фолбэк на текст, если событие не удалось отправить
                         try:
-                            self.progress.emit(f"ℹ️ Перенос содержимого категории <b>{html.escape(old_cat_full)}</b> → <b>{html.escape(new_cat_full)}</b>: {format_russian_pages_nominative(len(members_titles))}")
+                            self._emitf(
+                                'log.rename_worker.category_transfer_info_html',
+                                'ℹ️ Category content transfer <b>{old}</b> -> <b>{new}</b>: {count}',
+                                old=html.escape(old_cat_full),
+                                new=html.escape(new_cat_full),
+                                count=format_russian_pages_nominative(len(members_titles)),
+                            )
                         except Exception:
-                            self.progress.emit(f"ℹ️ Перенос содержимого категории {old_cat_full} → {new_cat_full}: {format_russian_pages_nominative(len(members_titles))}")
+                            self._emitf(
+                                'log.rename_worker.category_transfer_info_plain',
+                                'ℹ️ Category content transfer {old} -> {new}: {count}',
+                                old=old_cat_full,
+                                new=new_cat_full,
+                                count=format_russian_pages_nominative(len(members_titles)),
+                            )
                 except Exception:
-                    # Если общий блок упал, попробуем простую текстовую строку
-                    self.progress.emit(f"ℹ️ Перенос содержимого категории {old_cat_full} → {new_cat_full}: {format_russian_pages_nominative(len(members_titles))}")
+                    self._emitf(
+                        'log.rename_worker.category_transfer_info_plain',
+                        'ℹ️ Category content transfer {old} -> {new}: {count}',
+                        old=old_cat_full,
+                        new=new_cat_full,
+                        count=format_russian_pages_nominative(len(members_titles)),
+                    )
                 try:
                     self.inner_progress_init.emit(len(members_titles))
                 except Exception:
@@ -571,18 +771,32 @@ class RenameWorker(BaseWorker):
                         pass
                     try:
                         page = pywikibot.Page(site, title)
-                        debug(f'Обрабатываем страницу: {page.title()}')
+                        self._debugf('log.rename_worker.member_processing', 'Processing page: {title}', title=page.title())
                         changes_made = self._process_category_member(site, page, old_cat_full, new_cat_full)
 
                         # Немедленно запускаем фазу 2 (если включена) и фиксируем были ли изменения
                         phase2_changes = 0
                         if self.find_in_templates and title not in backlog_seen:
-                            debug(f'Фаза 2 (немедленно): обрабатываем страницу {title}')
+                            self._debugf(
+                                'log.rename_worker.phase2_immediate_processing',
+                                'Phase 2 (immediate): processing page {title}',
+                                title=title,
+                            )
                             try:
                                 _, phase2_changes = self._process_title_templates(site, title, old_cat_full, new_cat_full)
                             except Exception as e:
-                                self.progress.emit(f"Ошибка обработки шаблонов на странице {title}: {e}")
-                                debug(f'Ошибка обработки шаблонов на странице {title}: {e}')
+                                self._emitf(
+                                    'log.rename_worker.template_processing_error',
+                                    'Template processing error on page {title}: {error}',
+                                    title=title,
+                                    error=e,
+                                )
+                                self._debugf(
+                                    'log.rename_worker.template_processing_error',
+                                    'Template processing error on page {title}: {error}',
+                                    title=title,
+                                    error=e,
+                                )
                             # Отмечаем как посещённую, чтобы не обрабатывать повторно
                             backlog_seen.add(title)
 
@@ -592,32 +806,67 @@ class RenameWorker(BaseWorker):
                                 # Для корректной классификации как «шаблонной» операции
                                 # укажем источник вида «<локальный префикс шаблона>…». Тогда в колонке «Тип» будет ✍️, а не 📝.
                                 if self.find_in_templates:
-                                    self.progress.emit(f'→ {new_cat_full} : "{title}" — пропущено, без изменений ({self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))}Категории)')
+                                    self._emitf(
+                                        'log.rename_worker.skip_no_changes_with_source',
+                                        '→ {category} : "{title}" - skipped, no changes ({source})',
+                                        category=new_cat_full,
+                                        title=title,
+                                        source=self._template_categories_label(),
+                                    )
                                 else:
-                                    self.progress.emit(f'→ {new_cat_full} : "{title}" — пропущено (без изменений)')
+                                    self._emitf(
+                                        'log.rename_worker.skip_no_changes',
+                                        '→ {category} : "{title}" - skipped (no changes)',
+                                        category=new_cat_full,
+                                        title=title,
+                                    )
                         except Exception:
                             pass
                     except Exception as e:
-                        self.progress.emit(f"Ошибка обработки страницы {title}: {e}")
-                        debug(f'Ошибка обработки страницы {title}: {e}')
+                        self._emitf(
+                            'log.rename_worker.page_processing_error',
+                            'Page processing error {title}: {error}',
+                            title=title,
+                            error=e,
+                        )
+                        self._debugf(
+                            'log.rename_worker.page_processing_error',
+                            'Page processing error {title}: {error}',
+                            title=title,
+                            error=e,
+                        )
                 
                 # Фаза 2 через backlog не используется: интерактивная обработка выполняется немедленно при обходе members_titles
                 if not self.find_in_templates:
-                    debug('Фаза 2 отключена')
+                    self._debugf('log.rename_worker.phase2_disabled', 'Phase 2 disabled')
                 elif self._stop:
-                    debug('Процесс остановлен')
+                    self._debugf('log.rename_worker.process_stopped', 'Process stopped')
                 
-                debug('Обработка категории завершена')
+                self._debugf('log.rename_worker.category_processing_completed', 'Category processing completed')
                 try:
                     self.inner_progress_reset.emit()
                 except Exception:
                     pass
             except Exception as e:
-                self.progress.emit(f"Ошибка получения содержимого категории {old_cat_full}: {e}")
-                debug(f'Ошибка получения содержимого категории {old_cat_full}: {e}')
+                self._emitf(
+                    'log.rename_worker.category_contents_error',
+                    'Category content fetch error {title}: {error}',
+                    title=old_cat_full,
+                    error=e,
+                )
+                self._debugf(
+                    'log.rename_worker.category_contents_error',
+                    'Category content fetch error {title}: {error}',
+                    title=old_cat_full,
+                    error=e,
+                )
                 
         except Exception as e:
-            self.progress.emit(f"Ошибка переноса содержимого категории: {e}")
+            self._emitf(
+                'log.rename_worker.category_transfer_error',
+                'Category content transfer error: {error}',
+                error=e,
+            )
 
     def _process_category_member(self, site: pywikibot.Site, page: pywikibot.Page, old_cat_full: str, new_cat_full: str) -> int:
         """
@@ -635,10 +884,9 @@ class RenameWorker(BaseWorker):
         try:
             if not page.exists():
                 return 0
-            
-            from ..utils import debug
-            debug(f'Обработка страницы (фаза 1): {page.title()}')
-            debug(f'Фаза 1 включена: {self.phase1_enabled}')
+
+            self._debugf('log.rename_worker.phase1_processing', 'Processing page (phase 1): {title}', title=page.title())
+            self._debugf('log.rename_worker.phase1_enabled', 'Phase 1 enabled: {enabled}', enabled=self.phase1_enabled)
                 
             original_text = page.text
             modified_text = original_text
@@ -650,7 +898,7 @@ class RenameWorker(BaseWorker):
                     modified_text, self.family, self.lang, old_cat_full, new_cat_full
                 )
                 changes_made += direct_changes
-                debug(f'Фаза 1: {direct_changes} изменений')
+                self._debugf('log.rename_worker.phase1_changes', 'Phase 1: {count} changes', count=direct_changes)
             
             # Сохраняем изменения если они есть (в стиле оригинала)
             if changes_made > 0 and modified_text != original_text:
@@ -661,21 +909,47 @@ class RenameWorker(BaseWorker):
                     try:
                         typ = self._page_kind(page)
                     except Exception:
-                        typ = 'страница'
+                        typ = 'page'
+                    moved_text = self._kind_moved_text(typ)
                     try:
-                        self.progress.emit(f"▪️ {html.escape(new_cat_full)} : \"{html.escape(page.title())}\" — {typ} перенесена")
+                        self._emitf(
+                            'log.rename_worker.phase1_saved_html',
+                            '▪️ {category} : "{title}" - {result}',
+                            category=html.escape(new_cat_full),
+                            title=html.escape(page.title()),
+                            result=moved_text,
+                        )
                     except Exception:
-                        self.progress.emit(f"▪️ {new_cat_full} : \"{page.title()}\" — {typ} перенесена")
+                        self._emitf(
+                            'log.rename_worker.phase1_saved_plain',
+                            '▪️ {category} : "{title}" - {result}',
+                            category=new_cat_full,
+                            title=page.title(),
+                            result=moved_text,
+                        )
                 else:
                     try:
-                        self.progress.emit(f"Ошибка сохранения <b>{html.escape(page.title())}</b>")
+                        self._emitf(
+                            'log.rename_worker.save_error_html',
+                            'Save error <b>{title}</b>',
+                            title=html.escape(page.title()),
+                        )
                     except Exception:
-                        self.progress.emit(f"Ошибка сохранения {page.title()}")
+                        self._emitf(
+                            'log.rename_worker.save_error_plain',
+                            'Save error {title}',
+                            title=page.title(),
+                        )
             
             return changes_made
             
         except Exception as e:
-            self.progress.emit(f"Ошибка обработки страницы {page.title()}: {e}")
+            self._emitf(
+                'log.rename_worker.page_processing_error',
+                'Page processing error {title}: {error}',
+                title=page.title(),
+                error=e,
+            )
             return 0
 
     def _process_title_templates(self, site: pywikibot.Site, title: str, old_cat_full: str, new_cat_full: str) -> tuple[str, int]:
@@ -689,8 +963,6 @@ class RenameWorker(BaseWorker):
             old_cat_full: Полное название старой категории
             new_cat_full: Полное название новой категории
         """
-        from ..utils import debug
-        
         if self._stop:
             return ('', 0)
             
@@ -698,23 +970,31 @@ class RenameWorker(BaseWorker):
             page = pywikibot.Page(site, title)
             if not page.exists():
                 return ('', 0)
-                
-            debug(f'Фаза 2: обработка шаблонов на странице {title}')
+
+            self._debugf('log.rename_worker.phase2_processing', 'Phase 2: processing templates on page {title}', title=title)
             
             original_text = page.text
             modified_text = original_text
             changes_made = 0
             
-            debug(f'Размер текста страницы: {len(original_text)} символов')
+            self._debugf(
+                'log.rename_worker.page_text_size',
+                'Page text size: {count} characters',
+                count=len(original_text),
+            )
             
             # Сначала применяем кэшированные правила (автоматически)
-            debug(f'Применяем кэшированные правила...')
+            self._debugf('log.rename_worker.cached_rules_apply', 'Applying cached rules...')
             modified_text, cached_changes = self.template_manager.apply_cached_template_rules(
                 modified_text, self.family, self.lang
             )
             
             if cached_changes > 0:
-                debug(f'Применены кэшированные правила: {cached_changes} изменений')
+                self._debugf(
+                    'log.rename_worker.cached_rules_applied',
+                    'Cached rules applied: {count} changes',
+                    count=cached_changes,
+                )
                 changes_made += cached_changes
                 
                 # Сохраняем изменения от кэшированных правил
@@ -730,15 +1010,23 @@ class RenameWorker(BaseWorker):
                     try:
                         typ = self._page_kind(page)
                     except Exception:
-                        typ = 'страница'
+                        typ = 'page'
                     # Подготовим список шаблонов, изменённых кэш-правилами, для лога
                     try:
                         tmpl_names = self._extract_changed_template_labels(original_text, modified_text)
                         suffix = f" ({', '.join(tmpl_names)})" if tmpl_names else ''
                     except Exception:
                         suffix = ''
-                    auto_note = 'автоматически' if cached_changes == 1 else f'автоматически ({cached_changes} изменений)'
-                    self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена {auto_note}{suffix}')
+                    auto_note = self._auto_note_text(cached_changes)
+                    self._emitf(
+                        'log.rename_worker.template_saved_auto',
+                        '→ {category} : "{title}" - {result} {auto_note}{suffix}',
+                        category=new_cat_full,
+                        title=title,
+                        result=self._kind_moved_text(typ),
+                        auto_note=auto_note,
+                        suffix=suffix,
+                    )
                     # Обновляем текст для дальнейшей обработки только при успешном сохранении
                     original_text = modified_text
                 else:
@@ -763,11 +1051,18 @@ class RenameWorker(BaseWorker):
             )
             # Если пользователь нажал «Отмена» — прерываем без сохранений и логов успеха
             if self._stop:
-                debug('Остановлено пользователем во время интерактивной обработки — пропускаем сохранение')
+                self._debugf(
+                    'log.rename_worker.interactive_stopped_skip_save',
+                    'Stopped by user during interactive processing - skipping save',
+                )
                 return (original_text, 0)
             
             if interactive_changes > 0:
-                debug(f'Интерактивная обработка: {interactive_changes} изменений')
+                self._debugf(
+                    'log.rename_worker.interactive_changes',
+                    'Interactive processing: {count} changes',
+                    count=interactive_changes,
+                )
                 changes_made += interactive_changes
                 
                 # Сохраняем изменения от интерактивной обработки (как в оригинале)
@@ -795,7 +1090,7 @@ class RenameWorker(BaseWorker):
                     try:
                         typ = self._page_kind(page)
                     except Exception:
-                        typ = 'страница'
+                        typ = 'page'
                     try:
                         tmpl_names = self._extract_changed_template_labels(original_text, modified_text)
                         if not tmpl_names:
@@ -810,9 +1105,21 @@ class RenameWorker(BaseWorker):
                                     pref = DEFAULT_EN_NS.get(10, 'Template:')
                                 tmpl_names = [f"{pref}{last_name}"]
                         suffix = f" ({', '.join(tmpl_names)})" if tmpl_names else ''
-                        self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена{suffix}')
+                        self._emitf(
+                            'log.rename_worker.template_saved',
+                            '→ {category} : "{title}" - {result}{suffix}',
+                            category=new_cat_full,
+                            title=title,
+                            result=self._kind_moved_text(typ),
+                            suffix=suffix,
+                        )
                     except Exception:
-                        self.progress.emit(f'→ {new_cat_full} : "{title}" — перенесена')
+                        self._emitf(
+                            'log.rename_worker.template_saved_generic',
+                            '→ {category} : "{title}" - moved',
+                            category=new_cat_full,
+                            title=title,
+                        )
                 else:
                     # Ошибка уже залогирована внутри _save_with_retry; не дублируем сообщение
                     try:
@@ -828,7 +1135,10 @@ class RenameWorker(BaseWorker):
                         )
                         # Если пользователь отменил в режиме локативов — немедленно прерываем без сохранений
                         if self._stop:
-                            debug('Остановлено пользователем при обработке локативов — пропускаем сохранение')
+                            self._debugf(
+                                'log.rename_worker.locative_stopped_skip_save',
+                                'Stopped by user during locative processing - skipping save',
+                            )
                             return (original_text, changes_made)
                         if loc_changes > 0 and modified_text2 != modified_text:
                             changes_made += loc_changes
@@ -855,7 +1165,7 @@ class RenameWorker(BaseWorker):
                                 try:
                                     typ = self._page_kind(page)
                                 except Exception:
-                                    typ = 'страница'
+                                    typ = 'page'
                                 try:
                                     tmpl_names = self._extract_changed_template_labels(original_text, modified_text2)
                                     if not tmpl_names:
@@ -870,9 +1180,21 @@ class RenameWorker(BaseWorker):
                                                 pref = DEFAULT_EN_NS.get(10, 'Template:')
                                             tmpl_names = [f"{pref}{last_name}"]
                                     suffix = f" ({', '.join(tmpl_names)})" if tmpl_names else ''
-                                    self.progress.emit(f'→ {new_cat_full} : "{title}" — {typ} перенесена{suffix}')
+                                    self._emitf(
+                                        'log.rename_worker.template_saved',
+                                        '→ {category} : "{title}" - {result}{suffix}',
+                                        category=new_cat_full,
+                                        title=title,
+                                        result=self._kind_moved_text(typ),
+                                        suffix=suffix,
+                                    )
                                 except Exception:
-                                    self.progress.emit(f'→ {new_cat_full} : "{title}" — перенесена')
+                                    self._emitf(
+                                        'log.rename_worker.template_saved_generic',
+                                        '→ {category} : "{title}" - moved',
+                                        category=new_cat_full,
+                                        title=title,
+                                    )
                                 original_text = modified_text2
                                 modified_text = modified_text2
                             else:
@@ -882,18 +1204,35 @@ class RenameWorker(BaseWorker):
                                     pass
                 except Exception as _loc_e:
                     try:
-                        from ..utils import debug as _dbg
-                        _dbg(f'Ошибка работы эвристики локативов: {_loc_e}')
+                        self._debugf(
+                            'log.rename_worker.locative_runtime_error',
+                            'Locative heuristic error: {error}',
+                            error=_loc_e,
+                        )
                     except Exception:
                         pass
             
             # Если никаких изменений не было сделано
             if changes_made == 0:
-                debug(f'На странице {title} не найдены шаблоны для изменения')
+                self._debugf(
+                    'log.rename_worker.templates_not_found',
+                    'No templates to change were found on page {title}',
+                    title=title,
+                )
                 
         except Exception as e:
-            self.progress.emit(f"Ошибка обработки шаблонов на странице {title}: {e}")
-            debug(f'Ошибка обработки шаблонов на странице {title}: {e}')
+            self._emitf(
+                'log.rename_worker.template_processing_error',
+                'Template processing error on page {title}: {error}',
+                title=title,
+                error=e,
+            )
+            self._debugf(
+                'log.rename_worker.template_processing_error',
+                'Template processing error on page {title}: {error}',
+                title=title,
+                error=e,
+            )
             try:
                 # если удалось получить текст страницы — вернём его; иначе пустой
                 return (locals().get('modified_text') or locals().get('original_text') or '', locals().get('changes_made') or 0)
@@ -948,46 +1287,35 @@ class RenameWorker(BaseWorker):
             if not w:
                 return w
             lower = w.casefold()
-            # 1) "…ии" → "…ия"
-            if lower.endswith('ии') and len(w) > 2:
-                return w[:-2] + ('ия' if w[-2:].islower() else 'ИЯ')
-            # 2) "…ле" → "…ль" (как в «Неаполь» → «в Неаполе»)
-            if lower.endswith('ле') and len(w) > 2:
-                return w[:-1].rstrip('е') + 'ь'
-            # 3) Для топонимов на -ге/-ке/-хе и перед ними гласная → -га/-ка/-ха
-            #    Примеры: Риге→Рига, Праге→Прага, Гцгебехе→Гцгебеха; но Гонконге→Гонконг (не меняем, перед 'ге' стоит согласная 'н')
-            vowels_set = set('аеёиоуыэюяAEIOUYАОЭИУЫЕЁЮЯ')
-            if len(w) >= 3 and (lower.endswith('ге') or lower.endswith('ке') or lower.endswith('хе')):
+            if lower.endswith(_CYR_II) and len(w) > 2:
+                return w[:-2] + (_CYR_IYA_LOWER if w[-2:].islower() else _CYR_IYA_UPPER)
+            if lower.endswith(_CYR_LE) and len(w) > 2:
+                return w[:-1].rstrip(_CYR_E) + _CYR_SOFT
+            vowels_set = set(_CYR_VOWELS)
+            if len(w) >= 3 and (lower.endswith(_CYR_GE) or lower.endswith(_CYR_KE) or lower.endswith(_CYR_HE)):
                 prev = w[-3]
                 if prev in vowels_set:
                     base = w[:-2]
                     first = w[-2]
-                    # Сохраняем регистр согласной
-                    if lower.endswith('ге'):
-                        cons = 'Г' if first.isupper() else 'г'
-                    elif lower.endswith('ке'):
-                        cons = 'К' if first.isupper() else 'к'
+                    if lower.endswith(_CYR_GE):
+                        cons = _CYR_G_UP if first.isupper() else _CYR_G_LOW
+                    elif lower.endswith(_CYR_KE):
+                        cons = _CYR_K_UP if first.isupper() else _CYR_K_LOW
                     else:
-                        cons = 'Х' if first.isupper() else 'х'
-                    a_char = 'А' if w[-1].isupper() else 'а'
+                        cons = _CYR_H_UP if first.isupper() else _CYR_H_LOW
+                    a_char = _CYR_A_UP if w[-1].isupper() else _CYR_A_LOW
                     return base + cons + a_char
-            # 3.1) "…ае" → "…ай" (Аксае → Аксай, Шанхае → Шанхай)
-            if lower.endswith('ае') and len(w) > 2:
-                return w[:-1] + ('й' if w[-1].islower() else 'Й')
-            # 3.2) "…ое" → "…ой" (для прилагательных)
-            if lower.endswith('ое') and len(w) > 2:
-                return w[:-1] + ('й' if w[-1].islower() else 'Й')
-            # 3.3) "…ве/…пе/…ре/…те/..." общее правило: «…е» → удалить «е», если перед ним согласная
-            vowels = set('аеёиоуыэюяAEIOUYАОЭИУЫЕЁЮЯ')
-            if lower.endswith('е') and len(w) > 1 and (w[-2] not in vowels):
+            if lower.endswith(_CYR_AE) and len(w) > 2:
+                return w[:-1] + (_CYR_SHORT_I_LOW if w[-1].islower() else _CYR_SHORT_I_UP)
+            if lower.endswith(_CYR_OE) and len(w) > 2:
+                return w[:-1] + (_CYR_SHORT_I_LOW if w[-1].islower() else _CYR_SHORT_I_UP)
+            vowels = set(_CYR_VOWELS)
+            if lower.endswith(_CYR_E) and len(w) > 1 and (w[-2] not in vowels):
                 return w[:-1]
-            # 4) "…и" → «…ь» для слов на мягкий знак в именительном (частично верно)
-            if lower.endswith('и') and len(w) > 1 and (w[-2] not in vowels):
-                return w[:-1] + 'ь'
-            # 5) Падежи прилагательных (минимум): «…ой» → «…ая»
-            if lower.endswith('ой') and len(w) > 2:
-                return w[:-2] + 'ая'
-            # 6) Безопасный фолбэк: вернуть как есть
+            if lower.endswith(_CYR_I) and len(w) > 1 and (w[-2] not in vowels):
+                return w[:-1] + _CYR_SOFT
+            if lower.endswith(_CYR_OY) and len(w) > 2:
+                return w[:-2] + _CYR_AYA
             return w
         except Exception:
             return word
@@ -1028,7 +1356,10 @@ class RenameWorker(BaseWorker):
             # old_t=["Родившиеся","в","Аксае"], new_t=["Родившиеся","в","Аксае","(Дагестан)"]
             # old_mid="" → берем "Аксае", new_mid="(Дагестан)" → берем "Аксае (Дагестан)"
             if not old_mid and old_t:
-                debug(f"Локативы: old_mid пустой, расширение категории. Используем последний токен старой категории.")
+                self._debugf(
+                    'log.rename_worker.locative_old_mid_empty',
+                    'Locatives: old_mid is empty, category expanded. Using the last token of the old category.',
+                )
                 # Берем последний значимый токен (обычно это географическое название)
                 old_mid = self._loc_trim(old_t[-1])
                 # Для новой категории берем последние N токенов (где N - количество добавленных токенов + 1)
@@ -1038,7 +1369,12 @@ class RenameWorker(BaseWorker):
                     new_mid = ' '.join(new_t[-(added_tokens+1):])
                 else:
                     new_mid = new_t[-1]
-                debug(f"Локативы: скорректированные части - old_mid='{old_mid}', new_mid='{new_mid}'")
+                self._debugf(
+                    'log.rename_worker.locative_adjusted_parts',
+                    "Locatives: adjusted parts - old_mid='{old_mid}', new_mid='{new_mid}'",
+                    old_mid=old_mid,
+                    new_mid=new_mid,
+                )
             
             if not old_mid or not new_mid:
                 return text, 0
@@ -1053,7 +1389,7 @@ class RenameWorker(BaseWorker):
                     i = 0
                     while i < len(text):
                         # Пытаемся найти слово (буквы и дефисы)
-                        match = _re2.match(r'[а-яёА-ЯЁa-zA-Z\-]+', text[i:])
+                        match = _re2.match(_CYR_WORD_PATTERN, text[i:])
                         if match:
                             word = match.group(0)
                             # Инвертируем локатив для слова
@@ -1065,21 +1401,38 @@ class RenameWorker(BaseWorker):
                             i += 1
                     return ''.join(result)
                 except Exception as e:
-                    debug(f"Ошибка в invert_compound_locative: {e}")
+                    self._debugf(
+                        'log.rename_worker.locative_invert_error',
+                        'Error in invert_compound_locative: {error}',
+                        error=e,
+                    )
                     return self._invert_locative_form(text)
             
             inv_old = invert_compound_locative(old_mid)
             inv_new = invert_compound_locative(new_mid)
             # Диагностика: если инверсий несколько (разные эвристики) — пока просто логируем возможность неоднозначности
             try:
-                from ..utils import debug as _dbg
                 if inv_old != old_mid or inv_new != new_mid:
-                    _dbg(f"Локативы: инверсия '{old_mid}'→'{inv_old}', '{new_mid}'→'{inv_new}'")
+                    self._debugf(
+                        'log.rename_worker.locative_inversion',
+                        "Locatives: inversion '{old_mid}' -> '{inv_old}', '{new_mid}' -> '{inv_new}'",
+                        old_mid=old_mid,
+                        inv_old=inv_old,
+                        new_mid=new_mid,
+                        inv_new=inv_new,
+                    )
             except Exception:
                 pass
             if not inv_old or not inv_new or inv_old == inv_new:
                 return text, 0
-            debug(f"Локативы: diff '{old_mid}'→'{new_mid}', инверсия '{inv_old}'→'{inv_new}'")
+            self._debugf(
+                'log.rename_worker.locative_diff',
+                "Locatives: diff '{old_mid}' -> '{new_mid}', inversion '{inv_old}' -> '{inv_new}'",
+                old_mid=old_mid,
+                new_mid=new_mid,
+                inv_old=inv_old,
+                inv_new=inv_new,
+            )
             
             # Ищем подходящий шаблон и параметр, где значение ровно inv_old
             import html as _html
@@ -1118,7 +1471,11 @@ class RenameWorker(BaseWorker):
             
             try:
                 templates = find_templates_nested(text)
-                debug(f"Локативы: найдено {len(templates)} шаблонов на странице")
+                self._debugf(
+                    'log.rename_worker.locative_templates_found',
+                    'Locatives: found {count} templates on page',
+                    count=len(templates),
+                )
             except Exception:
                 templates = []
             changes = 0
@@ -1184,7 +1541,14 @@ class RenameWorker(BaseWorker):
                             inv_old.lower() in value_plain.lower() or
                             value_plain.lower() in inv_old.lower()
                         ):
-                            debug(f"  Локативы: проверяем параметр {i} шаблона {template_name}: '{value_plain}' vs '{inv_old}'")
+                            self._debugf(
+                                'log.rename_worker.locative_check_param',
+                                "  Locatives: checking parameter {index} of template {template}: '{value}' vs '{target}'",
+                                index=i,
+                                template=template_name,
+                                value=value_plain,
+                                target=inv_old,
+                            )
                     except Exception:
                         pass
                     
@@ -1275,7 +1639,13 @@ class RenameWorker(BaseWorker):
                         # Лог «пропущено пользователем (Шаблон:Имя)» — как в ветке direct/partial
                         try:
                             tmpl_label = self._format_template_label(template_name, False)
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label})')
+                            self._emitf(
+                                'log.rename_worker.skip_user',
+                                '→ {category} : "{title}" - skipped by user ({source})',
+                                category=new_cat_full,
+                                title=page_title,
+                                source=tmpl_label,
+                            )
                         except Exception:
                             pass
                         try:
@@ -1291,13 +1661,22 @@ class RenameWorker(BaseWorker):
                         # Логируем пропуск текущей статьи аналогично partial, с пометкой локативов
                         try:
                             tmpl_label = self._format_template_label(template_name, False)
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label})')
+                            self._emitf(
+                                'log.rename_worker.skip_user',
+                                '→ {category} : "{title}" - skipped by user ({source})',
+                                category=new_cat_full,
+                                title=page_title,
+                                source=tmpl_label,
+                            )
                         except Exception:
                             pass
                         # Жёсткая остановка процесса: поднимем флаг и вернём сразу
                         self._stop = True
                         try:
-                            self.progress.emit("Процесс остановлен пользователем.")
+                            self._emitf(
+                                'log.rename_worker.stopped_by_user',
+                                'Process stopped by user.',
+                            )
                         except Exception:
                             pass
                         return modified_text, changes
@@ -1305,8 +1684,7 @@ class RenameWorker(BaseWorker):
                     break
             return modified_text, changes
         except Exception as e:
-            from ..utils import debug
-            debug(f'Ошибка обработки локативов: {e}')
+            self._debugf('log.rename_worker.locative_processing_error', 'Locative processing error: {error}', error=e)
             return text, 0
 
     def _replace_category_links_in_text(self, text: str, family: str, lang: str, old_cat_full: str, new_cat_full: str) -> tuple[str, int]:
@@ -1397,15 +1775,26 @@ class RenameWorker(BaseWorker):
         Returns:
             Tuple[str, int]: Измененный текст и количество изменений
         """
-        from ..utils import debug
-        
         # Извлекаем название категории без префикса для поиска в параметрах
         old_cat_name = old_cat_full.split(':', 1)[-1] if ':' in old_cat_full else old_cat_full
         new_cat_name = new_cat_full.split(':', 1)[-1] if ':' in new_cat_full else new_cat_full
-        
-        debug(f'Интерактивная обработка шаблонов для страницы: {page_title}')
-        debug(f'Поиск категории "{old_cat_name}" в параметрах шаблонов')
-        debug(f"Поиск шаблонов с категорией '{old_cat_name}' на странице {page_title}")
+
+        self._debugf(
+            'log.rename_worker.interactive_start',
+            'Interactive template processing for page: {title}',
+            title=page_title,
+        )
+        self._debugf(
+            'log.rename_worker.interactive_search_category',
+            'Searching for category "{category}" in template parameters',
+            category=old_cat_name,
+        )
+        self._debugf(
+            'log.rename_worker.interactive_search_templates',
+            "Searching templates with category '{category}' on page {title}",
+            category=old_cat_name,
+            title=page_title,
+        )
         
         import re
         changes = 0
@@ -1421,7 +1810,11 @@ class RenameWorker(BaseWorker):
         template_pattern = r'\{\{([^{}]+?)\}\}'
         templates = list(re.finditer(template_pattern, text, re.DOTALL))
         
-        debug(f'Найдено шаблонов на странице: {len(templates)}')
+        self._debugf(
+            'log.rename_worker.interactive_templates_found',
+            'Templates found on page: {count}',
+            count=len(templates),
+        )
 
         # Кандидаты частичных замен из названий категорий
         def _generate_partial_pairs(_old: str, _new: str) -> list[tuple[str, str]]:
@@ -1443,7 +1836,10 @@ class RenameWorker(BaseWorker):
                 # СПЕЦИАЛЬНЫЙ СЛУЧАЙ: расширение категории (все старые токены совпадают)
                 # Например: "Родившиеся в Аксае" → "Родившиеся в Аксае (Дагестан)"
                 if diff_i >= len(tokens_old) and len(tokens_new) > len(tokens_old):
-                    debug(f'Частичные пары: расширение категории (все старые токены совпадают)')
+                    self._debugf(
+                        'log.rename_worker.partial_pairs_expand',
+                        'Partial pairs: category expansion (all old tokens match)',
+                    )
                     # Берем последний токен старой категории и расширяем его
                     # "Аксае" → "Аксае (Дагестан)"
                     old_last = tokens_old[-1] if tokens_old else ""
@@ -1452,34 +1848,57 @@ class RenameWorker(BaseWorker):
                     new_extended = " ".join(tokens_new[-(added+1):]) if added > 0 else tokens_new[-1]
                     if old_last and new_extended and old_last != new_extended:
                         pairs.append((old_last, new_extended))
-                        debug(f'  Пара расширения: "{old_last}" → "{new_extended}"')
+                        self._debugf(
+                            'log.rename_worker.partial_pair_expand_item',
+                            '  Expansion pair: "{old}" -> "{new}"',
+                            old=old_last,
+                            new=new_extended,
+                        )
                     # Также добавляем пары с предлогом: "в Аксае" → "в Аксае (Дагестан)"
                     if len(tokens_old) >= 2:
                         old_with_prep = " ".join(tokens_old[-2:])
                         new_with_prep = " ".join(tokens_new[-(added+2):]) if len(tokens_new) >= added+2 else new_extended
                         if old_with_prep and new_with_prep and (old_with_prep, new_with_prep) not in pairs:
                             pairs.append((old_with_prep, new_with_prep))
-                            debug(f'  Пара с предлогом: "{old_with_prep}" → "{new_with_prep}"')
+                            self._debugf(
+                                'log.rename_worker.partial_pair_with_prep',
+                                '  Pair with preposition: "{old}" -> "{new}"',
+                                old=old_with_prep,
+                                new=new_with_prep,
+                            )
                     return pairs
 
                 # СПЕЦИАЛЬНЫЙ СЛУЧАЙ: сужение категории (новая короче старой, общий префикс совпадает)
                 # Например: "Умершие в Константинополе (Византия) империя)" → "Умершие в Константинополе (Византия)"
                 if diff_i >= len(tokens_new) and len(tokens_old) > len(tokens_new):
-                    debug(f'Частичные пары: сужение категории (новая короче старой)')
+                    self._debugf(
+                        'log.rename_worker.partial_pairs_narrow',
+                        'Partial pairs: category narrowing (new title is shorter)',
+                    )
                     removed = len(tokens_old) - len(tokens_new)
                     # Базовая пара по "хвосту": "(Византия) империя)" → "(Византия)"
                     old_tail = " ".join(tokens_old[-(removed+1):]) if removed > 0 else (tokens_old[-1] if tokens_old else "")
                     new_tail = tokens_new[-1] if tokens_new else ""
                     if old_tail and new_tail and old_tail != new_tail:
                         pairs.append((old_tail, new_tail))
-                        debug(f'  Пара сужения: "{old_tail}" → "{new_tail}"')
+                        self._debugf(
+                            'log.rename_worker.partial_pair_narrow_item',
+                            '  Narrowing pair: "{old}" -> "{new}"',
+                            old=old_tail,
+                            new=new_tail,
+                        )
                     # Пара с контекстом: "Константинополе (Византия) империя)" → "Константинополе (Византия)"
                     if len(tokens_old) >= (removed + 2) and len(tokens_new) >= 2:
                         old_with_ctx = " ".join(tokens_old[-(removed+2):])
                         new_with_ctx = " ".join(tokens_new[-2:])
                         if old_with_ctx and new_with_ctx and (old_with_ctx, new_with_ctx) not in pairs:
                             pairs.append((old_with_ctx, new_with_ctx))
-                            debug(f'  Пара с контекстом: "{old_with_ctx}" → "{new_with_ctx}"')
+                            self._debugf(
+                                'log.rename_worker.partial_pair_with_context',
+                                '  Pair with context: "{old}" -> "{new}"',
+                                old=old_with_ctx,
+                                new=new_with_ctx,
+                            )
                     return pairs
                 
                 # Пара 1: минимальная разница по токену
@@ -1501,9 +1920,19 @@ class RenameWorker(BaseWorker):
             return pairs
 
         partial_pairs = _generate_partial_pairs(old_cat_name, new_cat_name)
-        debug(f'Сгенерировано пар для частичной замены: {len(partial_pairs)}')
+        self._debugf(
+            'log.rename_worker.partial_pairs_generated',
+            'Generated partial replacement pairs: {count}',
+            count=len(partial_pairs),
+        )
         for idx, (old_p, new_p) in enumerate(partial_pairs, 1):
-            debug(f'  Пара {idx}: "{old_p}" → "{new_p}"')
+            self._debugf(
+                'log.rename_worker.partial_pair_item',
+                '  Pair {index}: "{old}" -> "{new}"',
+                index=idx,
+                old=old_p,
+                new=new_p,
+            )
         
         # Нормализация строк для сравнения: удаляем невидимые спецсимволы и нормализуем пробелы
         from ..utils import normalize_spaces_for_compare as _norm
@@ -1531,16 +1960,32 @@ class RenameWorker(BaseWorker):
             # Автопропуск для отмеченных шаблонов
             try:
                 if self.template_manager.is_template_auto_skip(template_name, self.family, self.lang):
-                    debug(f'Шаблон {template_name}: отмечен на автопропуск — пропускаем без диалога')
+                    self._debugf(
+                        'log.rename_worker.template_auto_skip',
+                        'Template {template}: marked for auto-skip, skipping without dialog',
+                        template=template_name,
+                    )
                     # Лог в стиле оригинала (пропуск автоматически)
                     try:
                         tmpl_label = self._format_template_label(template_name)
                     except Exception:
                         tmpl_label = f"{DEFAULT_EN_NS.get(10, 'Template:')}{template_name}"
                     try:
-                        self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено автоматически ({tmpl_label})')
+                        self._emitf(
+                            'log.rename_worker.skip_auto',
+                            '→ {category} : "{title}" - skipped automatically ({source})',
+                            category=new_cat_full,
+                            title=page_title,
+                            source=tmpl_label,
+                        )
                     except Exception:
-                        self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено автоматически ({tmpl_label})')
+                        self._emitf(
+                            'log.rename_worker.skip_auto',
+                            '→ {category} : "{title}" - skipped automatically ({source})',
+                            category=new_cat_full,
+                            title=page_title,
+                            source=tmpl_label,
+                        )
                     continue
             except Exception:
                 pass
@@ -1583,12 +2028,19 @@ class RenameWorker(BaseWorker):
                     new_cat_full_enc = new_cat_full
 
                 matched_this_param = False
-                def _append_match(old_val: str, new_val: str):
+                def _append_match(
+                    old_val: str,
+                    new_val: str,
+                    *,
+                    _param_index: int = i,
+                    _param_value: str = param_clean,
+                    _matches=found_matches,
+                ):
                     nonlocal matched_this_param
-                    found_matches.append({
+                    _matches.append({
                         'type': 'direct',
-                        'param_index': i,
-                        'param_value': param_clean,
+                        'param_index': _param_index,
+                        'param_value': _param_value,
                         'old_value': old_val,
                         'new_value': new_val
                     })
@@ -1699,7 +2151,12 @@ class RenameWorker(BaseWorker):
                                         (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
                                     )
                                     if already_replaced:
-                                        debug(f'    Пропускаем (строгое равенство): значение "{value_plain}" уже содержит новую подстроку "{new_sub}"')
+                                        self._debugf(
+                                            'log.rename_worker.partial_skip_equal_contains',
+                                            '    Skip (strict match): value "{value}" already contains new substring "{substring}"',
+                                            value=value_plain,
+                                            substring=new_sub,
+                                        )
                                         continue
                                 except Exception:
                                     pass
@@ -1729,7 +2186,12 @@ class RenameWorker(BaseWorker):
                                         (new_sub and new_sub in value_plain) or (new_sub and new_sub in value_norm)
                                     )
                                     if already_replaced:
-                                        debug(f'    Пропускаем: значение "{value_plain}" уже содержит новую подстроку "{new_sub}"')
+                                        self._debugf(
+                                            'log.rename_worker.partial_skip_contains',
+                                            '    Skip: value "{value}" already contains new substring "{substring}"',
+                                            value=value_plain,
+                                            substring=new_sub,
+                                        )
                                         continue
                                 except Exception:
                                     pass
@@ -1750,7 +2212,12 @@ class RenameWorker(BaseWorker):
                 if self._stop:
                     break
                     
-                debug(f'Найдено совпадение в шаблоне {template_name}: {match_info["param_value"]}')
+                self._debugf(
+                    'log.rename_worker.template_match_found',
+                    'Found match in template {template}: {value}',
+                    template=template_name,
+                    value=match_info["param_value"],
+                )
                 
                 # Попытка автоприменения по сохранённым правилам (auto=approve) без показа диалога
                 # для случая частичного совпадения unnamed_single
@@ -1831,7 +2298,11 @@ class RenameWorker(BaseWorker):
                                 self._last_changed_template_name = (template_name or '').strip()
                             except Exception:
                                 pass
-                            debug(f'Автоприменено по правилу (auto=approve) для шаблона {template_name}')
+                            self._debugf(
+                                'log.rename_worker.template_auto_apply',
+                                'Auto-applied by rule (auto=approve) for template {template}',
+                                template=template_name,
+                            )
                             auto_applied = True
                     if auto_applied:
                         # Переходим к следующему шаблону без показа диалога
@@ -1913,7 +2384,11 @@ class RenameWorker(BaseWorker):
                     )
                     
                     action = result.get('action', 'skip')
-                    debug(f'Результат диалога подтверждения: {action}')
+                    self._debugf(
+                        'log.rename_worker.confirmation_result',
+                        'Confirmation dialog result: {action}',
+                        action=action,
+                    )
                     
                     if action == 'apply':
                         # Определяем итоговый вариант замены (учесть ручное редактирование)
@@ -1953,7 +2428,11 @@ class RenameWorker(BaseWorker):
                             self._last_changed_template_name = (template_name or '').strip()
                         except Exception:
                             pass
-                        debug(f'Применено изменение в шаблоне {template_name}')
+                        self._debugf(
+                            'log.rename_worker.template_change_applied',
+                            'Applied change in template {template}',
+                            template=template_name,
+                        )
                         # (лог названия шаблона не требуется, ярлык уже формируется при необходимости в других местах)
                         break  # Переходим к следующему шаблону
                     elif action == 'skip':
@@ -1963,14 +2442,30 @@ class RenameWorker(BaseWorker):
                                 self.template_manager.set_template_skip_flag(template_name, self.family, self.lang, True)
                         except Exception:
                             pass
-                        debug(f'Пропущено изменение в шаблоне {template_name}')
+                        self._debugf(
+                            'log.rename_worker.template_change_skipped',
+                            'Skipped change in template {template}',
+                            template=template_name,
+                        )
                         # Лог в стиле оригинала (пропуск пользователем)
                         try:
                             tmpl_label = self._format_template_label(template_name, False)
                             src_label = tmpl_label
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({src_label})')
+                            self._emitf(
+                                'log.rename_worker.skip_user',
+                                '→ {category} : "{title}" - skipped by user ({source})',
+                                category=new_cat_full,
+                                title=page_title,
+                                source=src_label,
+                            )
                         except Exception:
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({DEFAULT_EN_NS.get(10, 'Template:')}{template_name})')
+                            self._emitf(
+                                'log.rename_worker.skip_user',
+                                '→ {category} : "{title}" - skipped by user ({source})',
+                                category=new_cat_full,
+                                title=page_title,
+                                source=f"{DEFAULT_EN_NS.get(10, 'Template:')}{template_name}",
+                            )
                         # Отметим, что было взаимодействие (диалог) — чтобы не выводить общий «пропущено, без изменений»
                         try:
                             self._last_template_interactions = True
@@ -1978,7 +2473,7 @@ class RenameWorker(BaseWorker):
                             pass
                         continue
                     elif action == 'cancel':
-                        debug(f'Пользователь отменил процесс')
+                        self._debugf('log.rename_worker.user_cancelled', 'User cancelled the process')
                         # Отметим факт взаимодействия, чтобы внешний код не выводил
                         # общий фолбэк «пропущено, без изменений (Ш:Категории)»
                         try:
@@ -1989,21 +2484,35 @@ class RenameWorker(BaseWorker):
                         # «Источник» корректно показалась иконка #️⃣ для частичных совпадений
                         try:
                             tmpl_label = self._format_template_label(template_name, is_partial)
-                            self.progress.emit(f'→ {new_cat_full} : "{page_title}" — пропущено пользователем ({tmpl_label})')
+                            self._emitf(
+                                'log.rename_worker.skip_user',
+                                '→ {category} : "{title}" - skipped by user ({source})',
+                                category=new_cat_full,
+                                title=page_title,
+                                source=tmpl_label,
+                            )
                         except Exception:
                             pass
                         self._stop = True
-                        self.progress.emit("Процесс остановлен пользователем.")
+                        self._emitf('log.rename_worker.stopped_by_user', 'Process stopped by user.')
                         return modified_text, changes
                     else:
-                        debug(f'Неизвестное действие: {action}')
+                        self._debugf('log.rename_worker.unknown_action', 'Unknown action: {action}', action=action)
                         continue
                         
                 except Exception as e:
-                    debug(f'Ошибка при запросе подтверждения: {e}')
+                    self._debugf(
+                        'log.rename_worker.confirmation_request_error',
+                        'Confirmation request error: {error}',
+                        error=e,
+                    )
                     continue
         
-        debug(f'Интерактивная обработка завершена: {changes} изменений')
+        self._debugf(
+            'log.rename_worker.interactive_completed',
+            'Interactive processing completed: {count} changes',
+            count=changes,
+        )
         return modified_text, changes
     
     def _request_template_confirmation(self, page_title: str, template: str, old_full: str, new_full: str, 
@@ -2064,6 +2573,9 @@ class RenameWorker(BaseWorker):
             return result
             
         except Exception as e:
-            from ..utils import debug
-            debug(f'Ошибка в _request_template_confirmation: {e}')
+            self._debugf(
+                'log.rename_worker.request_template_confirmation_error',
+                'Error in _request_template_confirmation: {error}',
+                error=e,
+            )
             return {'action': 'skip'}

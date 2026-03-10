@@ -1,0 +1,45 @@
+{
+  "summary.create": {
+    "be": "Стварэнне новай катэгорыі з адзінай структурай: $1 $2 $3",
+    "de": "Erstellung einer neuen Kategorie mit vorbereitetem Inhalt: $1 $2 $3",
+    "default": "Category creation with prepared content: $1 $2 $3",
+    "en": "Creation of a new category with prepared content: $1 $2 $3",
+    "es": "Creacion de una nueva categoria con contenido preparado: $1 $2 $3",
+    "fr": "Creation d'une nouvelle categorie avec contenu prepare: $1 $2 $3",
+    "ru": "Создание новой категории с заготовленным содержимым: $1 $2 $3",
+    "uk": "Створення нової категорії з уніфікованим наповненням: $1 $2 $3"
+  },
+  "summary.redundant.multi": {
+    "be": "Выдалены катэгорыі, бо існуюць больш дакладныя: {pair}.",
+    "de": "Kategorien entfernt, da genauere vorhanden sind: {pair}.",
+    "default": "Removed categories because more precise ones exist: {pair}.",
+    "en": "Removed categories because more precise ones exist: {pair}.",
+    "es": "Se retiraron categorias porque existen otras mas precisas: {pair}.",
+    "fr": "Categories retirees car des categories plus precises existent : {pair}.",
+    "ru": "Удалены категории, так как существуют более точные: {pair}.",
+    "uk": "Вилучено категорії, оскільки існують точніші: {pair}."
+  },
+  "summary.redundant.pair_format": {
+    "default": "{link_broad} -> {link_precise}"
+  },
+  "summary.redundant.single": {
+    "be": "Выдалена катэгорыя {link_broad}, бо існуе больш дакладная {link_precise}",
+    "de": "Kategorie {link_broad} entfernt, da eine genauere {link_precise} vorhanden ist",
+    "default": "Removed category {link_broad} because a more precise {link_precise} exists",
+    "en": "Removed category {link_broad} because a more precise {link_precise} exists",
+    "es": "Se retiro la categoria {link_broad} porque existe una mas precisa: {link_precise}",
+    "fr": "Categorie {link_broad} retiree car il existe une categorie plus precise : {link_precise}",
+    "ru": "Удалена категория {link_broad}, так как существует более точная {link_precise}",
+    "uk": "Вилучено категорію {link_broad}, оскільки існує точніша {link_precise}"
+  },
+  "summary.replace": {
+    "be": "Замена зместу старонкі на адзіную структуру: $1 $2 $3",
+    "de": "Ersetzung des Seiteninhalts fur Konsistenz: $1 $2 $3",
+    "default": "Consistency content replacement: $1 $2 $3",
+    "en": "Replacement of the page content with uniform filling: $1 $2 $3",
+    "es": "Sustitucion del contenido para uniformidad: $1 $2 $3",
+    "fr": "Remplacement du contenu pour cohérence: $1 $2 $3",
+    "ru": "Замена содержимого страницы на единообразное наполнение: $1 $2 $3",
+    "uk": "Заміна вмісту сторінки на одноманітне наповнення: $1 $2 $3"
+  }
+}

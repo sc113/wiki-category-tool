@@ -12,10 +12,10 @@
 
 import sys
 import os
-import ctypes
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
-from PySide6.QtCore import QTimer, QThread, Signal
+from PySide6.QtCore import QTimer, QThread, Signal, qInstallMessageHandler
+from .core.localization import translate_runtime
 
 # Настройка путей и окружения
 
@@ -46,6 +46,55 @@ def setup_stdout_redirect():
             sys.stdout = GuiStdWriter()
         if getattr(sys, 'stderr', None) is None:
             sys.stderr = GuiStdWriter()
+
+
+_QT_PREV_HANDLER = None
+_QT_IGNORED_MESSAGES = (
+    'QFont::setPointSize: Point size <= 0 (-1)',
+)
+
+
+def _t(key: str) -> str:
+    return translate_runtime(key, '')
+
+
+def _fmt(key: str, **kwargs) -> str:
+    text = _t(key)
+    try:
+        return text.format(**kwargs)
+    except Exception:
+        return text
+
+
+def setup_qt_message_filter():
+    """Подавляет известные шумные Qt warning, остальное прокидывает предыдущему handler."""
+    global _QT_PREV_HANDLER
+    try:
+        if _QT_PREV_HANDLER is not None:
+            return
+
+        def _handler(mode, context, message):
+            try:
+                msg = str(message or '')
+            except Exception:
+                msg = ''
+            if any(noise in msg for noise in _QT_IGNORED_MESSAGES):
+                return
+            try:
+                if _QT_PREV_HANDLER is not None:
+                    _QT_PREV_HANDLER(mode, context, message)
+                    return
+            except Exception:
+                pass
+            try:
+                if msg:
+                    sys.stderr.write(msg + '\n')
+            except Exception:
+                pass
+
+        _QT_PREV_HANDLER = qInstallMessageHandler(_handler)
+    except Exception:
+        pass
 
 
 def setup_pywikibot():
@@ -130,7 +179,7 @@ class UpdateCheckerThread(QThread):
             from .utils import resource_path, debug
             from .constants import APP_VERSION
 
-            debug(f"Проверка обновлений... (текущая версия: {APP_VERSION})")
+            debug(_fmt('log.main_startup.check_updates_start', version=APP_VERSION))
 
             # Получаем путь к директории настроек
             settings_dir = resource_path('configs')
@@ -144,21 +193,20 @@ class UpdateCheckerThread(QThread):
 
                 # Проверяем, не пропущена ли эта версия
                 if not update_settings.is_version_skipped(new_version):
-                    debug(f"Найдена новая версия: {new_version}")
+                    debug(_fmt('log.main_startup.new_version_found', version=new_version))
                     # Отправляем сигнал в главный поток
                     try:
                         self.update_found.emit(new_version, download_url)
                     except Exception as e:
-                        debug(f"Ошибка при отправке сигнала обновления: {e}")
+                        debug(_fmt('log.main_startup.update_signal_error', error=e))
                 else:
-                    debug(
-                        f"Новая версия {new_version} найдена, но пропущена пользователем")
+                    debug(_fmt('log.main_startup.version_skipped', version=new_version))
             else:
-                debug("Обновлений не найдено")
+                debug(_t('log.main_startup.no_updates'))
         except Exception as e:
             # Если проверка не удалась, просто игнорируем
             try:
-                debug(f"Ошибка при проверке обновлений: {e}")
+                debug(_fmt('log.main_startup.update_check_error', error=e))
             except Exception:
                 pass
 
@@ -176,14 +224,18 @@ def show_update_dialog(window, new_version, download_url):
 
         # Показываем диалог
         dialog = UpdateDialog(APP_VERSION, new_version, download_url, window)
-        result = dialog.exec()
+        dialog.exec()
 
         # Если пользователь выбрал пропустить версию
         if dialog.skip_version:
             update_settings.skip_version(new_version)
-            debug(f"Версия {new_version} добавлена в пропущенные")
+            debug(_fmt('log.main_startup.version_added_to_skipped', version=new_version))
     except Exception as e:
-        debug(f"Ошибка при показе диалога обновления: {e}")
+        try:
+            from .utils import debug
+            debug(_fmt('log.main_startup.show_update_dialog_error', error=e))
+        except Exception:
+            pass
 
 
 def main():
@@ -193,6 +245,10 @@ def main():
 
     # Настройка перенаправления вывода
     setup_stdout_redirect()
+    # Включено по умолчанию: подавляем известный шумный Qt warning про setPointSize(-1).
+    # Можно отключить через WCT_DISABLE_QT_MESSAGE_FILTER=1.
+    if str(os.environ.get('WCT_DISABLE_QT_MESSAGE_FILTER', '')).strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        setup_qt_message_filter()
 
     # Настройка Windows taskbar
     setup_windows_taskbar()
@@ -214,20 +270,20 @@ def main():
 
     def finish_startup():
         try:
-            window.set_startup_status('Подключаем pywikibot...')
+            window.set_startup_status(_t('ui.main.connecting_pywikibot'))
             app.processEvents()
             setup_pywikibot()
-            window.set_startup_status('Подгружаем вкладки...')
+            window.set_startup_status(_t('ui.main.loading_tabs'))
             app.processEvents()
             window.complete_startup()
         except Exception as e:
             try:
                 from .utils import debug
-                debug(f'Ошибка отложенного запуска: {e}')
+                debug(_fmt('log.main_startup.deferred_start_error', error=e))
             except Exception:
                 pass
             try:
-                window.set_startup_status(f'Ошибка запуска: {e}')
+                window.set_startup_status(_fmt('ui.main.startup_error', error=e))
             except Exception:
                 pass
             return

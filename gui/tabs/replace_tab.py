@@ -10,23 +10,22 @@
 - Отметку правок как малые (minor edit)
 """
 
-import os
-from typing import Optional
-
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QTextEdit, QCheckBox, QProgressBar,
     QMessageBox, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 from ...constants import PREFIX_TOOLTIP
+from ...core.localization import translate_key
 from ...utils import debug, default_summary
 from ...workers.replace_worker import ReplaceWorker
 from ...core.pywikibot_config import apply_pwb_config
 from ..widgets.shared_panels import TsvPreviewPanel
 from ..widgets.ui_helpers import (
-    embed_button_in_lineedit, add_info_button, pick_file,
+    add_info_button, pick_file,
     open_from_edit, log_message, set_start_stop_ratio,
     tsv_preview_from_path, init_progress, inc_progress,
     count_non_empty_titles, is_default_summary
@@ -55,26 +54,39 @@ class ReplaceTab(QWidget):
         # Создание UI
         self.setup_ui()
 
+    def _ui_lang(self) -> str:
+        return getattr(self.parent_window, '_ui_lang', 'ru') if self.parent_window is not None else 'ru'
+
+    def _t(self, key: str) -> str:
+        return translate_key(key, self._ui_lang(), '')
+
+    def _fmt(self, key: str, **kwargs) -> str:
+        text = self._t(key)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+
     def setup_ui(self):
         """Создает пользовательский интерфейс вкладки"""
         # Основной layout
         v = QVBoxLayout(self)
+        try:
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(6)
+        except Exception:
+            pass
 
         # Текст справки
-        replace_help = (
-            'TSV: Title<TAB>line1<TAB>line2…\n'
-            '— Перезаписывает существующие страницы; если страницы нет — в логе «страница отсутствует».\n\n'
-            'Одна строка — одна новая страница.\n\n'
-            'Пустая колонка в файле добавляет новую строку.\n\n'
-            'Как формируется текст: всё после первого столбца склеивается переводами строк.\n\n'
-            'Префиксы/NS: список «Префиксы» нормализует заголовок к выбранному пространству имён; «Авто» — без изменения.\n'
-            'Комментарий: поле ниже применяется ко всем правкам. «Малая правка» — отметит правки как minor.\n'
-            'Предпросмотр: слева заголовки, справа итоговое содержимое.\n'
-            'Очистка лога (метла) также очищает предпросмотр и возвращает кнопку «Предпросмотр».'
-        )
+        replace_help = self._t('help.replace.main')
 
         # Строка выбора файла и настроек
         h = QHBoxLayout()
+        try:
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+        except Exception:
+            pass
 
         # Поле файла с кнопкой
         self.rep_file_edit = QLineEdit('categories.tsv')
@@ -82,16 +94,16 @@ class ReplaceTab(QWidget):
         self.rep_file_edit.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        h.addWidget(QLabel('Список для замен (.tsv):'))
+        h.addWidget(QLabel(self._t('ui.replace_list_tsv')))
         h.addWidget(self.rep_file_edit, 1)
         # Кнопка «…» справа
         btn_browse_rep = QToolButton()
         btn_browse_rep.setText('…')
         btn_browse_rep.setAutoRaise(False)
         try:
-            btn_browse_rep.setFixedSize(28, 28)
+            btn_browse_rep.setFixedSize(27, 27)
             btn_browse_rep.setCursor(Qt.PointingHandCursor)
-            btn_browse_rep.setToolTip('Выбрать файл')
+            btn_browse_rep.setToolTip(self._t('ui.choose_file'))
         except Exception:
             pass
         btn_browse_rep.clicked.connect(
@@ -99,16 +111,16 @@ class ReplaceTab(QWidget):
         h.addWidget(btn_browse_rep)
 
         # Кнопка "Открыть"
-        btn_open_tsv = QPushButton('Открыть')
+        btn_open_tsv = QPushButton(self._t('ui.open'))
         btn_open_tsv.clicked.connect(
             lambda: open_from_edit(self, self.rep_file_edit))
         btn_open_tsv.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         h.addWidget(btn_open_tsv)
 
         # Компактный выбор префикса (выпадающий список)
-        prefix_label_replace = QLabel('Префиксы:')
-        prefix_label_replace.setToolTip(PREFIX_TOOLTIP)
-        h.addWidget(prefix_label_replace)
+        self.prefix_label_replace = QLabel(self._t('ui.prefixes'))
+        self.prefix_label_replace.setToolTip(PREFIX_TOOLTIP)
+        h.addWidget(self.prefix_label_replace)
 
         self.rep_ns_combo = QComboBox()
         self.rep_ns_combo.setEditable(False)
@@ -116,43 +128,48 @@ class ReplaceTab(QWidget):
         h.addWidget(self.rep_ns_combo)
 
         # Кнопка ℹ в строке выбора файла
-        add_info_button(self, h, replace_help)
+        self.prefix_help_btn_replace = add_info_button(self, h, replace_help)
 
         # Строка комментария
         sum_layout = QHBoxLayout()
-        sum_layout.addWidget(QLabel('Комментарий к правкам:'))
+        sum_layout.addWidget(QLabel(self._t('ui.edit_summary')))
 
         self.summary_edit = QLineEdit()
         self.summary_edit.setText(default_summary('ru'))
         sum_layout.addWidget(self.summary_edit)
 
         # Малая правка
-        self.minor_checkbox = QCheckBox('Малая правка')
+        self.minor_checkbox = QCheckBox(self._t('ui.minor_edit'))
         sum_layout.addWidget(self.minor_checkbox)
 
         self.preview_panel = TsvPreviewPanel(
             self,
-            left_header='Название страницы',
-            right_header='Новое содержимое',
+            left_header=self._t('ui.page_title'),
+            right_header=self._t('ui.new_content'),
         )
         self.rep_preview_titles = self.preview_panel.titles_edit
         self.rep_preview_rest = self.preview_panel.content_edit
 
         # Кнопки управления
-        self.preview_btn = QPushButton('Предпросмотр')
+        self.preview_btn = QPushButton(self._t('ui.preview'))
         self.preview_btn.clicked.connect(self.preview_replace)
 
-        self.replace_btn = QPushButton('Заменить')
+        self.replace_btn = QPushButton(self._t('ui.replace_button'))
         self.replace_btn.setEnabled(False)  # Активируется после предпросмотра
         self.replace_btn.clicked.connect(self.start_replace)
 
-        self.replace_stop_btn = QPushButton('Остановить')
+        self.replace_stop_btn = QPushButton(self._t('ui.stop'))
         self.replace_stop_btn.setEnabled(False)
         self.replace_stop_btn.clicked.connect(self.stop_replace)
 
         # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
         self.rep_log = QTextEdit()
         self.rep_log.setReadOnly(True)
+        mono_font = QFont('Consolas', 9)
+        if not mono_font.exactMatch():
+            mono_font = QFont('Courier New', 9)
+        mono_font.setFixedPitch(True)
+        self.rep_log.setFont(mono_font)
 
         from ..widgets.ui_helpers import create_log_wrap, make_clear_button
         rep_wrap = create_log_wrap(self, self.rep_log, with_header=True)
@@ -171,7 +188,7 @@ class ReplaceTab(QWidget):
             except Exception:
                 pass
             try:
-                self.preview_btn.setText('Предпросмотр')
+                self.preview_btn.setText(self._t('ui.preview'))
                 self.preview_btn.clicked.connect(self.preview_replace)
                 self.replace_btn.setEnabled(False)
             except Exception:
@@ -224,12 +241,21 @@ class ReplaceTab(QWidget):
         except Exception:
             pass
         # Метка и полоса
-        self.replace_label = QLabel('Обработано 0/0')
+        self.replace_label = QLabel(
+            self._t('ui.processed_counter_initial')
+        )
+        try:
+            self.replace_label.setVisible(False)
+        except Exception:
+            pass
         self.replace_bar = QProgressBar()
         try:
             self.replace_bar.setMaximum(1)
             self.replace_bar.setValue(0)
-            self.replace_bar.setTextVisible(False)
+            self.replace_bar.setTextVisible(True)
+            self.replace_bar.setFormat(
+                self._t('ui.processed_counter_initial')
+            )
         except Exception:
             pass
         progress_layout.addWidget(self.replace_label)
@@ -257,14 +283,14 @@ class ReplaceTab(QWidget):
         """Загружает TSV, показывает две колонки: первая — заголовок, остальные — склеенные через \\t"""
         path = (self.rep_file_edit.text() or '').strip()
         if not path:
-            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
+            QMessageBox.warning(self, self._t('ui.error'), self._t('ui.specify_tsv'))
             return
 
         try:
             left, right, count = tsv_preview_from_path(path)
         except Exception as e:
             QMessageBox.critical(
-                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+                self, self._t('ui.error'), self._fmt('ui.failed_read_tsv', error=e))
             return
 
         self.preview_panel.set_preview(left, right)
@@ -279,7 +305,7 @@ class ReplaceTab(QWidget):
         debug(f'Start replace: file={self.rep_file_edit.text()}')
 
         if not self.rep_file_edit.text():
-            QMessageBox.warning(self, 'Ошибка', 'Укажите TSV.')
+            QMessageBox.warning(self, self._t('ui.error'), self._t('ui.specify_tsv'))
             return
 
         # Подсчитываем количество страниц для замены
@@ -287,18 +313,18 @@ class ReplaceTab(QWidget):
             page_count = count_non_empty_titles(self.rep_file_edit.text())
         except Exception as e:
             QMessageBox.critical(
-                self, 'Ошибка', f'Не удалось прочитать TSV: {e}')
+                self, self._t('ui.error'), self._fmt('ui.failed_read_tsv', error=e))
             return
 
         if page_count == 0:
             QMessageBox.warning(
-                self, 'Ошибка', 'В файле нет страниц для замены.')
+                self, self._t('ui.error'), self._t('ui.replace.no_pages_in_file'))
             return
 
         # Получаем данные авторизации от родительского окна
         if not self.parent_window:
             QMessageBox.warning(
-                self, 'Ошибка', 'Нет доступа к данным авторизации.')
+                self, self._t('ui.error'), self._t('ui.no_access_auth_data'))
             return
 
         # Получаем данные из родительского окна (будет реализовано в main_window)
@@ -308,7 +334,7 @@ class ReplaceTab(QWidget):
         fam = getattr(self.parent_window, 'current_family', 'wikipedia')
 
         if not user or not pwd:
-            QMessageBox.warning(self, 'Ошибка', 'Необходимо войти в систему.')
+            QMessageBox.warning(self, self._t('ui.error'), self._t('ui.you_need_to_sign_in'))
             return
 
         apply_pwb_config(lang, fam)
@@ -330,6 +356,17 @@ class ReplaceTab(QWidget):
         self.rworker = ReplaceWorker(
             self.rep_file_edit.text(), user, pwd, lang, fam, ns_sel, summary, minor
         )
+        log_message(
+            self.rep_log,
+            self._fmt(
+                'log.replace.run_started',
+                pages=page_count,
+                lang=lang,
+                family=fam,
+                ns=ns_sel,
+                minor=minor,
+            ),
+        )
         self.rworker.progress.connect(lambda m: [inc_progress(
             self.replace_label, self.replace_bar), log_message(self.rep_log, m)])
         self.rworker.finished.connect(self._on_replace_finished)
@@ -343,6 +380,43 @@ class ReplaceTab(QWidget):
 
     def _on_replace_finished(self):
         """Обработчик завершения процесса замены"""
+        worker = getattr(self, 'rworker', None)
+        stopped = bool(worker and getattr(worker, '_stop', False))
+        stats = {}
+        try:
+            stats = dict(getattr(worker, 'stats', {}) or {})
+            if stats:
+                log_message(
+                    self.rep_log,
+                    self._fmt(
+                        'log.replace.summary',
+                        total=stats.get('total', 0),
+                        updated=stats.get('updated', 0),
+                        missing=stats.get('missing', 0),
+                        failed=stats.get('failed', 0),
+                        invalid=stats.get('invalid', 0),
+                    ),
+                )
+        except Exception:
+            pass
+        try:
+            edits = int(getattr(worker, 'saved_edits', 0) or 0)
+        except Exception:
+            edits = 0
+        try:
+            updated_stats = int((stats or {}).get('updated', 0) or 0)
+        except Exception:
+            updated_stats = 0
+        edits = max(0, edits, updated_stats)
+        try:
+            if edits > 0 and self.parent_window and hasattr(self.parent_window, 'record_operation'):
+                self.parent_window.record_operation('replace', edits)
+        except Exception:
+            pass
+        if stopped:
+            log_message(self.rep_log, self._t('ui.stopped'))
+        else:
+            log_message(self.rep_log, self._t('log.replace.finished'))
         self.preview_btn.setEnabled(True)
         self.replace_btn.setEnabled(True)
         self.replace_stop_btn.setEnabled(False)
@@ -354,8 +428,12 @@ class ReplaceTab(QWidget):
             val = self.replace_bar.value() + 1
             self.replace_bar.setValue(val)
             try:
+                processed = translate_key(
+                    'ui.processed_short',
+                    getattr(self.parent_window, '_ui_lang', 'ru') if self.parent_window is not None else 'ru',
+                    'Processed'        )
                 self.replace_label.setText(
-                    f'Обработано {val}/{self.replace_bar.maximum()}')
+                    f'{processed} {val}/{self.replace_bar.maximum()}')
             except Exception:
                 pass
         except Exception:
@@ -414,6 +492,22 @@ class ReplaceTab(QWidget):
             nm = getattr(self.parent_window, 'namespace_manager', None)
             if nm:
                 nm.populate_ns_combo(self.rep_ns_combo, family, lang)
+        except Exception:
+            pass
+
+    def set_prefix_controls_visible(self, visible: bool):
+        state = bool(visible)
+        try:
+            self.prefix_label_replace.setVisible(state)
+        except Exception:
+            pass
+        try:
+            self.rep_ns_combo.setVisible(state)
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'prefix_help_btn_replace', None) is not None:
+                self.prefix_help_btn_replace.setVisible(state)
         except Exception:
             pass
 
