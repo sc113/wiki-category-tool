@@ -54,6 +54,8 @@ class CategorySourcePanel(QGroupBox):
         self.log_widget = log_widget
         self.help_text = help_text
         self._fetch_worker = None
+        self._fetch_base_text = ''
+        self._fetch_append_mode = False
         if _GROUP_STYLE:
             self.setStyleSheet(_GROUP_STYLE)
         self._setup_ui(
@@ -579,6 +581,23 @@ class CategorySourcePanel(QGroupBox):
         separator = '\n' if not current_text.endswith('\n') else ''
         self.manual_list.setPlainText(current_text + separator + new_text)
 
+    def _render_fetch_titles_snapshot(self, titles: list[str]) -> None:
+        snapshot_text = '\n'.join(titles or [])
+        if not self._fetch_append_mode:
+            self.manual_list.setPlainText(snapshot_text)
+            return
+
+        base_text = self._fetch_base_text or ''
+        if not base_text.strip():
+            self.manual_list.setPlainText(snapshot_text)
+            return
+        if not snapshot_text.strip():
+            self.manual_list.setPlainText(base_text)
+            return
+
+        separator = '\n' if not base_text.endswith('\n') else ''
+        self.manual_list.setPlainText(base_text + separator + snapshot_text)
+
     def _resolve_category_title(self, fam: str, lang: str, category: str) -> str:
         from ...core.namespace_manager import has_prefix_by_policy, get_policy_prefix
         if has_prefix_by_policy(fam, lang, category, {14}):
@@ -620,6 +639,8 @@ class CategorySourcePanel(QGroupBox):
 
         depth = self.depth_spin.value()
         self._set_fetch_controls_enabled(False)
+        self._fetch_append_mode = bool(append)
+        self._fetch_base_text = self.manual_list.toPlainText() if append else ''
         self._log(
             self._t(
                 'ui.source.fetch_started_background',
@@ -639,6 +660,7 @@ class CategorySourcePanel(QGroupBox):
             mode=selected_mode,
         )
         worker.progress.connect(self._log)
+        worker.partial_ready.connect(self._on_fetch_titles_partial)
         worker.result_ready.connect(
             lambda titles, stats, _append=append, _mode=selected_mode, _depth=depth: self._on_fetch_titles_ready(
                 titles,
@@ -653,6 +675,14 @@ class CategorySourcePanel(QGroupBox):
         self._fetch_worker = worker
         worker.start()
 
+    def _on_fetch_titles_partial(self, titles: list[str], _stats: dict[str, int]) -> None:
+        normalized_titles = [
+            str(title).strip()
+            for title in (titles or [])
+            if str(title).strip()
+        ]
+        self._render_fetch_titles_snapshot(normalized_titles)
+
     def _on_fetch_titles_ready(
         self,
         titles: list[str],
@@ -663,7 +693,7 @@ class CategorySourcePanel(QGroupBox):
         depth: int,
     ) -> None:
         if titles:
-            self._replace_or_append_titles(list(titles), append=append)
+            self._render_fetch_titles_snapshot(list(titles))
             self._log(
                 self._t(
                     'ui.source.fetch_result_appended' if append else 'ui.source.fetch_result_replaced',
@@ -697,6 +727,8 @@ class CategorySourcePanel(QGroupBox):
         self._set_fetch_controls_enabled(True)
         worker = getattr(self, '_fetch_worker', None)
         self._fetch_worker = None
+        self._fetch_base_text = ''
+        self._fetch_append_mode = False
         try:
             if worker is not None:
                 worker.deleteLater()
