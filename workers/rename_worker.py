@@ -405,7 +405,7 @@ class RenameWorker(BaseWorker):
                         try:
                             self._emitf(
                                 'log.rename_worker.category_rename_skipped_html',
-                                'Category rename skipped <b>{old}</b> -> <b>{new}</b>. Transferring content...',
+                                'Category rename skipped <b>{old}</b> → <b>{new}</b>. Transferring content...',
                                 old=html.escape(old_name),
                                 new=html.escape(new_name),
                             )
@@ -419,7 +419,7 @@ class RenameWorker(BaseWorker):
                         try:
                             self._debugf(
                                 'log.rename_worker.category_transfer_start_debug',
-                                'Starting category content transfer: {old} -> {new}',
+                                'Starting category content transfer: {old} → {new}',
                                 old=old_name,
                                 new=new_name,
                             )
@@ -514,14 +514,14 @@ class RenameWorker(BaseWorker):
             try:
                 self._emitf(
                     'log.rename_worker.rename_started_html',
-                    'Starting rename: <b>{old}</b> -> <b>{new}</b>',
+                    'Starting rename: <b>{old}</b> → <b>{new}</b>',
                     old=html.escape(old_name),
                     new=html.escape(new_name),
                 )
             except Exception:
                 self._emitf(
                     'log.rename_worker.rename_started_plain',
-                    'Starting rename: {old} -> {new}',
+                    'Starting rename: {old} → {new}',
                     old=old_name,
                     new=new_name,
                 )
@@ -554,14 +554,14 @@ class RenameWorker(BaseWorker):
                                 try:
                                     self._emitf(
                                         'log.rename_worker.redirect_retained_html',
-                                        'ℹ️ Redirect remained after rename: {old} -> {new} (possibly insufficient suppressredirect rights).',
+                                        'ℹ️ Redirect remained after rename: {old} → {new} (possibly insufficient suppressredirect rights).',
                                         old=html.escape(old_name),
                                         new=html.escape(new_name),
                                     )
                                 except Exception:
                                     self._emitf(
                                         'log.rename_worker.redirect_retained_plain',
-                                        'ℹ️ Redirect remained after rename: {old} -> {new} (possibly insufficient suppressredirect rights).',
+                                        'ℹ️ Redirect remained after rename: {old} → {new} (possibly insufficient suppressredirect rights).',
                                         old=old_name,
                                         new=new_name,
                                     )
@@ -727,7 +727,7 @@ class RenameWorker(BaseWorker):
                         try:
                             self._emitf(
                                 'log.rename_worker.category_transfer_info_html',
-                                'ℹ️ Category content transfer <b>{old}</b> -> <b>{new}</b>: {count}',
+                                'ℹ️ Category content transfer <b>{old}</b> → <b>{new}</b>: {count}',
                                 old=html.escape(old_cat_full),
                                 new=html.escape(new_cat_full),
                                 count=format_russian_pages_nominative(len(members_titles)),
@@ -735,7 +735,7 @@ class RenameWorker(BaseWorker):
                         except Exception:
                             self._emitf(
                                 'log.rename_worker.category_transfer_info_plain',
-                                'ℹ️ Category content transfer {old} -> {new}: {count}',
+                                'ℹ️ Category content transfer {old} → {new}: {count}',
                                 old=old_cat_full,
                                 new=new_cat_full,
                                 count=format_russian_pages_nominative(len(members_titles)),
@@ -743,7 +743,7 @@ class RenameWorker(BaseWorker):
                 except Exception:
                     self._emitf(
                         'log.rename_worker.category_transfer_info_plain',
-                        'ℹ️ Category content transfer {old} -> {new}: {count}',
+                        'ℹ️ Category content transfer {old} → {new}: {count}',
                         old=old_cat_full,
                         new=new_cat_full,
                         count=format_russian_pages_nominative(len(members_titles)),

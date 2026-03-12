@@ -44,7 +44,7 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
             title_txt = _fmt(
                 tree,
                 'ui.log.category_move_start',
-                'Category content transfer {old} -> {new}',
+                'Category content transfer {old} → {new}',
                 old=old_cat,
                 new=new_cat,
             )
@@ -74,7 +74,7 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
                 _fmt(
                     tree,
                     'ui.log.redirect_retained',
-                    'Renamed, but redirect remained: {old} -> {new} (possibly insufficient suppressredirect rights).',
+                    'Renamed, but redirect remained: {old} → {new} (possibly insufficient suppressredirect rights).',
                     old=old_title,
                     new=new_title,
                 )
@@ -1592,7 +1592,7 @@ def log_tree_parse_and_add(tree: QTreeWidget, raw_msg: str) -> None:
                 title_txt = _fmt(
                     tree,
                     'ui.log.rename_started_message',
-                    'Starting rename: {old} -> {new}',
+                    'Starting rename: {old} → {new}',
                     old=_LAST_RENAME_OLD,
                     new=_LAST_RENAME_NEW,
                 )

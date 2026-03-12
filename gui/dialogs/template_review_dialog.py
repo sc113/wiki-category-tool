@@ -8,7 +8,7 @@ Template Review Dialog Module
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QPlainTextEdit, QDialogButtonBox, QFrame, QGroupBox, QWidget,
-    QRadioButton, QButtonGroup, QSizePolicy
+    QRadioButton, QButtonGroup, QSizePolicy, QToolButton
 )
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextOption
@@ -184,6 +184,38 @@ class TemplateReviewDialog(QDialog):
             'editor_selection': '#3e8ea6',
         }
 
+    def _create_toggle_button(self) -> QToolButton:
+        pal = self._review_palette()
+        btn = QToolButton(self)
+        btn.setAutoRaise(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedSize(18, 18)
+        btn.setText('▾')
+        btn.setToolTip(self._t('ui.template_review.toggle_block'))
+        try:
+            btn.setStyleSheet(
+                "QToolButton { "
+                f"color:{pal['header_text']}; background:transparent; border:none; "
+                "border-radius:4px; padding:0; margin:0; font-size:13px; font-weight:600; } "
+                "QToolButton:hover { background:rgba(127, 127, 127, 0.14); }"
+            )
+        except Exception:
+            pass
+        return btn
+
+    def _set_toggle_button_state(self, button, expanded: bool) -> None:
+        if button is None:
+            return
+        try:
+            button.setText('▾' if expanded else '▸')
+            button.setToolTip(
+                self._t('ui.template_review.toggle_block')
+                if expanded
+                else self._t('ui.template_review.expand_block')
+            )
+        except Exception:
+            pass
+
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
         self.setWindowTitle(self._t('ui.template_review.window_title'))
@@ -301,9 +333,7 @@ class TemplateReviewDialog(QDialog):
         header3_layout = QHBoxLayout()
         header3_layout.setContentsMargins(0, 0, 0, 0)
         header3_layout.addWidget(QLabel(self._t('ui.template_review.manual_edit')))
-        self.btn_collapse_edit = QPushButton('−')
-        self.btn_collapse_edit.setFixedSize(20, 20)
-        self.btn_collapse_edit.setToolTip(self._t('ui.template_review.toggle_block'))
+        self.btn_collapse_edit = self._create_toggle_button()
         header3_layout.addWidget(self.btn_collapse_edit)
         header3_layout.addStretch()
         layout.addLayout(header3_layout)
@@ -537,9 +567,7 @@ class TemplateReviewDialog(QDialog):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.addWidget(QLabel(f'<b>{title}:</b>'))
 
-        btn = QPushButton('−')
-        btn.setFixedSize(20, 20)
-        btn.setToolTip(self._t('ui.template_review.toggle_block'))
+        btn = self._create_toggle_button()
         btn.clicked.connect(lambda: self._toggle_block(lbl, btn))
         header_layout.addWidget(btn)
         header_layout.addStretch()
@@ -616,19 +644,16 @@ class TemplateReviewDialog(QDialog):
                 # Сворачивание
                 start_height = widget.height()
                 end_height = 0
-                final_button_text = '+'
-                final_tooltip = self._t('ui.template_review.expand_block')
+                final_expanded = False
             else:
                 # Разворачивание
                 widget.show()
                 widget.adjustSize()
                 start_height = 0
                 end_height = widget.sizeHint().height()
-                final_button_text = '−'
-                final_tooltip = self._t('ui.template_review.toggle_block')
+                final_expanded = True
                 widget.setMaximumHeight(0)
-                button.setText('−')
-                button.setToolTip(self._t('ui.template_review.toggle_block'))
+                self._set_toggle_button_state(button, True)
 
             # Создаем анимацию
             animation = QPropertyAnimation(widget, b"maximumHeight")
@@ -651,16 +676,14 @@ class TemplateReviewDialog(QDialog):
                     widget.hide()
                     # Восстанавливаем максимальную высоту
                     widget.setMaximumHeight(MAX_WIDGET_HEIGHT)
-                    button.setText(final_button_text)
-                    button.setToolTip(final_tooltip)
+                    self._set_toggle_button_state(button, final_expanded)
                     QTimer.singleShot(
                         RESIZE_DELAY_MS, self._auto_shrink_if_needed)
                 else:
                     # При разворачивании восстанавливаем высоту, потом обновляем
                     # Восстанавливаем максимальную высоту
                     widget.setMaximumHeight(MAX_WIDGET_HEIGHT)
-                    button.setText(final_button_text)
-                    button.setToolTip(final_tooltip)
+                    self._set_toggle_button_state(button, final_expanded)
                     widget.updateGeometry()
                     QTimer.singleShot(
                         RESIZE_DELAY_MS, self._auto_resize_if_needed)
@@ -677,14 +700,12 @@ class TemplateReviewDialog(QDialog):
             # Fallback к мгновенному изменению
             if collapse:
                 widget.hide()
-                button.setText('+')
-                button.setToolTip(self._t('ui.template_review.expand_block'))
+                self._set_toggle_button_state(button, False)
                 self._auto_shrink_if_needed()
             else:
                 widget.show()
                 widget.setMaximumHeight(MAX_WIDGET_HEIGHT)
-                button.setText('−')
-                button.setToolTip(self._t('ui.template_review.toggle_block'))
+                self._set_toggle_button_state(button, True)
                 self._auto_resize_if_needed()
 
     def _animate_collapse(self, widget, button):

@@ -61,7 +61,7 @@ class RenameTab(QWidget):
         self._last_theme_mode = ''
         self._rename_log_cols_user_resized = False
         self._rename_log_cols_auto_applying = False
-        self._rename_log_col_ratios = (0.09, 0.13, 0.42, 0.22, 0.14)
+        self._rename_log_col_ratios = (0.52, 0.28, 0.20)
         
         # Создание UI
         self.setup_ui()
@@ -562,6 +562,9 @@ class RenameTab(QWidget):
                     background: #d7eaf9;
                     color: #102a43;
                 }
+                QTreeWidget#renameLogTree QHeaderView {
+                    background: #e7f0f7;
+                }
                 QTreeWidget#renameLogTree QHeaderView::section {
                     background: #e7f0f7;
                     color: #1e4763;
@@ -584,6 +587,9 @@ class RenameTab(QWidget):
                     background: #3b4656;
                     color: #f2f6fb;
                 }
+                QTreeWidget#renameLogTree QHeaderView {
+                    background: #2a3340;
+                }
                 QTreeWidget#renameLogTree QHeaderView::section {
                     background: #2a3340;
                     color: #e6edf6;
@@ -605,6 +611,9 @@ class RenameTab(QWidget):
                 QTreeWidget#renameLogTree::item:selected {
                     background: rgba(82, 148, 168, 0.55);
                     color: #f2fcff;
+                }
+                QTreeWidget#renameLogTree QHeaderView {
+                    background: #144055;
                 }
                 QTreeWidget#renameLogTree QHeaderView::section {
                     background: #144055;
@@ -646,8 +655,6 @@ class RenameTab(QWidget):
         """Задает стартовые ширины и разрешает ручной ресайз всех колонок, кроме «Тип»."""
         try:
             hdr = self.rename_log_tree.header()
-            fm = self.rename_log_tree.fontMetrics()
-            header_fm = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else fm
             try:
                 hdr.setStretchLastSection(False)
                 hdr.setMinimumSectionSize(28)
@@ -655,34 +662,22 @@ class RenameTab(QWidget):
                 pass
             try:
                 hdr.setSectionResizeMode(0, QHeaderView.Interactive)
-                self.rename_log_tree.setColumnWidth(
-                    0,
-                    max(
-                        72,
-                        fm.horizontalAdvance('00:00:00') + 12,
-                        header_fm.horizontalAdvance(self._t('ui.time', 'Time')) + 14,
-                    ),
-                )
+                self.rename_log_tree.setColumnWidth(0, self._rename_log_time_width())
             except Exception:
                 pass
             try:
                 hdr.setSectionResizeMode(1, QHeaderView.Fixed)
+                header_fm = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else self.rename_log_tree.fontMetrics()
                 self.rename_log_tree.setColumnWidth(1, max(46, header_fm.horizontalAdvance(self._t('ui.type', 'Type')) + 14))
             except Exception:
                 pass
             try:
                 hdr.setSectionResizeMode(2, QHeaderView.Interactive)
-                self.rename_log_tree.setColumnWidth(
-                    2,
-                    max(
-                        118,
-                        fm.horizontalAdvance(self._t('ui.skipped', 'Skipped')) + 42,
-                        header_fm.horizontalAdvance(self._t('ui.status', 'Status')) + 18,
-                    ),
-                )
+                self.rename_log_tree.setColumnWidth(2, self._rename_log_status_width())
             except Exception:
                 pass
             try:
+                header_fm = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else self.rename_log_tree.fontMetrics()
                 hdr.setSectionResizeMode(3, QHeaderView.Interactive)
                 hdr.setSectionResizeMode(4, QHeaderView.Interactive)
                 hdr.setSectionResizeMode(5, QHeaderView.Interactive)
@@ -702,6 +697,46 @@ class RenameTab(QWidget):
                 pass
         except Exception:
             pass
+
+    def _rename_log_time_width(self) -> int:
+        tree = getattr(self, 'rename_log_tree', None)
+        if tree is None:
+            return 60
+        try:
+            fm = tree.fontMetrics()
+            hdr = tree.header()
+            header_fm = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else fm
+            return max(
+                60,
+                fm.horizontalAdvance('00:00:00') + 6,
+                header_fm.horizontalAdvance(self._t('ui.time', 'Time')) + 10,
+            )
+        except Exception:
+            return 60
+
+    def _rename_log_status_width(self) -> int:
+        tree = getattr(self, 'rename_log_tree', None)
+        if tree is None:
+            return 104
+        try:
+            fm = tree.fontMetrics()
+            hdr = tree.header()
+            header_fm = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else fm
+            status_samples = (
+                f"⚠️ {self._t('ui.not_found', 'Not found')}",
+                f"⏭️ {self._t('ui.skipped', 'Skipped')}",
+                f"✅ {self._t('ui.success', 'Success')}",
+                f"ℹ️ {self._t('ui.info', 'Info')}",
+                f"❌ {self._t('ui.error', 'Error')}",
+            )
+            sample_w = max(fm.horizontalAdvance(text) for text in status_samples)
+            return max(
+                104,
+                sample_w + 18,
+                header_fm.horizontalAdvance(self._t('ui.status', 'Status')) + 14,
+            )
+        except Exception:
+            return 104
 
     def _schedule_rename_log_autofit(self):
         if getattr(self, '_rename_log_cols_user_resized', False):
@@ -733,22 +768,22 @@ class RenameTab(QWidget):
             type_width = int(tree.columnWidth(1))
         except Exception:
             type_width = 46
-        remaining = max(0, int(available - type_width))
+        time_width = self._rename_log_time_width()
+        status_width = self._rename_log_status_width()
+        remaining = max(0, int(available - type_width - time_width - status_width))
         if remaining <= 0:
             return
 
         ratios = tuple(getattr(self, '_rename_log_col_ratios', ()) or ())
-        if len(ratios) != 5:
-            ratios = (0.09, 0.13, 0.42, 0.22, 0.14)
+        if len(ratios) != 3:
+            ratios = (0.52, 0.28, 0.20)
 
         min_ws = {
-            0: 72,
-            2: 118,
             3: 280,
             4: 220,
             5: 160,
         }
-        cols = (0, 2, 3, 4, 5)
+        cols = (3, 4, 5)
         widths = {
             col: max(min_ws[col], int(round(float(remaining) * float(ratio))))
             for col, ratio in zip(cols, ratios)
@@ -771,6 +806,8 @@ class RenameTab(QWidget):
 
         self._rename_log_cols_auto_applying = True
         try:
+            self.rename_log_tree.setColumnWidth(0, int(time_width))
+            self.rename_log_tree.setColumnWidth(2, int(status_width))
             for col in cols:
                 self.rename_log_tree.setColumnWidth(col, max(min_ws[col], int(widths[col])))
         finally:
