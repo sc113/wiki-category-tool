@@ -18,6 +18,7 @@ from ...constants import PREFIX_TOOLTIP, REQUEST_HEADERS
 from ...core.api_client import WikimediaAPIClient, REQUEST_SESSION, _rate_wait
 from ...core.localization import translate_key
 from ...utils import debug
+from ...workers.category_fetch_worker import CategoryFetchWorker
 from .ui_helpers import add_info_button, pick_file, open_from_edit, log_message
 
 
@@ -52,6 +53,7 @@ class CategorySourcePanel(QGroupBox):
         super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
+        self._fetch_worker = None
         if _GROUP_STYLE:
             self.setStyleSheet(_GROUP_STYLE)
         self._setup_ui(
@@ -550,6 +552,11 @@ class CategorySourcePanel(QGroupBox):
             'replace_list_btn',
             'append_list_btn',
             'fetch_mode_combo',
+            'open_petscan_btn',
+            'cat_edit',
+            'depth_spin',
+            'depth_plus_btn',
+            'depth_minus_btn',
         ):
             try:
                 getattr(self, control_name).setEnabled(bool(enabled))
@@ -580,6 +587,19 @@ class CategorySourcePanel(QGroupBox):
         return cat_prefix + category
 
     def fetch_titles(self, *, mode: str | None = None, append: bool = False) -> None:
+        worker = getattr(self, '_fetch_worker', None)
+        try:
+            if worker is not None and worker.isRunning():
+                self._log(
+                    self._t(
+                        'ui.source.fetch_busy',
+                        'Category reading is already running. Please wait for the current request to finish.',
+                    )
+                )
+                return
+        except Exception:
+            pass
+
         category = self.cat_edit.text().strip()
         if not category:
             QMessageBox.warning(
@@ -594,53 +614,94 @@ class CategorySourcePanel(QGroupBox):
         selected_mode = mode or self._get_selected_fetch_mode()
 
         try:
-            self._set_fetch_controls_enabled(False)
             cat_full = self._resolve_category_title(fam, lang, category)
         except Exception:
-            self._set_fetch_controls_enabled(False)
             cat_full = category
 
         depth = self.depth_spin.value()
-        api_client = WikimediaAPIClient()
-
-        try:
-            titles, stats = self._fetch_titles_for_mode(
-                api_client,
+        self._set_fetch_controls_enabled(False)
+        self._log(
+            self._t(
+                'ui.source.fetch_started_background',
+                'Reading category "{category}" in background (mode: {mode}, depth: {depth})...',
+            ).format(
                 category=cat_full,
-                lang=lang,
-                fam=fam,
+                mode=self._get_fetch_mode_label(selected_mode),
                 depth=depth,
-                mode=selected_mode,
             )
-            if titles:
-                self._replace_or_append_titles(titles, append=append)
-                self._log(
-                    self._t(
-                        'ui.source.fetch_result_appended' if append else 'ui.source.fetch_result_replaced',
-                        'List appended: {count} (mode: {mode}, categories: {categories}, others: {non_categories}, depth: {depth})'
-                        if append else
-                        'List replaced: {count} (mode: {mode}, categories: {categories}, others: {non_categories}, depth: {depth})',
-                    ).format(
-                        count=len(titles),
-                        mode=self._get_fetch_mode_label(selected_mode),
-                        categories=stats['categories'],
-                        non_categories=stats['non_categories'],
-                        depth=depth,
-                    )
-                )
-            else:
-                self._log(
-                    self._t(
-                        'ui.source.fetch_result_empty',
-                        'Nothing was found for the selected mode.',
-                    )
-                )
-        except Exception as exc:
+        )
+
+        worker = CategoryFetchWorker(
+            category=cat_full,
+            lang=lang,
+            family=fam,
+            depth=depth,
+            mode=selected_mode,
+        )
+        worker.progress.connect(self._log)
+        worker.result_ready.connect(
+            lambda titles, stats, _append=append, _mode=selected_mode, _depth=depth: self._on_fetch_titles_ready(
+                titles,
+                stats,
+                append=_append,
+                mode=_mode,
+                depth=_depth,
+            )
+        )
+        worker.failed.connect(self._on_fetch_titles_failed)
+        worker.finished.connect(self._on_fetch_titles_finished)
+        self._fetch_worker = worker
+        worker.start()
+
+    def _on_fetch_titles_ready(
+        self,
+        titles: list[str],
+        stats: dict[str, int],
+        *,
+        append: bool,
+        mode: str,
+        depth: int,
+    ) -> None:
+        if titles:
+            self._replace_or_append_titles(list(titles), append=append)
             self._log(
-                self._t('ui.source.api_error', 'API error: {error}').format(error=exc)
+                self._t(
+                    'ui.source.fetch_result_appended' if append else 'ui.source.fetch_result_replaced',
+                    'List appended: {count} (mode: {mode}, categories: {categories}, others: {non_categories}, depth: {depth})'
+                    if append else
+                    'List replaced: {count} (mode: {mode}, categories: {categories}, others: {non_categories}, depth: {depth})',
+                ).format(
+                    count=len(titles),
+                    mode=self._get_fetch_mode_label(mode),
+                    categories=int((stats or {}).get('categories', 0)),
+                    non_categories=int((stats or {}).get('non_categories', 0)),
+                    depth=depth,
+                )
             )
-        finally:
-            self._set_fetch_controls_enabled(True)
+        else:
+            self._log(
+                self._t(
+                    'ui.source.fetch_result_empty',
+                    'Nothing was found for the selected mode.',
+                )
+            )
+
+    def _on_fetch_titles_failed(self, message: str) -> None:
+        text = str(message or '').strip()
+        if text:
+            self._log(text)
+            return
+        self._log(self._t('ui.source.api_error', 'API error: {error}'))
+
+    def _on_fetch_titles_finished(self) -> None:
+        self._set_fetch_controls_enabled(True)
+        worker = getattr(self, '_fetch_worker', None)
+        self._fetch_worker = None
+        try:
+            if worker is not None:
+                worker.deleteLater()
+        except Exception:
+            pass
 
     def _fetch_titles_for_mode(
         self,

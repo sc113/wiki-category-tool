@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox, QPushButton, QToolButton, QSizePolicy, QProgressBar,
     QMessageBox, QCheckBox, QGroupBox
 )
-from PySide6.QtCore import Qt, Signal, QUrl, QEvent
+from PySide6.QtCore import Qt, Signal, QUrl, QEvent, QTimer
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QHeaderView
 
@@ -59,6 +59,9 @@ class RenameTab(QWidget):
         self.current_lang = None
         self.current_family = None
         self._last_theme_mode = ''
+        self._rename_log_cols_user_resized = False
+        self._rename_log_cols_auto_applying = False
+        self._rename_log_col_ratios = (0.09, 0.13, 0.42, 0.22, 0.14)
         
         # Создание UI
         self.setup_ui()
@@ -417,8 +420,19 @@ class RenameTab(QWidget):
         # Дерево лога вместо QTextEdit
         self.rename_log_tree = init_log_tree(self)
         self.rename_log_tree.setObjectName('renameLogTree')
+        try:
+            self.rename_log_tree.setProperty('_wct_disable_auto_expand', True)
+        except Exception:
+            pass
         self._configure_log_header()
+        try:
+            self.rename_log_tree.header().sectionResized.connect(
+                self._on_rename_log_header_section_resized
+            )
+        except Exception:
+            pass
         self._apply_rename_log_tree_theme()
+        self._schedule_rename_log_autofit()
 
         from ..widgets.ui_helpers import create_tree_log_wrap
         rename_wrap = create_tree_log_wrap(self, self.rename_log_tree, with_header=False)
@@ -609,6 +623,13 @@ class RenameTab(QWidget):
             if current_theme != self._last_theme_mode:
                 self._last_theme_mode = current_theme
                 self._apply_rename_log_tree_theme()
+            self._schedule_rename_log_autofit()
+
+    def resizeEvent(self, event):
+        try:
+            super().resizeEvent(event)
+        finally:
+            self._schedule_rename_log_autofit()
 
     def changeEvent(self, event):
         try:
@@ -622,36 +643,148 @@ class RenameTab(QWidget):
                 self._apply_rename_log_tree_theme()
 
     def _configure_log_header(self):
-        """Растягивает полезные колонки лога на всю ширину, с адаптацией при сжатии окна."""
+        """Задает стартовые ширины и разрешает ручной ресайз всех колонок, кроме «Тип»."""
         try:
             hdr = self.rename_log_tree.header()
             fm = self.rename_log_tree.fontMetrics()
+            header_fm = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else fm
             try:
-                hdr.setSectionResizeMode(0, QHeaderView.Fixed)
-                self.rename_log_tree.setColumnWidth(0, fm.horizontalAdvance('00:00:00') + 8)
+                hdr.setStretchLastSection(False)
+                hdr.setMinimumSectionSize(28)
+            except Exception:
+                pass
+            try:
+                hdr.setSectionResizeMode(0, QHeaderView.Interactive)
+                self.rename_log_tree.setColumnWidth(
+                    0,
+                    max(
+                        72,
+                        fm.horizontalAdvance('00:00:00') + 12,
+                        header_fm.horizontalAdvance(self._t('ui.time', 'Time')) + 14,
+                    ),
+                )
             except Exception:
                 pass
             try:
                 hdr.setSectionResizeMode(1, QHeaderView.Fixed)
-                self.rename_log_tree.setColumnWidth(1, max(40, fm.horizontalAdvance(self._t('ui.type', 'Type')) + 14))
+                self.rename_log_tree.setColumnWidth(1, max(46, header_fm.horizontalAdvance(self._t('ui.type', 'Type')) + 14))
             except Exception:
                 pass
             try:
-                hdr.setSectionResizeMode(2, QHeaderView.Fixed)
-                self.rename_log_tree.setColumnWidth(2, max(84, fm.horizontalAdvance(self._t('ui.skipped', 'Skipped')) + 20))
+                hdr.setSectionResizeMode(2, QHeaderView.Interactive)
+                self.rename_log_tree.setColumnWidth(
+                    2,
+                    max(
+                        118,
+                        fm.horizontalAdvance(self._t('ui.skipped', 'Skipped')) + 42,
+                        header_fm.horizontalAdvance(self._t('ui.status', 'Status')) + 18,
+                    ),
+                )
             except Exception:
                 pass
-            for col in (3, 4, 5):
-                try:
-                    hdr.setSectionResizeMode(col, QHeaderView.Stretch)
-                except Exception:
-                    pass
             try:
-                hdr.setStretchLastSection(True)
+                hdr.setSectionResizeMode(3, QHeaderView.Interactive)
+                hdr.setSectionResizeMode(4, QHeaderView.Interactive)
+                hdr.setSectionResizeMode(5, QHeaderView.Interactive)
+                self.rename_log_tree.setColumnWidth(
+                    3,
+                    max(280, header_fm.horizontalAdvance(self._t('ui.action_or_title', 'Action or title')) + 28),
+                )
+                self.rename_log_tree.setColumnWidth(
+                    4,
+                    max(220, header_fm.horizontalAdvance(self._t('ui.page', 'Page')) + 28),
+                )
+                self.rename_log_tree.setColumnWidth(
+                    5,
+                    max(160, header_fm.horizontalAdvance(self._t('ui.source', 'Source')) + 28),
+                )
             except Exception:
                 pass
         except Exception:
             pass
+
+    def _schedule_rename_log_autofit(self):
+        if getattr(self, '_rename_log_cols_user_resized', False):
+            return
+        try:
+            QTimer.singleShot(0, self._fit_rename_log_columns_to_tree)
+            QTimer.singleShot(120, self._fit_rename_log_columns_to_tree)
+        except Exception:
+            pass
+
+    def _fit_rename_log_columns_to_tree(self):
+        if getattr(self, '_rename_log_cols_user_resized', False):
+            return
+        tree = getattr(self, 'rename_log_tree', None)
+        if tree is None:
+            return
+        try:
+            if not tree.isVisible():
+                return
+        except Exception:
+            pass
+        try:
+            available = int(tree.viewport().width())
+        except Exception:
+            available = 0
+        if available <= 0:
+            return
+        try:
+            type_width = int(tree.columnWidth(1))
+        except Exception:
+            type_width = 46
+        remaining = max(0, int(available - type_width))
+        if remaining <= 0:
+            return
+
+        ratios = tuple(getattr(self, '_rename_log_col_ratios', ()) or ())
+        if len(ratios) != 5:
+            ratios = (0.09, 0.13, 0.42, 0.22, 0.14)
+
+        min_ws = {
+            0: 72,
+            2: 118,
+            3: 280,
+            4: 220,
+            5: 160,
+        }
+        cols = (0, 2, 3, 4, 5)
+        widths = {
+            col: max(min_ws[col], int(round(float(remaining) * float(ratio))))
+            for col, ratio in zip(cols, ratios)
+        }
+
+        total = int(sum(widths.values()))
+        if total < remaining:
+            widths[3] += int(remaining - total)
+        elif total > remaining:
+            excess = int(total - remaining)
+            for col in (3, 4, 5, 2, 0):
+                if excess <= 0:
+                    break
+                can_take = max(0, int(widths[col] - min_ws[col]))
+                if can_take <= 0:
+                    continue
+                take = min(can_take, excess)
+                widths[col] -= take
+                excess -= take
+
+        self._rename_log_cols_auto_applying = True
+        try:
+            for col in cols:
+                self.rename_log_tree.setColumnWidth(col, max(min_ws[col], int(widths[col])))
+        finally:
+            self._rename_log_cols_auto_applying = False
+
+    def _on_rename_log_header_section_resized(self, _index: int, old_size: int, new_size: int):
+        if getattr(self, '_rename_log_cols_auto_applying', False):
+            return
+        try:
+            if int(old_size) == int(new_size):
+                return
+        except Exception:
+            pass
+        self._rename_log_cols_user_resized = True
 
     def _on_title_regex_changed(self, _=None):
         """Проверяет валидность регулярного выражения и подсвечивает поле."""

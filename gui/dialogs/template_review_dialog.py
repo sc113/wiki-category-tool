@@ -98,6 +98,92 @@ class TemplateReviewDialog(QDialog):
         except Exception:
             return text
 
+    def _theme_mode(self) -> str:
+        try:
+            parent = self.parent()
+        except Exception:
+            parent = None
+        try:
+            getter = getattr(parent, '_theme_mode', None)
+            if callable(getter):
+                return str(getter() or 'teal').strip().lower()
+        except Exception:
+            pass
+        try:
+            raw = str(getattr(parent, '_theme_mode', 'teal') or 'teal').strip().lower()
+            return raw or 'teal'
+        except Exception:
+            return 'teal'
+
+    def _is_light_theme(self) -> bool:
+        mode = self._theme_mode()
+        return mode == 'light' or mode.startswith('light')
+
+    def _is_dark_black_theme(self) -> bool:
+        mode = self._theme_mode()
+        return mode == 'dark' or mode.startswith('dark')
+
+    def _review_palette(self) -> dict[str, str]:
+        if self._is_light_theme():
+            return {
+                'header_bg': '#f8fafc',
+                'header_border': '#e5e7eb',
+                'header_text': '#1f2f3a',
+                'link': '#1d4ed8',
+                'old_bg': '#f6f8fa',
+                'old_border': '#e1e4e8',
+                'new_bg': '#ecfdf5',
+                'new_border': '#d1fae5',
+                'block_text': '#1f2937',
+                'old_highlight': '#8b0000',
+                'new_highlight': '#0b6623',
+                'group_border': '#cbd5e1',
+                'hint_text': '#6b7280',
+                'editor_bg': '#ffffff',
+                'editor_border': '#cbd5e1',
+                'editor_text': '#13222d',
+                'editor_selection': '#a9cdef',
+            }
+        if self._is_dark_black_theme():
+            return {
+                'header_bg': '#1d2430',
+                'header_border': '#4b5a6c',
+                'header_text': '#e7eef7',
+                'link': '#8cc8ff',
+                'old_bg': '#232b36',
+                'old_border': '#47586a',
+                'new_bg': '#18352f',
+                'new_border': '#35685c',
+                'block_text': '#dce6ef',
+                'old_highlight': '#ff8fa3',
+                'new_highlight': '#7ee787',
+                'group_border': '#5a6472',
+                'hint_text': '#97a3b4',
+                'editor_bg': '#1b2230',
+                'editor_border': '#49576a',
+                'editor_text': '#ecf2f8',
+                'editor_selection': '#6f8198',
+            }
+        return {
+            'header_bg': '#113448',
+            'header_border': 'rgba(115, 170, 182, 0.55)',
+            'header_text': '#e8f6f9',
+            'link': '#9fdcff',
+            'old_bg': '#123146',
+            'old_border': 'rgba(115, 170, 182, 0.45)',
+            'new_bg': '#153932',
+            'new_border': 'rgba(117, 190, 162, 0.50)',
+            'block_text': '#dceff4',
+            'old_highlight': '#ff98ab',
+            'new_highlight': '#8ce3a1',
+            'group_border': 'rgba(115, 170, 182, 0.50)',
+            'hint_text': '#a1bfca',
+            'editor_bg': '#0c2b3d',
+            'editor_border': 'rgba(115, 170, 182, 0.45)',
+            'editor_text': '#eefbff',
+            'editor_selection': '#3e8ea6',
+        }
+
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
         self.setWindowTitle(self._t('ui.template_review.window_title'))
@@ -238,10 +324,13 @@ class TemplateReviewDialog(QDialog):
 
     def create_dedupe_section(self, layout):
         """Блок предупреждения о дублях и выбор политики дедупликации."""
+        pal = self._review_palette()
         box = QGroupBox(self._t('ui.template_review.duplicate_params'))
         try:
             box.setStyleSheet(
-                "QGroupBox { border:1px solid #f59e0b; border-radius:6px; margin-top: 10px; } "
+                "QGroupBox { "
+                f"border:1px solid {pal['group_border']}; border-radius:6px; margin-top: 10px; "
+                "} "
                 "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
             )
             box.setToolTip(
@@ -259,7 +348,7 @@ class TemplateReviewDialog(QDialog):
             self._t('ui.template_review.duplicate_hint')
         )
         try:
-            hint.setStyleSheet("color:#6b7280;font-size:12px")
+            hint.setStyleSheet(f"color:{pal['hint_text']};font-size:12px")
         except Exception:
             pass
         hint.setWordWrap(True)
@@ -293,6 +382,7 @@ class TemplateReviewDialog(QDialog):
 
     def create_header_section(self, layout):
         """Создание header секции с информацией о переименовании"""
+        pal = self._review_palette()
         # Определяем family и lang из контекста (можно передать в request_data)
         family = self.request_data.get('family', 'wikipedia')
         lang = self.request_data.get('lang', 'ru')
@@ -302,8 +392,8 @@ class TemplateReviewDialog(QDialog):
         header.setObjectName('reviewHeader')
         header.setStyleSheet(
             "QFrame#reviewHeader { "
-            "background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; "
-            "} QLabel { font-size:13px; }"
+            f"background:{pal['header_bg']}; border:1px solid {pal['header_border']}; border-radius:10px; "
+            f"}} QLabel {{ font-size:13px; color:{pal['header_text']}; }}"
         )
 
         hlay = QVBoxLayout(header)
@@ -340,6 +430,7 @@ class TemplateReviewDialog(QDialog):
 
     def create_template_sections(self, layout):
         """Создание секций с исходным и предлагаемым шаблоном"""
+        pal = self._review_palette()
         # Подготавливаем highlighted версии
         highlighted_old, highlighted_new = self.prepare_highlighted_templates()
         # Вставляем мягкие переносы после разделителей, чтобы узкое окно не разъезжалось
@@ -349,13 +440,14 @@ class TemplateReviewDialog(QDialog):
         # Создаем блоки
         layout.addSpacing(4)
         self._create_template_block(
-            layout, self._t('ui.template_review.source_call'), highlighted_old, '#f6f8fa', '#e1e4e8', 'old')
+            layout, self._t('ui.template_review.source_call'), highlighted_old, pal['old_bg'], pal['old_border'], 'old')
         layout.addSpacing(4)
         self._create_template_block(
-            layout, self._t('ui.template_review.proposed_replacement'), highlighted_new, '#ecfdf5', '#d1fae5', 'new')
+            layout, self._t('ui.template_review.proposed_replacement'), highlighted_new, pal['new_bg'], pal['new_border'], 'new')
 
     def prepare_highlighted_templates(self):
         """Подготовка highlighted версий шаблонов с подсветкой изменений"""
+        pal = self._review_palette()
         esc_tmpl = html.escape(self.template_str)
 
         if self.mode in ('direct', 'locative'):
@@ -369,13 +461,13 @@ class TemplateReviewDialog(QDialog):
             # Подсветка изменений: зеленый цвет для новых значений
             highlighted_old = esc_tmpl.replace(
                 esc_old_direct,
-                f"<span style='color:#8b0000;font-weight:bold'>{esc_old_direct}</span>"
+                f"<span style='color:{pal['old_highlight']};font-weight:bold'>{esc_old_direct}</span>"
             )
 
             proposed_raw = self.template_str.replace(old_direct, new_direct, 1)
             highlighted_new = html.escape(proposed_raw).replace(
                 esc_new_direct,
-                f"<span style='color:#0b6623;font-weight:bold'>{esc_new_direct}</span>"
+                f"<span style='color:{pal['new_highlight']};font-weight:bold'>{esc_new_direct}</span>"
             )
         else:
             # Частичные замены
@@ -389,7 +481,7 @@ class TemplateReviewDialog(QDialog):
             if esc_old_sub:
                 highlighted_old = highlighted_old.replace(
                     esc_old_sub,
-                    f"<span style='color:#8b0000;font-weight:bold'>{esc_old_sub}</span>"
+                    f"<span style='color:{pal['old_highlight']};font-weight:bold'>{esc_old_sub}</span>"
                 )
 
             proposed_template = self.proposed_template or (
@@ -402,7 +494,7 @@ class TemplateReviewDialog(QDialog):
             if esc_new_sub:
                 highlighted_new = highlighted_new.replace(
                     esc_new_sub,
-                    f"<span style='color:#0b6623;font-weight:bold'>{esc_new_sub}</span>"
+                    f"<span style='color:{pal['new_highlight']};font-weight:bold'>{esc_new_sub}</span>"
                 )
 
         return highlighted_old, highlighted_new
@@ -417,9 +509,10 @@ class TemplateReviewDialog(QDialog):
 
     def _create_template_block(self, layout, title: str, content: str, bg_color: str, border_color: str, block_type: str):
         """Создает блок с шаблоном и кнопкой сворачивания"""
+        pal = self._review_palette()
         html_content = (
             f"<div style='font-family:Consolas,\"Courier New\",monospace;background:{bg_color};"
-            f"border:1px solid {border_color};border-radius:6px;padding:2px 8px 2px 8px;margin:2px 0 0 0'>"
+            f"color:{pal['block_text']};border:1px solid {border_color};border-radius:6px;padding:2px 8px 2px 8px;margin:2px 0 0 0'>"
             f"{content}</div>"
         )
 
@@ -468,15 +561,20 @@ class TemplateReviewDialog(QDialog):
 
     def _create_link_label(self, text: str, page_url: str, history_url: str) -> QLabel:
         """Создает QLabel со ссылками на страницу и историю"""
+        pal = self._review_palette()
         label_text = (
-            f"{text} (<a href='{page_url}'>{self._t('ui.template_review.open_link')}</a> · "
-            f"<a href='{history_url}'>{self._t('ui.template_review.history_link')}</a>)"
+            f"{text} (<a href='{page_url}' style='color:{pal['link']}'>{self._t('ui.template_review.open_link')}</a> · "
+            f"<a href='{history_url}' style='color:{pal['link']}'>{self._t('ui.template_review.history_link')}</a>)"
         )
         label = QLabel(label_text)
         label.setTextFormat(Qt.RichText)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextBrowserInteraction)
         label.setOpenExternalLinks(True)
+        try:
+            label.setStyleSheet(f"color:{pal['header_text']}")
+        except Exception:
+            pass
         return label
 
     def _toggle_block(self, widget, button):
@@ -687,6 +785,7 @@ class TemplateReviewDialog(QDialog):
 
     def setup_edit_field(self):
         """Настройка поля для ручного редактирования"""
+        pal = self._review_palette()
         # Устанавливаем начальный текст
         if self.mode in ('direct', 'locative'):
             initial_text = self.template_str.replace(
@@ -727,6 +826,16 @@ class TemplateReviewDialog(QDialog):
         mono.setStyleHint(QFont.Monospace)
         mono.setFixedPitch(True)
         self.edit_field.setFont(mono)
+        try:
+            self.edit_field.setStyleSheet(
+                "QPlainTextEdit { "
+                f"background:{pal['editor_bg']}; color:{pal['editor_text']}; "
+                f"border:1px solid {pal['editor_border']}; border-radius:8px; "
+                f"selection-background-color:{pal['editor_selection']}; "
+                "padding:6px; }"
+            )
+        except Exception:
+            pass
         # Перенос строк внутри редактора
         try:
             self.edit_field.setLineWrapMode(QPlainTextEdit.WidgetWidth)
@@ -741,13 +850,16 @@ class TemplateReviewDialog(QDialog):
 
     def create_control_panel(self, layout):
         """Создание панели управления с кнопками"""
+        pal = self._review_palette()
         # Нижняя панель управления: слева — массовые действия, справа — стандартные кнопки
         controls = QHBoxLayout()
 
         # Группа массовых действий
         mass_group = QGroupBox(self._t('ui.template_review.mass_actions'))
         mass_group.setStyleSheet(
-            "QGroupBox { border: 1px solid lightgray; border-radius: 5px; margin-top: 10px; } "
+            "QGroupBox { "
+            f"border: 1px solid {pal['group_border']}; border-radius: 5px; margin-top: 10px; "
+            "} "
             "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
         )
 

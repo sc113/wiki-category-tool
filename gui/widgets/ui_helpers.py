@@ -1141,18 +1141,18 @@ def _strip_template_source_prefix(widget, value: str) -> str:
     return text
 
 
-def _build_mode_tooltip(system: bool, mode: str, object_type: str | None) -> str:
+def _build_mode_tooltip(widget, system: bool, mode: str, object_type: str | None) -> str:
     """Формирует понятную подсказку для колонки «Тип»."""
     try:
         if system:
-            return _t(None, 'ui.log.tooltip.system', '⚙️ Service process line (without direct page edit).')
+            return _t(widget, 'ui.log.tooltip.system', '⚙️ Service process line (without direct page edit).')
         if object_type == 'template':
             if mode == 'auto':
-                return _t(None, 'ui.log.tooltip.template_auto', '⚡ Template parameter change with auto-approval.')
-            return _t(None, 'ui.log.tooltip.template_manual', '✍️ Template parameter change with manual confirmation.')
-        return _t(None, 'ui.log.tooltip.direct', '📝 Direct category link edit in page text.')
+                return _t(widget, 'ui.log.tooltip.template_auto', '⚡ Template parameter change with auto-approval.')
+            return _t(widget, 'ui.log.tooltip.template_manual', '✍️ Template parameter change with manual confirmation.')
+        return _t(widget, 'ui.log.tooltip.direct', '📝 Direct category link edit in page text.')
     except Exception:
-        return _t(None, 'ui.log.tooltip.operation_type', 'Operation type.')
+        return _t(widget, 'ui.log.tooltip.operation_type', 'Operation type.')
 
 
 def _build_status_tooltip(tree: QTreeWidget, status: str, title: str, source: str | None,
@@ -1268,7 +1268,7 @@ def init_log_tree(parent_widget) -> QTreeWidget:
         hdr = tree.header()
         try:
             hdr.setStretchLastSection(False)
-            hdr.setMinimumSectionSize(1)
+            hdr.setMinimumSectionSize(28)
             try:
                 hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             except Exception:
@@ -1277,45 +1277,46 @@ def init_log_tree(parent_widget) -> QTreeWidget:
                 hdr.setSectionResizeMode(i, QHeaderView.Interactive)
         except Exception:
             pass
-        # Фиксируем базовые узкие столбцы
+        # Базовые ширины: все колонки можно двигать, кроме «Тип».
         try:
-            # Время — фиксированная ширина по формату 00:00:00 (ровно по цифрам)
             from PySide6.QtCore import Qt as _Qt
-            hdr.setSectionResizeMode(0, QHeaderView.Fixed)
             fm0 = tree.fontMetrics()
-            # Ровно по цифрам +6 px (чуть шире для читабельности)
-            time_w = fm0.horizontalAdvance('00:00:00') + 6
+            fmh = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else fm0
+
+            hdr.setSectionResizeMode(0, QHeaderView.Interactive)
+            time_w = max(
+                72,
+                fm0.horizontalAdvance('00:00:00') + 12,
+                fmh.horizontalAdvance(tree.headerItem().text(0) or '') + 14,
+            )
             tree.setColumnWidth(0, time_w)
 
-            # Сузим колонку «Тип» фиксированной шириной с центровкой (по ширине иконок)
             hdr.setSectionResizeMode(1, QHeaderView.Fixed)
             try:
                 emoji_samples = ['⚡', '✍️', '📝', '⚙️']
                 emoji_w = max(fm0.horizontalAdvance(e) for e in emoji_samples)
             except Exception:
                 emoji_w = 16
-            try:
-                fmh = hdr.fontMetrics() if hasattr(hdr, 'fontMetrics') else tree.fontMetrics()
-                header_txt = (tree.headerItem().text(1) or '')
-                head_w = fmh.horizontalAdvance(header_txt)
-            except Exception:
-                head_w = 18
+            header_txt = tree.headerItem().text(1) or ''
+            head_w = fmh.horizontalAdvance(header_txt)
             t_w = max(emoji_w + 14, head_w + 12)
-            # Минимальная защита, чтобы заголовок «Тип» читался и не слипался с соседним столбцом
             t_w = max(46, t_w)
             tree.setColumnWidth(1, t_w)
             tree.headerItem().setTextAlignment(1, _Qt.AlignHCenter | _Qt.AlignVCenter)
 
-            # Статус — фиксированная ширина по самому длинному тексту статуса
-            hdr.setSectionResizeMode(2, QHeaderView.Fixed)
+            hdr.setSectionResizeMode(2, QHeaderView.Interactive)
             try:
                 fm2 = tree.fontMetrics()
                 status_meta = _status_meta(parent_widget)
                 status_sample = f"{status_meta['skipped']['emoji']} {status_meta['skipped']['label']}"
-                status_w = fm2.horizontalAdvance(status_sample) + 2
-                tree.setColumnWidth(2, max(status_w, tree.columnWidth(2)))
+                header_w = fmh.horizontalAdvance(tree.headerItem().text(2) or '') + 18
+                status_w = fm2.horizontalAdvance(status_sample) + 22
+                tree.setColumnWidth(2, max(118, status_w, header_w))
             except Exception:
                 pass
+            tree.setColumnWidth(3, max(280, fmh.horizontalAdvance(tree.headerItem().text(3) or '') + 28))
+            tree.setColumnWidth(4, max(220, fmh.horizontalAdvance(tree.headerItem().text(4) or '') + 28))
+            tree.setColumnWidth(5, max(160, fmh.horizontalAdvance(tree.headerItem().text(5) or '') + 28))
         except Exception:
             pass
         # Явно выравниваем заголовки по вертикальному центру.
@@ -1494,6 +1495,10 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
         try:
             for col in range(6):
                 row.setText(col, _ui_translate(tree, row.text(col)))
+                if col == 1:
+                    row.setTextAlignment(col, Qt.AlignHCenter | Qt.AlignVCenter)
+                else:
+                    row.setTextAlignment(col, Qt.AlignLeft | Qt.AlignVCenter)
         except Exception:
             pass
         # Цвет статуса
@@ -1505,6 +1510,7 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
         # Tooltips для колонок с эмодзи
         try:
             row.setToolTip(1, _build_mode_tooltip(
+                tree,
                 system, mode, object_type))
             row.setToolTip(2, _build_status_tooltip(
                 tree, status, title or '', source, mode, object_type, system))
@@ -2056,6 +2062,11 @@ def _auto_expand_columns_for_row(tree: QTreeWidget, row: QTreeWidgetItem) -> Non
     Не сужает уже выставленную пользователем ширину и не трогает колонку «Тип».
     """
     try:
+        try:
+            if bool(tree.property('_wct_disable_auto_expand')):
+                return
+        except Exception:
+            pass
         fm = tree.fontMetrics()
         padding = 2
         vp_w = 0
