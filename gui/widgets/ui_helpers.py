@@ -719,6 +719,10 @@ def _detect_log_level(msg: str) -> str:
     low = (msg or '').strip().lower()
     if not low:
         return 'info'
+    # Строки считывания вида "Title: 3 строк(и)" / "Title: 3 line(s)"
+    # не должны менять уровень из-за слов внутри самого заголовка.
+    if re.search(r':\s*\d+\s*(?:строк\(и\)|line\(s\))\s*$', low):
+        return 'info'
     if any(k in low for k in _locale_tokens('ui.log.level.stop', 'stopped', 'cancelled', 'aborted')):
         return 'stop'
     if any(
@@ -780,7 +784,8 @@ def log_message(widget: QTextEdit, msg: str, debug_func=None):
     if debug_func:
         debug_func(msg)
 
-    msg = _ui_translate(widget, msg)
+    if not bool(widget.property('_wct_skip_log_translation')):
+        msg = _ui_translate(widget, msg)
     _init_log_widget_style(widget)
 
     try:

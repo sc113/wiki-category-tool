@@ -125,6 +125,7 @@ class ParseTab(QWidget):
         self.parse_log = QTextEdit()
         self.parse_log.setReadOnly(True)
         self.parse_log.setMinimumHeight(220)
+        self.parse_log.setProperty('_wct_skip_log_translation', True)
 
         mono_font = QFont('Consolas', 9)
         if not mono_font.exactMatch():

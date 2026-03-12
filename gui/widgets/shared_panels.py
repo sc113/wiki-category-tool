@@ -210,6 +210,7 @@ class CategorySourcePanel(QGroupBox):
         layout.addSpacing(6)
 
         self.cat_edit = QLineEdit()
+        self.cat_edit.setProperty('_wct_skip_text_translation', True)
         self.cat_edit.setPlaceholderText(category_placeholder)
 
         category_fetch_layout = QGridLayout()
@@ -375,6 +376,7 @@ class CategorySourcePanel(QGroupBox):
         layout.addSpacing(6)
         layout.addWidget(QLabel(manual_label))
         self.manual_list = QTextEdit()
+        self.manual_list.setProperty('_wct_skip_text_translation', True)
         self.manual_list.setPlaceholderText(manual_placeholder)
         self.manual_list.setMinimumHeight(220)
         layout.addWidget(self.manual_list, 1)
@@ -389,6 +391,7 @@ class CategorySourcePanel(QGroupBox):
         file_layout.addWidget(QLabel(file_caption))
 
         self.in_path = QLineEdit(default_input_path)
+        self.in_path.setProperty('_wct_skip_text_translation', True)
         self.in_path.setMinimumWidth(0)
         file_layout.addWidget(self.in_path, 1)
 

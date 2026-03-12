@@ -1059,14 +1059,18 @@ class MainWindow(QMainWindow):
             for cls in (QLineEdit, QTextEdit, QPlainTextEdit):
                 for w in self.findChildren(cls):
                     try:
+                        skip_text_translation = bool(
+                            w.property('_wct_skip_text_translation')
+                        )
                         if isinstance(w, QLineEdit):
                             txt = w.text()
-                            new_txt = self._translate_value(txt, target)
-                            if new_txt != txt and (
-                                txt in {ru for ru, _ in self._i18n_pairs()} or
-                                txt in {en for _, en in self._i18n_pairs()}
-                            ):
-                                w.setText(new_txt)
+                            if not skip_text_translation:
+                                new_txt = self._translate_value(txt, target)
+                                if new_txt != txt and (
+                                    txt in {ru for ru, _ in self._i18n_pairs()} or
+                                    txt in {en for _, en in self._i18n_pairs()}
+                                ):
+                                    w.setText(new_txt)
                         ph = w.placeholderText()
                         new_ph = self._translate_value(ph, target)
                         if new_ph != ph:
