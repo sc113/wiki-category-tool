@@ -230,8 +230,9 @@ class ParseTab(QWidget):
         )
         self.worker = ParseWorker(
             titles, self.out_path.text(), ns_sel, lang, fam)
+        self.worker.item_processed.connect(self._inc_parse_prog)
         self.worker.progress.connect(
-            lambda message: [self._inc_parse_prog(), log_message(self.parse_log, message, debug)])
+            lambda message: log_message(self.parse_log, message, debug))
         self.worker.finished.connect(self._on_parse_finished)
 
         try:

@@ -3,6 +3,7 @@ Parse worker for reading pages from Wikimedia projects.
 """
 
 import csv
+from PySide6.QtCore import Signal
 
 from .base_worker import BaseWorker
 from ..core.api_client import WikimediaAPIClient
@@ -16,6 +17,8 @@ class ParseWorker(BaseWorker):
     Читает список страниц и сохраняет их содержимое в TSV файл.
     Использует многопоточность для ускорения процесса.
     """
+
+    item_processed = Signal()
     
     def __init__(self, titles, out_path, ns_sel, lang, family):
         """
@@ -115,12 +118,14 @@ class ParseWorker(BaseWorker):
                     self.progress.emit(self._fmt('log.parse.not_found', title=original))
                     # В файл не пишем пустые результаты
                     processed_count += 1
+                    self.item_processed.emit()
                 else:
                     # Записываем с тем названием, которое вернул API (found_key), а не с original
                     title_to_write = found_key if found_key else original
                     self.progress.emit(self._fmt('log.parse.lines_count', title=original, lines=len(lines)))
                     self._write_result_immediately((title_to_write, lines))
                     processed_count += 1
+                    self.item_processed.emit()
         
         # Закрываем файл
         try:
@@ -174,10 +179,13 @@ class ParseWorker(BaseWorker):
                 
             if lines:
                 self.progress.emit(self._fmt('log.parse.lines_count', title=title_decoded, lines=len(lines)))
+                self.item_processed.emit()
                 return (title_decoded, lines)
             else:
                 self.progress.emit(self._fmt('log.parse.not_found', title=title_decoded))
+                self.item_processed.emit()
                 return (title_decoded, [])
         except Exception as e:
             self.progress.emit(self._fmt('log.parse.single_error', title=title, error=e))
+            self.item_processed.emit()
             return None
