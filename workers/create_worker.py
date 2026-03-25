@@ -130,6 +130,7 @@ class CreateWorker(BaseWorker):
                     else:
                         self.stats['exists'] += 1
                         self.progress.emit(self._fmt('log.create.exists', title=title))
+                    self.item_processed.emit()
         except Exception as e:
             self.stats['failed'] += 1
             self.progress.emit(self._fmt('log.create.error', error=e))

@@ -367,8 +367,10 @@ class ReplaceTab(QWidget):
                 minor=minor,
             ),
         )
-        self.rworker.progress.connect(lambda m: [inc_progress(
-            self.replace_label, self.replace_bar), log_message(self.rep_log, m)])
+        self.rworker.item_processed.connect(
+            lambda: inc_progress(self.replace_label, self.replace_bar)
+        )
+        self.rworker.progress.connect(lambda m: log_message(self.rep_log, m))
         self.rworker.finished.connect(self._on_replace_finished)
         self.rworker.start()
 

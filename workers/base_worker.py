@@ -18,11 +18,12 @@ class BaseWorker(QThread):
     - Адаптивный rate limiting с базовым интервалом 0.25 сек и максимальным 2.5 сек
     - Retry логику с экспоненциальным backoff (6 попыток)
     - Распознавание rate limit ошибок
-    - Сигнал progress для отправки сообщений в UI
+    - Сигналы progress/item_processed для отправки сообщений и шагов прогресса в UI
     - Корректную остановку операций
     """
     
     progress = Signal(str)
+    item_processed = Signal()
     
     def __init__(self, username: str, password: str, lang: str, family: str):
         """

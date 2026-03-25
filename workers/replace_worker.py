@@ -117,18 +117,22 @@ class ReplaceWorker(BaseWorker):
                 for row in reader:
                     if self._stop:
                         break
+                    raw_title = row[0] if row and row[0] is not None else ''
+                    title_raw = raw_title.strip().lstrip('\ufeff')
+                    has_title = bool(title_raw)
+
                     if len(row) < 2:
                         if row:
                             self.stats['invalid'] += 1
+                            if has_title:
+                                self.item_processed.emit()
                         continue
 
-                    raw_title = row[0] if row[0] is not None else ''
                     # Нормализуем заголовок и строки: убираем пробелы и возможный BOM
                     try:
                         import html as _html
                     except Exception:
                         _html = None
-                    title_raw = raw_title.strip().lstrip('\ufeff')
                     title = (_html.unescape(title_raw) if _html else title_raw)
                     if not title:
                         self.stats['invalid'] += 1
@@ -161,6 +165,7 @@ class ReplaceWorker(BaseWorker):
                     else:
                         self.stats['missing'] += 1
                         self.progress.emit(self._fmt('log.replace.page_missing', title=title))
+                    self.item_processed.emit()
         except Exception as e:
             self.stats['failed'] += 1
             self.progress.emit(self._fmt('log.replace.tsv_error', error=e))

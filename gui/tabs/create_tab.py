@@ -353,8 +353,10 @@ class CreateTab(QWidget):
             self.create_log,
             self._fmt('log.create.run_started', pages=page_count, lang=lang, family=fam, ns=ns_sel),
         )
-        self.cworker.progress.connect(lambda m: [inc_progress(
-            self.create_label, self.create_bar), log_message(self.create_log, m)])
+        self.cworker.item_processed.connect(
+            lambda: inc_progress(self.create_label, self.create_bar)
+        )
+        self.cworker.progress.connect(lambda m: log_message(self.create_log, m))
         self.cworker.finished.connect(self._on_create_finished)
         self.cworker.start()
 

@@ -2340,6 +2340,10 @@ def init_progress(label_widget, bar_widget, total: int, processed_label: str | N
         if processed_label is None:
             processed_label = _localized_progress_label(label_widget or bar_widget)
         total_val = int(total or 0)
+        try:
+            bar_widget.setProperty('progress_total', total_val)
+        except Exception:
+            pass
         if total_val > 0:
             bar_widget.setMaximum(total_val)
         else:
@@ -2363,17 +2367,25 @@ def inc_progress(label_widget, bar_widget, processed_label: str | None = None) -
     try:
         if processed_label is None:
             processed_label = _localized_progress_label(label_widget or bar_widget)
-        val = bar_widget.value() + 1
+        try:
+            total_val = int(bar_widget.property('progress_total') or 0)
+        except Exception:
+            total_val = 0
+        if total_val <= 0:
+            val = 0
+            display_total = 0
+        else:
+            display_total = total_val
+            val = min(int(bar_widget.maximum() or 0), bar_widget.value() + 1)
         bar_widget.setValue(val)
         try:
             bar_widget.setTextVisible(True)
-            bar_widget.setFormat(f'{processed_label} {val}/{bar_widget.maximum()}')
+            bar_widget.setFormat(f'{processed_label} {val}/{display_total}')
         except Exception:
             pass
         if label_widget is not None:
             try:
-                label_widget.setText(
-                    f'{processed_label} {val}/{bar_widget.maximum()}')
+                label_widget.setText(f'{processed_label} {val}/{display_total}')
             except Exception:
                 pass
     except Exception:
