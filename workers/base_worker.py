@@ -160,6 +160,8 @@ class BaseWorker(QThread):
         target = min(2.5, max(self._save_min_interval, min(2.2, elapsed * 0.55)))
         if target > (self._save_min_interval + 0.05):
             self._save_min_interval = target
+        if elapsed < 5.0:
+            return
         try:
             self.progress.emit(
                 self._fmt('log.base.server_pause', elapsed=elapsed, interval=self._save_min_interval)
