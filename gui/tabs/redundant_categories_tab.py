@@ -22,6 +22,7 @@ from ...utils import (
     default_redundant_category_summary,
     default_redundant_category_multi_summary,
     default_redundant_category_pair_format,
+    resolve_project_language,
 )
 from ...workers.redundant_category_worker import RedundantCategoryWorker
 from ..widgets.shared_panels import CategorySourcePanel, TsvPreviewPanel
@@ -60,6 +61,9 @@ class RedundantCategoriesTab(QWidget):
             return translate_key(key, self._ui_lang(), fallback)
         except Exception:
             return fallback
+
+    def _project_lang(self) -> str:
+        return resolve_project_language(self.parent_window, 'ru')
 
     def setup_ui(self):
         main_layout = QHBoxLayout(self)
@@ -259,7 +263,7 @@ class RedundantCategoriesTab(QWidget):
         single_row.addWidget(QLabel(self._t('ui.comment_for_single_removal', 'Comment for single removal:')))
         self.redundant_summary_single_edit = QLineEdit()
         self.redundant_summary_single_edit.setText(
-            default_redundant_category_summary(self._ui_lang()))
+            default_redundant_category_summary(self._project_lang()))
         self._configure_static_left_text(self.redundant_summary_single_edit)
         single_row.addWidget(self.redundant_summary_single_edit, 1)
         add_info_button(self, single_row, summary_help, inline=True)
@@ -271,7 +275,7 @@ class RedundantCategoriesTab(QWidget):
         )
         self.redundant_summary_multi_edit = QLineEdit()
         self.redundant_summary_multi_edit.setText(
-            default_redundant_category_multi_summary(self._ui_lang()))
+            default_redundant_category_multi_summary(self._project_lang()))
         self._configure_static_left_text(self.redundant_summary_multi_edit)
         multi_row.addWidget(self.redundant_summary_multi_edit, 2)
 
@@ -279,7 +283,7 @@ class RedundantCategoriesTab(QWidget):
         multi_row.addWidget(pair_label)
         self.redundant_pair_format_edit = QLineEdit()
         self.redundant_pair_format_edit.setText(
-            default_redundant_category_pair_format(self._ui_lang()))
+            default_redundant_category_pair_format(self._project_lang()))
         self._configure_static_left_text(self.redundant_pair_format_edit)
         try:
             self.redundant_pair_format_edit.setMaximumWidth(320)

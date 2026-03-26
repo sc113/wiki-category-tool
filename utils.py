@@ -78,6 +78,27 @@ def _current_ui_lang() -> str:
         return 'ru'
 
 
+def resolve_project_language(parent_window=None, fallback: str = 'ru') -> str:
+    """Вернуть язык выбранного wiki-проекта, а не язык интерфейса."""
+    try:
+        auth_tab = getattr(parent_window, 'auth_tab', None)
+        lang_combo = getattr(auth_tab, 'lang_combo', None)
+        if lang_combo is not None:
+            value = str(lang_combo.currentText() or '').strip().lower()
+            if value:
+                return value
+    except Exception:
+        pass
+    try:
+        value = str(getattr(parent_window, 'current_lang', '') or '').strip().lower()
+        if value:
+            return value
+    except Exception:
+        pass
+    value = str(fallback or 'ru').strip().lower()
+    return value or 'ru'
+
+
 def _plural_variant(n: int, lang: str) -> str:
     try:
         value = abs(int(n))
@@ -306,6 +327,54 @@ def default_redundant_category_pair_format(_lang: str) -> str:
         'summary.redundant.pair_format',
         _lang,
         '{link_broad} -> {link_precise}',
+    )
+
+
+def default_redundant_category_dedupe_summary(lang: str) -> str:
+    """Стандартный комментарий для удаления дублей категорий."""
+    return _translate_project_text(
+        'summary.redundant.dedupe',
+        lang,
+        'Removing duplicate categories',
+    )
+
+
+def default_sync_target_action(lang: str, mode: str = 'articles') -> str:
+    """Локализованное действие для summary синхронизации по языку проекта."""
+    mode_key = str(mode or '').strip().lower()
+    is_parent = mode_key == 'subcategories'
+    return _translate_project_text(
+        'summary.sync.target_action.parent_category'
+        if is_parent else 'summary.sync.target_action.category',
+        lang,
+        'parent category' if is_parent else 'category',
+    )
+
+
+def default_sync_summary_template(lang: str) -> str:
+    """Стандартный шаблон комментария для синхронизации категорий."""
+    return _translate_project_text(
+        'summary.sync.template_default',
+        lang,
+        'Adding {target_action_en} [[{target_category}]] (based on [[{source_lang}:{source_category}]])',
+    )
+
+
+def default_sync_add_category_summary(lang: str) -> str:
+    """Резервный summary для добавления категории в страницу."""
+    return _translate_project_text(
+        'summary.sync.add_category',
+        lang,
+        'Adding category [[{target}]] (based on [[{source_code}:{source_category}]])',
+    )
+
+
+def default_sync_add_parent_category_summary(lang: str) -> str:
+    """Резервный summary для добавления родительской категории."""
+    return _translate_project_text(
+        'summary.sync.add_parent_category',
+        lang,
+        'Adding parent category [[{target}]] (based on [[{source_code}:{source_category}]])',
     )
 
 

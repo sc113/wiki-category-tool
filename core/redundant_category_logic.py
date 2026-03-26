@@ -7,8 +7,9 @@ import csv
 import re
 
 from ..constants import DEFAULT_EN_NS, EN_PREFIX_ALIASES
-from .localization import translate_key, translate_runtime
+from .localization import translate_runtime
 from .namespace_manager import _load_ns_info, get_policy_prefix
+from ..utils import default_redundant_category_dedupe_summary
 
 
 REDUNDANT_MODE_PAIRS = 'pairs'
@@ -330,11 +331,7 @@ def build_comment(
 
 def build_dedupe_comment(lang: str) -> str:
     """Комментарий к правке для режима удаления дублей категорий."""
-    return translate_key(
-        'ui.redundant_category_dedupe_summary',
-        lang or 'ru',
-        'Removing duplicate categories',
-    )
+    return default_redundant_category_dedupe_summary(lang or 'ru')
 
 
 def analyze_page_text(

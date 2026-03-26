@@ -19,6 +19,11 @@ from ..constants import REQUEST_HEADERS
 from ..core.api_client import WikimediaAPIClient
 from ..core.localization import translate_runtime
 from ..core.namespace_manager import get_policy_prefix, strip_ns_prefix
+from ..utils import (
+    default_sync_add_category_summary,
+    default_sync_add_parent_category_summary,
+    default_sync_target_action,
+)
 
 
 def _normalize_space(text: str) -> str:
@@ -1144,13 +1149,7 @@ class CategoryContentSyncWorker(BaseWorker):
         if not template:
             return ""
         mode_key = str(mode or "").strip().lower()
-        target_action = self._t(
-            "ui.sync.target_action.parent_category",
-            "parent category",
-        ) if mode_key == "subcategories" else self._t(
-            "ui.sync.target_action.category",
-            "category",
-        )
+        target_action = default_sync_target_action(self.target_lang, mode_key)
         target_action_en = "parent category" if mode_key == "subcategories" else "category"
         source_base = (source_category_name or "").split(":", 1)[-1].strip()
         target_base = (target_category_name or "").split(":", 1)[-1].strip()
@@ -1169,6 +1168,29 @@ class CategoryContentSyncWorker(BaseWorker):
             "target_page": target_page_title or "",
         }
         return _format_sync_summary(template, context=context)
+
+    def _build_default_summary(
+        self,
+        *,
+        mode: str,
+        target_category_name: str,
+        source_site: pywikibot.Site,
+        source_category_name: str,
+    ) -> str:
+        mode_key = str(mode or "").strip().lower()
+        template = (
+            default_sync_add_parent_category_summary(self.target_lang)
+            if mode_key == "subcategories"
+            else default_sync_add_category_summary(self.target_lang)
+        )
+        return _format_sync_summary(
+            template,
+            context={
+                "target": target_category_name,
+                "source_code": source_site.code,
+                "source_category": source_category_name,
+            },
+        )
 
     def _collect_article_members(
         self, source_cat: pywikibot.Category
@@ -1280,22 +1302,18 @@ class CategoryContentSyncWorker(BaseWorker):
                             target_page_title=target_page.title(),
                         )
                     else:
-                        summary = (
-                            self._fmt(
-                                "log.sync_worker.add_category_summary",
-                                target=target_category_name,
-                                source_code=source_site.code,
-                                source_category=source_category_name,
-                            )
+                        summary = self._build_default_summary(
+                            mode="articles",
+                            target_category_name=target_category_name,
+                            source_site=source_site,
+                            source_category_name=source_category_name,
                         )
                     if not summary:
-                        summary = (
-                            self._fmt(
-                                "log.sync_worker.add_category_summary",
-                                target=target_category_name,
-                                source_code=source_site.code,
-                                source_category=source_category_name,
-                            )
+                        summary = self._build_default_summary(
+                            mode="articles",
+                            target_category_name=target_category_name,
+                            source_site=source_site,
+                            source_category_name=source_category_name,
                         )
                     ok = self._save_with_retry(target_page, new_text, summary, False)
                     if ok:
@@ -1427,22 +1445,18 @@ class CategoryContentSyncWorker(BaseWorker):
                             target_page_title=target_subcat_page.title(),
                         )
                     else:
-                        summary = (
-                            self._fmt(
-                                "log.sync_worker.add_parent_category_summary",
-                                target=target_parent_category_name,
-                                source_code=source_site.code,
-                                source_category=source_category_name,
-                            )
+                        summary = self._build_default_summary(
+                            mode="subcategories",
+                            target_category_name=target_parent_category_name,
+                            source_site=source_site,
+                            source_category_name=source_category_name,
                         )
                     if not summary:
-                        summary = (
-                            self._fmt(
-                                "log.sync_worker.add_parent_category_summary",
-                                target=target_parent_category_name,
-                                source_code=source_site.code,
-                                source_category=source_category_name,
-                            )
+                        summary = self._build_default_summary(
+                            mode="subcategories",
+                            target_category_name=target_parent_category_name,
+                            source_site=source_site,
+                            source_category_name=source_category_name,
                         )
                     ok = self._save_with_retry(target_subcat_page, new_text, summary, False)
                     if ok:

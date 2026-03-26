@@ -3205,6 +3205,9 @@ class MainWindow(QMainWindow):
             if hasattr(tab, 'set_auth_data'):
                 tab.set_auth_data(username, lang, family)
 
+        # Обновляем default summary по языку проекта даже при автологине/загрузке сессии.
+        self._on_lang_change(lang)
+
         # При авторизации обновляем namespace только если нет кэша для текущей пары
         try:
             cache_path = self.namespace_manager._ns_cache_file(

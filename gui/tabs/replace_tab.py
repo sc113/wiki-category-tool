@@ -20,7 +20,7 @@ from PySide6.QtGui import QFont
 
 from ...constants import PREFIX_TOOLTIP
 from ...core.localization import translate_key
-from ...utils import debug, default_summary
+from ...utils import debug, default_summary, resolve_project_language
 from ...workers.replace_worker import ReplaceWorker
 from ...core.pywikibot_config import apply_pwb_config
 from ..widgets.shared_panels import TsvPreviewPanel
@@ -56,6 +56,9 @@ class ReplaceTab(QWidget):
 
     def _ui_lang(self) -> str:
         return getattr(self.parent_window, '_ui_lang', 'ru') if self.parent_window is not None else 'ru'
+
+    def _project_lang(self) -> str:
+        return resolve_project_language(self.parent_window, 'ru')
 
     def _t(self, key: str) -> str:
         return translate_key(key, self._ui_lang(), '')
@@ -135,7 +138,7 @@ class ReplaceTab(QWidget):
         sum_layout.addWidget(QLabel(self._t('ui.edit_summary')))
 
         self.summary_edit = QLineEdit()
-        self.summary_edit.setText(default_summary('ru'))
+        self.summary_edit.setText(default_summary(self._project_lang()))
         sum_layout.addWidget(self.summary_edit)
 
         # Малая правка

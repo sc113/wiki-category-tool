@@ -43,7 +43,11 @@ from PySide6.QtWidgets import (
 from ...core.localization import translate_key
 from ...core.api_client import WikimediaAPIClient
 from ...core.pywikibot_config import apply_pwb_config
-from ...utils import debug
+from ...utils import (
+    debug,
+    default_sync_summary_template,
+    resolve_project_language,
+)
 from ...workers.category_content_sync_worker import (
     CategoryContentSyncPreviewWorker,
     CategoryContentSyncWorker,
@@ -56,6 +60,7 @@ from ..widgets.ui_helpers import (
     create_log_wrap,
     inc_progress,
     init_progress,
+    is_default_summary,
     log_message,
     set_start_stop_ratio,
 )
@@ -115,12 +120,10 @@ class CategoryContentSyncTab(QWidget):
         return self._t("ui.processed_short", "Processed")
 
     def _default_summary_template(self) -> str:
-        return self._t(
-            "ui.sync.summary_template_default",
-            (
-                "Adding {target_action_en} [[{target_category}]] (based on [[{source_lang}:{source_category}]])"
-            ),
-        )
+        return default_sync_summary_template(self._project_lang())
+
+    def _project_lang(self) -> str:
+        return resolve_project_language(self.parent_window, "ru")
 
     @staticmethod
     def _row_key_role() -> int:
@@ -2712,6 +2715,8 @@ class CategoryContentSyncTab(QWidget):
             pass
 
     def update_language(self, lang: str):
+        if is_default_summary(self.summary_edit.text(), default_sync_summary_template):
+            self.summary_edit.setText(default_sync_summary_template(lang))
         self.current_lang = lang
         self._refresh_target_lang_label()
         self._invalidate_preview_state()
