@@ -163,6 +163,7 @@ class ParseTab(QWidget):
         set_start_stop_ratio(self.parse_btn, self.parse_stop_btn, 3)
 
         self.source_panel.set_log_widget(self.parse_log)
+        self.source_panel.set_fetch_progress_widgets(None, self.parse_bar)
 
         h_main.addWidget(self.source_panel, 1)
         h_main.addWidget(right_group, 1)

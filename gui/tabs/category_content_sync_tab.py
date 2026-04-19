@@ -548,6 +548,7 @@ class CategoryContentSyncTab(QWidget):
         layout.addWidget(right_wrap, 5)
 
         self.source_panel.set_log_widget(self.sync_log)
+        self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
         self.source_lang_edit.textChanged.connect(self._update_preview_headers)
         self._bind_preview_invalidation()
         self._update_clear_skipped_button_state()

@@ -56,6 +56,15 @@ class CategorySourcePanel(QGroupBox):
         self._fetch_worker = None
         self._fetch_base_text = ''
         self._fetch_append_mode = False
+        self._fetch_progress_label_widget = None
+        self._fetch_progress_bar_widget = None
+        self._fetch_progress_restore_state = None
+        self._fetch_last_read_count = 0
+        self._fetch_last_read_total = 0
+        self._fetch_active_button = None
+        self._fetch_active_button_text = ''
+        self._fetch_active_button_tooltip = ''
+        self._fetch_stop_requested = False
         if _GROUP_STYLE:
             self.setStyleSheet(_GROUP_STYLE)
         self._setup_ui(
@@ -137,8 +146,10 @@ class CategorySourcePanel(QGroupBox):
 
     def refresh_localized_texts(self) -> None:
         try:
-            self.replace_list_btn.setText(self._t('ui.source.replace_list_short', 'Replace'))
-            self.append_list_btn.setText(self._t('ui.source.append_list_short', 'Append'))
+            if self._fetch_active_button is not self.replace_list_btn:
+                self.replace_list_btn.setText(self._t('ui.source.replace_list_short', 'Read'))
+            if self._fetch_active_button is not self.append_list_btn:
+                self.append_list_btn.setText(self._t('ui.source.append_list_short', 'Append'))
         except Exception:
             pass
         self._refresh_fetch_mode_combo_texts()
@@ -243,7 +254,7 @@ class CategorySourcePanel(QGroupBox):
             pass
 
         self.replace_list_btn = QPushButton(
-            self._t('ui.source.replace_list_short', 'Replace')
+            self._t('ui.source.replace_list_short', 'Read')
         )
         self.replace_list_btn.setObjectName('sourceActionButton')
         self.replace_list_btn.setToolTip(
@@ -418,6 +429,10 @@ class CategorySourcePanel(QGroupBox):
     def set_log_widget(self, log_widget: QTextEdit | None) -> None:
         self.log_widget = log_widget
 
+    def set_fetch_progress_widgets(self, label_widget=None, bar_widget=None) -> None:
+        self._fetch_progress_label_widget = label_widget
+        self._fetch_progress_bar_widget = bar_widget
+
     def set_prefix_controls_visible(self, visible: bool) -> None:
         try:
             self.prefix_row.setVisible(bool(visible))
@@ -520,16 +535,103 @@ class CategorySourcePanel(QGroupBox):
         webbrowser.open_new_tab(petscan_url)
 
     def open_petscan(self) -> None:
-        self.fetch_titles(mode='categories_only', append=False)
+        self.fetch_titles(
+            mode='categories_only',
+            append=False,
+            trigger_button=getattr(self, 'replace_list_btn', None),
+        )
 
     def fetch_category_pages(self) -> None:
-        self.fetch_titles(mode='non_categories_only', append=False)
+        self.fetch_titles(
+            mode='non_categories_only',
+            append=False,
+            trigger_button=getattr(self, 'replace_list_btn', None),
+        )
 
     def fetch_selected_mode_replace(self) -> None:
-        self.fetch_titles(append=False)
+        button = getattr(self, 'replace_list_btn', None)
+        if self._is_fetch_stop_button(button):
+            self.stop_fetch_titles()
+            return
+        self.fetch_titles(append=False, trigger_button=button)
 
     def fetch_selected_mode_append(self) -> None:
-        self.fetch_titles(append=True)
+        button = getattr(self, 'append_list_btn', None)
+        if self._is_fetch_stop_button(button):
+            self.stop_fetch_titles()
+            return
+        self.fetch_titles(append=True, trigger_button=button)
+
+    def _is_fetch_stop_button(self, button) -> bool:
+        if button is None or button is not self._fetch_active_button:
+            return False
+        worker = getattr(self, '_fetch_worker', None)
+        try:
+            return bool(worker is not None and worker.isRunning())
+        except Exception:
+            return False
+
+    def _activate_fetch_stop_button(self, button) -> None:
+        if button is None:
+            button = getattr(self, 'replace_list_btn', None)
+        self._fetch_active_button = button
+        self._fetch_stop_requested = False
+        if button is None:
+            return
+        try:
+            self._fetch_active_button_text = button.text()
+            self._fetch_active_button_tooltip = button.toolTip()
+            button.setText(self._t('ui.stop', 'Stop'))
+            button.setToolTip(
+                self._t(
+                    'ui.source.fetch_stop_tooltip',
+                    'Stop the current category reading request.',
+                )
+            )
+            button.setEnabled(True)
+        except Exception:
+            pass
+        self._sync_source_action_button_widths()
+
+    def _restore_fetch_action_button(self) -> None:
+        button = getattr(self, '_fetch_active_button', None)
+        if button is not None:
+            try:
+                button.setText(str(self._fetch_active_button_text or ''))
+                button.setToolTip(str(self._fetch_active_button_tooltip or ''))
+            except Exception:
+                pass
+        self._fetch_active_button = None
+        self._fetch_active_button_text = ''
+        self._fetch_active_button_tooltip = ''
+        self._fetch_stop_requested = False
+        self._sync_source_action_button_widths()
+
+    def stop_fetch_titles(self) -> None:
+        worker = getattr(self, '_fetch_worker', None)
+        try:
+            running = bool(worker is not None and worker.isRunning())
+        except Exception:
+            running = False
+        if not running:
+            return
+        try:
+            worker.request_stop()
+        except Exception:
+            pass
+        self._fetch_stop_requested = True
+        try:
+            button = getattr(self, '_fetch_active_button', None)
+            if button is not None:
+                button.setEnabled(False)
+        except Exception:
+            pass
+        self._log(
+            self._t(
+                'ui.source.fetch_stop_requested',
+                'Stopping category reading...',
+            )
+        )
 
     def _get_selected_fetch_mode(self) -> str:
         try:
@@ -553,6 +655,7 @@ class CategorySourcePanel(QGroupBox):
         return labels.get(mode, labels['non_categories_only'])
 
     def _set_fetch_controls_enabled(self, enabled: bool) -> None:
+        active_button = getattr(self, '_fetch_active_button', None)
         for control_name in (
             'replace_list_btn',
             'append_list_btn',
@@ -564,9 +667,152 @@ class CategorySourcePanel(QGroupBox):
             'depth_minus_btn',
         ):
             try:
-                getattr(self, control_name).setEnabled(bool(enabled))
+                control = getattr(self, control_name)
+                if not enabled and control is active_button:
+                    control.setEnabled(not bool(self._fetch_stop_requested))
+                    continue
+                control.setEnabled(bool(enabled))
             except Exception:
                 pass
+
+    def _capture_fetch_progress_state(self) -> None:
+        bar = getattr(self, '_fetch_progress_bar_widget', None)
+        if bar is None or self._fetch_progress_restore_state is not None:
+            return
+
+        state = {}
+        for attr_name, getter_name in (
+            ('minimum', 'minimum'),
+            ('maximum', 'maximum'),
+            ('value', 'value'),
+            ('format', 'format'),
+            ('text_visible', 'isTextVisible'),
+        ):
+            try:
+                state[attr_name] = getattr(bar, getter_name)()
+            except Exception:
+                pass
+        try:
+            state['progress_total'] = bar.property('progress_total')
+        except Exception:
+            pass
+
+        label = getattr(self, '_fetch_progress_label_widget', None)
+        if label is not None:
+            try:
+                state['label_text'] = label.text()
+            except Exception:
+                pass
+
+        self._fetch_progress_restore_state = state
+
+    def _restore_fetch_progress_state(self) -> None:
+        state = getattr(self, '_fetch_progress_restore_state', None)
+        if state is None:
+            return
+
+        bar = getattr(self, '_fetch_progress_bar_widget', None)
+        if bar is not None:
+            try:
+                if 'minimum' in state:
+                    bar.setMinimum(int(state['minimum']))
+                if 'maximum' in state:
+                    bar.setMaximum(int(state['maximum']))
+                if 'value' in state:
+                    bar.setValue(int(state['value']))
+                if 'text_visible' in state:
+                    bar.setTextVisible(bool(state['text_visible']))
+                if 'format' in state:
+                    bar.setFormat(str(state['format']))
+                if 'progress_total' in state:
+                    bar.setProperty('progress_total', state.get('progress_total'))
+            except Exception:
+                pass
+
+        label = getattr(self, '_fetch_progress_label_widget', None)
+        if label is not None and 'label_text' in state:
+            try:
+                label.setText(str(state['label_text']))
+            except Exception:
+                pass
+
+        self._fetch_progress_restore_state = None
+        self._fetch_last_read_count = 0
+        self._fetch_last_read_total = 0
+
+    def _format_fetch_progress_count(self, count: int, total: int = 0) -> str:
+        total = max(0, int(total or 0))
+        if total > 0:
+            template = self._t(
+                'ui.source.fetch_progress_bar_total',
+                'Read {count}/{total}',
+            )
+            try:
+                return template.format(count=int(count or 0), total=total)
+            except Exception:
+                pass
+
+        template = self._t('ui.source.fetch_progress_bar', 'Read {count}')
+        try:
+            return template.format(count=int(count or 0))
+        except Exception:
+            label = self._t('ui.source.fetch_progress_read_short', 'Read')
+            return f"{label} {int(count or 0)}"
+
+    def _set_fetch_progress_count(self, count: int, total: int | None = None) -> None:
+        bar = getattr(self, '_fetch_progress_bar_widget', None)
+        if bar is None:
+            return
+
+        count = max(0, int(count or 0))
+        if total is None:
+            total = int(self._fetch_last_read_total or 0)
+        total = max(0, int(total or 0))
+        text = self._format_fetch_progress_count(count, total)
+        try:
+            bar.setTextVisible(True)
+            if total > 0:
+                bar.setMaximum(max(1, count, total))
+            else:
+                bar.setMaximum(max(1, count + 1))
+            bar.setValue(count)
+            bar.setFormat(text)
+            bar.setProperty('progress_total', total or count)
+        except Exception:
+            pass
+
+        label = getattr(self, '_fetch_progress_label_widget', None)
+        if label is not None:
+            try:
+                label.setText(text)
+            except Exception:
+                pass
+
+    def _begin_fetch_progress(self) -> None:
+        self._fetch_last_read_count = 0
+        self._fetch_last_read_total = 0
+        self._capture_fetch_progress_state()
+        self._set_fetch_progress_count(0)
+
+    def _on_fetch_read_progress(self, payload: dict) -> None:
+        try:
+            count = int((payload or {}).get('count', 0) or 0)
+        except Exception:
+            count = 0
+        try:
+            total = int((payload or {}).get('total', 0) or 0)
+        except Exception:
+            total = 0
+        self._fetch_last_read_count = max(int(self._fetch_last_read_count or 0), count)
+        if total > 0:
+            self._fetch_last_read_total = max(
+                int(self._fetch_last_read_total or 0),
+                total,
+            )
+        self._set_fetch_progress_count(
+            self._fetch_last_read_count,
+            self._fetch_last_read_total,
+        )
 
     def _replace_or_append_titles(self, titles: list[str], *, append: bool) -> None:
         new_text = '\n'.join(titles)
@@ -608,7 +854,13 @@ class CategorySourcePanel(QGroupBox):
         cat_prefix = get_policy_prefix(fam, lang, 14, 'Category:')
         return cat_prefix + category
 
-    def fetch_titles(self, *, mode: str | None = None, append: bool = False) -> None:
+    def fetch_titles(
+        self,
+        *,
+        mode: str | None = None,
+        append: bool = False,
+        trigger_button=None,
+    ) -> None:
         worker = getattr(self, '_fetch_worker', None)
         try:
             if worker is not None and worker.isRunning():
@@ -641,9 +893,11 @@ class CategorySourcePanel(QGroupBox):
             cat_full = category
 
         depth = self.depth_spin.value()
+        self._activate_fetch_stop_button(trigger_button)
         self._set_fetch_controls_enabled(False)
         self._fetch_append_mode = bool(append)
         self._fetch_base_text = self.manual_list.toPlainText() if append else ''
+        self._begin_fetch_progress()
         self._log(
             self._t(
                 'ui.source.fetch_started_background',
@@ -663,6 +917,7 @@ class CategorySourcePanel(QGroupBox):
             mode=selected_mode,
         )
         worker.progress.connect(self._log)
+        worker.read_progress.connect(self._on_fetch_read_progress)
         worker.partial_ready.connect(self._on_fetch_titles_partial)
         worker.result_ready.connect(
             lambda titles, stats, _append=append, _mode=selected_mode, _depth=depth: self._on_fetch_titles_ready(
@@ -695,6 +950,13 @@ class CategorySourcePanel(QGroupBox):
         mode: str,
         depth: int,
     ) -> None:
+        try:
+            self._set_fetch_progress_count(
+                max(self._fetch_last_read_count, len(titles or [])),
+                self._fetch_last_read_total,
+            )
+        except Exception:
+            pass
         if titles:
             self._render_fetch_titles_snapshot(list(titles))
             self._log(
@@ -727,6 +989,8 @@ class CategorySourcePanel(QGroupBox):
         self._log(self._t('ui.source.api_error', 'API error: {error}'))
 
     def _on_fetch_titles_finished(self) -> None:
+        self._restore_fetch_progress_state()
+        self._restore_fetch_action_button()
         self._set_fetch_controls_enabled(True)
         worker = getattr(self, '_fetch_worker', None)
         self._fetch_worker = None

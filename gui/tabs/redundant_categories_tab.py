@@ -345,6 +345,7 @@ class RedundantCategoriesTab(QWidget):
         except Exception:
             pass
         self.source_panel.set_log_widget(self.run_log)
+        self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
         self._set_action_mode_preview()
 
     def _set_action_mode_preview(self):
