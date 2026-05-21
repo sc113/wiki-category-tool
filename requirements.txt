@@ -1,5 +1,5 @@
-PySide6>=6.5.0
-pywikibot>=8.0.0
-requests>=2.31.0
-packaging>=23.0
+PySide6>=6.11.1
+pywikibot>=11.3.0
+requests>=2.34.2
+packaging>=26.2
 

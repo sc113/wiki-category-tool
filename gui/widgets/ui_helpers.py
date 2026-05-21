@@ -651,6 +651,9 @@ def _log_palette(widget: QTextEdit) -> dict[str, str]:
             'section_bg': '#f3f8fd',
             'section_border': '#9ebbd4',
             'success': '#1f7a3d',
+            'skipped': '#667085',
+            'no_linked': '#2563eb',
+            'already': '#0f766e',
             'warning': '#9a6a10',
             'error': '#b3261e',
             'info': '#2f5f8a',
@@ -667,6 +670,9 @@ def _log_palette(widget: QTextEdit) -> dict[str, str]:
         'section_bg': '#1f2935',
         'section_border': '#4a6580',
         'success': '#9fc1f3',
+        'skipped': '#aab4c2',
+        'no_linked': '#93c5fd',
+        'already': '#7dd3c7',
         'warning': '#e7c17b',
         'error': '#ff9cab',
         'info': '#9dc6f2',
@@ -715,10 +721,125 @@ def _is_section_line(msg: str) -> tuple[bool, str]:
     return True, (m.group(1) or '').strip()
 
 
+def _parse_sync_log_message(msg: str) -> dict[str, str] | None:
+    text = (msg or '').strip()
+    m = re.match(
+        r'^\s*\((?P<kind>статья|статьи|подкатегория|подкатегории|article|articles|subcategory|subcategories)\)\s*(?P<rest>.*)$',
+        text,
+        re.I,
+    )
+    if not m:
+        return None
+
+    kind = (m.group('kind') or '').strip()
+    rest = (m.group('rest') or '').strip()
+    rest_low = rest.lower()
+
+    def _result(level: str, status: str, title: str = '', reason: str = '') -> dict[str, str]:
+        return {
+            'level': level,
+            'status': status.strip(),
+            'kind': kind,
+            'title': (title or '').strip(),
+            'reason': (reason or '').strip(),
+        }
+
+    skip_match = re.match(
+        r'^(?P<status>пропуск|skip)\s+\'(?P<title>.*)\':\s*(?P<reason>.*)$',
+        rest,
+        re.I,
+    )
+    if skip_match:
+        reason = (skip_match.group('reason') or '').strip()
+        reason_low = reason.lower()
+        level = 'no_linked' if (
+            'нет связанной' in reason_low
+            or 'no linked' in reason_low
+        ) else 'skipped'
+        return _result(
+            level,
+            skip_match.group('status') or '',
+            skip_match.group('title') or '',
+            reason,
+        )
+
+    already_match = re.match(
+        r'^(?P<status>уже в категории|already in category):\s*\'(?P<title>.*)\'\.?$',
+        rest,
+        re.I,
+    )
+    if already_match:
+        return _result(
+            'already',
+            already_match.group('status') or '',
+            already_match.group('title') or '',
+            '',
+        )
+
+    success_match = re.match(
+        r'^(?P<status>успех|success):\s*\'(?P<title>.*)\'\.?$',
+        rest,
+        re.I,
+    )
+    if success_match:
+        return _result(
+            'success',
+            success_match.group('status') or '',
+            success_match.group('title') or '',
+            '',
+        )
+
+    error_match = re.match(
+        r'^(?P<status>ошибка для|error for)\s+\'(?P<title>.*)\':\s*(?P<reason>.*)$',
+        rest,
+        re.I,
+    )
+    if error_match:
+        return _result(
+            'error',
+            error_match.group('status') or '',
+            error_match.group('title') or '',
+            error_match.group('reason') or '',
+        )
+
+    if rest_low.startswith(('обработка:', 'processing:')):
+        status, reason = rest.split(':', 1)
+        return _result('info', status, '', reason)
+
+    if rest_low.startswith(('завершено:', 'completed:')):
+        status, reason = rest.split(':', 1)
+        return _result('progress', status, '', reason)
+
+    return None
+
+
+def _format_sync_log_html(parsed: dict[str, str], palette: dict[str, str], level_color: str) -> str:
+    status = html.escape(parsed.get('status') or '')
+    kind = html.escape(parsed.get('kind') or '')
+    title = html.escape(parsed.get('title') or '')
+    reason = html.escape(parsed.get('reason') or '').replace('\n', '<br/>')
+    muted = palette.get('timestamp', palette.get('text', '#888'))
+
+    parts = [
+        f"<span style='color:{level_color}; font-weight:600;'>{status}</span>",
+        f"<span style='color:{muted};'>{kind}</span>",
+    ]
+    if title:
+        parts.append(f"<span style='color:{palette['text']};'>{title}</span>")
+
+    body = f" <span style='color:{muted};'>·</span> ".join(parts)
+    if reason:
+        body += f" <span style='color:{muted};'>:</span> <span style='color:{palette['text']};'>{reason}</span>"
+    return body
+
+
 def _detect_log_level(msg: str) -> str:
     low = (msg or '').strip().lower()
     if not low:
         return 'info'
+    sync_message = _parse_sync_log_message(msg)
+    if sync_message:
+        return sync_message.get('level') or 'info'
     # Строки считывания вида "Title: 3 строк(и)" / "Title: 3 line(s)"
     # не должны менять уровень из-за слов внутри самого заголовка.
     if re.search(r':\s*\d+\s*(?:строк\(и\)|line\(s\))\s*$', low):
@@ -764,6 +885,9 @@ def _detect_log_level(msg: str) -> str:
 def _level_icon(level: str) -> str:
     return {
         'success': '✅',
+        'skipped': '■',
+        'no_linked': '⏭️',
+        'already': '☑️',
         'warning': '⚠️',
         'error': '❌',
         'info': 'ℹ️',
@@ -812,15 +936,22 @@ def log_message(widget: QTextEdit, msg: str, debug_func=None):
         return
 
     module, body_raw = _extract_module_prefix(msg)
-    pretty_body, pretty_escaped = pretty_format_msg(body_raw)
-    if pretty_escaped:
-        body_html = pretty_body
-    else:
-        body_html = html.escape(pretty_body).replace('\n', '<br/>')
-
-    level = _detect_log_level(f"{module} {body_raw}".strip())
+    sync_message = _parse_sync_log_message(body_raw)
+    level = (sync_message or {}).get('level') or _detect_log_level(f"{module} {body_raw}".strip())
     icon = _level_icon(level)
     level_color = palette.get(level, palette['info'])
+    icon_style = f"color:{level_color};"
+    if level in {'skipped'}:
+        icon_style += "font-family:Arial,'Segoe UI Symbol',sans-serif;font-weight:900;"
+
+    if sync_message:
+        body_html = _format_sync_log_html(sync_message, palette, level_color)
+    else:
+        pretty_body, pretty_escaped = pretty_format_msg(body_raw)
+        if pretty_escaped:
+            body_html = pretty_body
+        else:
+            body_html = html.escape(pretty_body).replace('\n', '<br/>')
 
     badge_html = ''
     if module:
@@ -836,7 +967,7 @@ def log_message(widget: QTextEdit, msg: str, debug_func=None):
     widget.append(
         (
             f"{time_html} {badge_html}"
-            f"<span style='color:{level_color};'>{icon}</span> "
+            f"<span style=\"{icon_style}\">{icon}</span> "
             f"<span style='color:{palette['text']};'>{body_html}</span>"
         ).strip()
     )

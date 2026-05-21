@@ -5,6 +5,7 @@ import os
 import sys
 import re
 from typing import Optional
+from ..constants import USER_AGENT
 from .localization import translate_runtime
 
 # ВАЖНО: не импортировать pywikibot на уровне модуля, чтобы избежать
@@ -66,6 +67,97 @@ class PywikibotConfigManager:
 
         os.environ['PYWIKIBOT_DIR'] = cfg_dir
         return cfg_dir
+
+    def apply_runtime_options(self) -> None:
+        """Apply Pywikibot runtime tweaks that are safe before/after login."""
+        try:
+            import pywikibot  # type: ignore
+            from pywikibot import config as pwb_config  # type: ignore
+        except Exception:
+            return
+
+        # Use an explicit app User-Agent. Pywikibot's default format contains
+        # {revision}, which tries to inspect git/package files that do not
+        # exist in the PyInstaller onefile bundle and produces noisy warnings.
+        try:
+            pwb_config.user_agent_format = f"{USER_AGENT} {{pwb}}"
+        except Exception:
+            pass
+        try:
+            pwb_config.put_throttle = 0.0
+            pwb_config.maxlag = 0
+            pwb_config.retry_wait = 2
+            pwb_config.retry_max = 20
+        except Exception:
+            pass
+
+        try:
+            module_file = str(getattr(pywikibot, "__file__", "") or "")
+            module_file_exists = bool(module_file and os.path.exists(module_file))
+            if module_file_exists and not getattr(sys, "frozen", False):
+                return
+
+            from pywikibot import version as pwb_version  # type: ignore
+
+            def _wct_getversiondict() -> dict[str, str]:
+                date = "0 (frozen)"
+                try:
+                    exe_path = str(getattr(sys, "executable", "") or "")
+                    if exe_path and os.path.exists(exe_path):
+                        import time
+
+                        date = time.strftime(
+                            "%Y/%m/%d, %H:%M:%S",
+                            time.localtime(os.path.getmtime(exe_path)),
+                        )
+                except Exception:
+                    pass
+                return {
+                    "tag": "pywikibot",
+                    "rev": f"package {getattr(pywikibot, '__version__', 'unknown')}",
+                    "date": date,
+                    "hsh": "frozen",
+                }
+
+            pwb_version.getversiondict = _wct_getversiondict
+        except Exception:
+            pass
+
+    def _reset_existing_throttles(self) -> None:
+        """Refresh throttles for Site objects created before config changes."""
+        try:
+            import pywikibot  # type: ignore
+        except Exception:
+            return
+
+        try:
+            sites = getattr(pywikibot, "_sites", None)
+            site_values = list(sites.values()) if isinstance(sites, dict) else []
+        except Exception:
+            site_values = []
+
+        for site in site_values:
+            try:
+                throttle = getattr(site, "_throttle", None)
+                if throttle is None:
+                    continue
+                try:
+                    throttle.retry_after = 0
+                except Exception:
+                    pass
+                try:
+                    throttle.process_multiplicity = 1
+                except Exception:
+                    pass
+                try:
+                    throttle.set_delays()
+                except Exception:
+                    try:
+                        delattr(site, "_throttle")
+                    except Exception:
+                        pass
+            except Exception:
+                continue
     
     def write_pwb_credentials(self, lang: str, username: str, password: str, family: str = 'wikipedia') -> None:
         """
@@ -129,9 +221,11 @@ class PywikibotConfigManager:
         
         try:
             throttle_path = os.path.join(cfg_dir, 'throttle.ctrl')
-            if not os.path.isfile(throttle_path):
-                with open(throttle_path, 'w', encoding='utf-8') as _f:
-                    _f.write('')
+            # This desktop app has its own in-process rate limiting.
+            # Pywikibot's shared throttle.ctrl may keep stale onefile entries
+            # after restarts and multiply short delays into 5-10 second sleeps.
+            with open(throttle_path, 'w', encoding='utf-8') as _f:
+                _f.write('')
         except Exception:
             pass
         
@@ -143,13 +237,21 @@ class PywikibotConfigManager:
         pwb_config.mylang = lang
         pwb_config.password_file = os.path.join(cfg_dir, 'user-password.py')
         
-        # Speed up pywikibot write operations: remove internal delays between edits.
-        # Write buttons in UI are only available with AWB access/bypass, so this is safe.
+        self.apply_runtime_options()
+
+        # Speed up Pywikibot operations and keep read-heavy flows responsive.
+        # maxlag is opt-in in MediaWiki API; when it is enabled Pywikibot may
+        # sleep/retry for a long time on ordinary reads. The app already has its
+        # own rate limiting and retry handling, so avoid Pywikibot's hidden
+        # maxlag pauses here.
         try:
             pwb_config.put_throttle = 0.0
-            pwb_config.maxlag = 5
+            pwb_config.maxlag = 0
+            pwb_config.retry_wait = 2
+            pwb_config.retry_max = 20
         except Exception:
             pass
+        self._reset_existing_throttles()
             
         return cfg_dir
     
@@ -265,3 +367,7 @@ def reset_pywikibot_session(lang: Optional[str] = None) -> None:
 def ensure_base_env() -> str:
     """Public helper to ensure base pywikibot environment is configured."""
     return _config_manager.ensure_base_env()
+
+def apply_pywikibot_runtime_options() -> None:
+    """Public helper to apply non-credential Pywikibot runtime options."""
+    return _config_manager.apply_runtime_options()

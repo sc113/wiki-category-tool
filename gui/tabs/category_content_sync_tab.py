@@ -214,7 +214,8 @@ class CategoryContentSyncTab(QWidget):
             for col in range(6):
                 header.setSectionResizeMode(col, QHeaderView.Interactive)
             self.preview_table.setWordWrap(False)
-            self.preview_table.setSortingEnabled(True)
+            header.setSortIndicatorShown(False)
+            self.preview_table.setSortingEnabled(False)
         except Exception:
             pass
         try:
@@ -241,6 +242,12 @@ class CategoryContentSyncTab(QWidget):
             )
             self._backspace_selected_shortcut.activated.connect(
                 self.delete_selected_preview_rows
+            )
+            self._copy_selected_shortcut = QShortcut(
+                QKeySequence.Copy, self.preview_table
+            )
+            self._copy_selected_shortcut.activated.connect(
+                self.copy_selected_preview_selection
             )
         except Exception:
             pass
@@ -1465,6 +1472,67 @@ class CategoryContentSyncTab(QWidget):
             ).format(count=len(selected_rows)),
             debug,
         )
+
+    def copy_selected_preview_selection(self):
+        table = getattr(self, "preview_table", None)
+        if table is None:
+            return
+        try:
+            indexes = table.selectedIndexes()
+        except Exception:
+            indexes = []
+        if not indexes:
+            return
+
+        def cell_text(row: int, col: int) -> str:
+            try:
+                item = table.item(int(row), int(col))
+            except Exception:
+                item = None
+            if item is None:
+                return ""
+            try:
+                return str(item.text() or "")
+            except Exception:
+                return ""
+
+        try:
+            selected_rows = sorted(
+                {int(index.row()) for index in table.selectionModel().selectedRows()}
+            )
+        except Exception:
+            selected_rows = []
+
+        lines: list[str] = []
+        if selected_rows:
+            column_count = int(table.columnCount())
+            for row in selected_rows:
+                if not (0 <= row < table.rowCount()):
+                    continue
+                lines.append(
+                    "\t".join(cell_text(row, col) for col in range(column_count))
+                )
+        else:
+            selected_cells = {
+                (int(index.row()), int(index.column())) for index in indexes
+            }
+            rows = sorted({row for row, _col in selected_cells})
+            cols = sorted({col for _row, col in selected_cells})
+            for row in rows:
+                lines.append(
+                    "\t".join(
+                        cell_text(row, col) if (row, col) in selected_cells else ""
+                        for col in cols
+                    )
+                )
+
+        text = "\n".join(line for line in lines if line)
+        if not text:
+            return
+        try:
+            QGuiApplication.clipboard().setText(text)
+        except Exception:
+            pass
 
     def _normalized_target_categories(self, categories: list[str], family: str, lang: str) -> list[str]:
         try:

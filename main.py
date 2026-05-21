@@ -100,13 +100,28 @@ def setup_qt_message_filter():
 def setup_pywikibot():
     """Инициализация pywikibot с перехватом вывода"""
     import pywikibot
+    from .core.pywikibot_config import apply_pywikibot_runtime_options
     from .utils import debug
+
+    apply_pywikibot_runtime_options()
 
     # Перехват вывода pywikibot
     def _pywb_log(msg, *_args, **_kwargs):
-        debug('PYWIKIBOT: ' + str(msg))
+        text = str(msg)
+        if text.startswith('Sleeping for '):
+            return
+        if (
+            text.startswith('Traceback ')
+            and 'pywikibot.exceptions.ServerError:' in text
+            and 'ConnectTimeoutError' in text
+        ):
+            debug('PYWIKIBOT: temporary network timeout; retrying.')
+            return
+        debug('PYWIKIBOT: ' + text)
 
     pywikibot.output = _pywb_log
+    pywikibot.info = _pywb_log
+    pywikibot.log = _pywb_log
     pywikibot.warning = _pywb_log
     pywikibot.error = _pywb_log
 

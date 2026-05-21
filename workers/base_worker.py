@@ -204,7 +204,7 @@ class BaseWorker(QThread):
                 self._wait_before_save()
                 started_at = time.time()
                 page.text = text
-                page.save(summary=summary, minor=minor)
+                page.save(summary=summary, minor=minor, quiet=True)
                 elapsed = max(0.0, time.time() - started_at)
                 self.saved_edits = int(getattr(self, 'saved_edits', 0) or 0) + 1
                 self._adapt_interval_on_slow_save(elapsed)

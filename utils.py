@@ -356,7 +356,7 @@ def default_sync_summary_template(lang: str) -> str:
     return _translate_project_text(
         'summary.sync.template_default',
         lang,
-        'Adding {target_action_en} [[{target_category}]] (based on [[{source_lang}:{source_category}]])',
+        'Adding {target_action_en} [[{target_category}]] based on [[{source_lang}:{source_category}]]',
     )
 
 
@@ -365,7 +365,7 @@ def default_sync_add_category_summary(lang: str) -> str:
     return _translate_project_text(
         'summary.sync.add_category',
         lang,
-        'Adding category [[{target}]] (based on [[{source_code}:{source_category}]])',
+        'Adding category [[{target}]] based on [[{source_code}:{source_category}]]',
     )
 
 
@@ -374,7 +374,7 @@ def default_sync_add_parent_category_summary(lang: str) -> str:
     return _translate_project_text(
         'summary.sync.add_parent_category',
         lang,
-        'Adding parent category [[{target}]] (based on [[{source_code}:{source_category}]])',
+        'Adding parent category [[{target}]] based on [[{source_code}:{source_category}]]',
     )
 
 

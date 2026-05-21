@@ -217,8 +217,31 @@ def _format_sync_summary(template: str, *, context: dict[str, str]) -> str:
     """Подставляет поддерживаемые переменные {name} в шаблон комментария."""
     if not template:
         return ""
+    values = dict(context or {})
+    # Backward-compatible aliases for summaries from older/localized builds
+    # where variable names were partly translated by mistake.
+    aliases = {
+        "target_категория": "target_category",
+        "source_категория": "source_category",
+        "target_категория_base": "target_category_base",
+        "source_категория_base": "source_category_base",
+        "target_действие": "target_action",
+        "source_язык": "source_lang",
+        "target_язык": "target_lang",
+        "целевая_категория": "target_category",
+        "исходная_категория": "source_category",
+        "целевая_страница": "target_page",
+        "исходная_страница": "source_page",
+        "язык_источника": "source_lang",
+        "язык_назначения": "target_lang",
+        "режим": "mode",
+    }
+    for alias, canonical in aliases.items():
+        if alias not in values and canonical in values:
+            values[alias] = values.get(canonical, "")
+
     result = str(template)
-    for key, value in (context or {}).items():
+    for key, value in values.items():
         result = result.replace("{" + str(key) + "}", str(value or ""))
     return result.strip()
 

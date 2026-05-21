@@ -53,24 +53,24 @@
     "uk": "Заміна вмісту сторінки на одноманітне наповнення: $1 $2 $3"
   },
   "summary.sync.add_category": {
-    "be": "Дадаванне катэгорыі [[{target}]] (на падставе [[{source_code}:{source_category}]])",
-    "de": "Hinzufugen der Kategorie [[{target}]] (basierend auf [[{source_code}:{source_category}]])",
-    "default": "Adding category [[{target}]] (based on [[{source_code}:{source_category}]])",
-    "en": "Adding category [[{target}]] (based on [[{source_code}:{source_category}]])",
-    "es": "Anadiendo la categoria [[{target}]] (basado en [[{source_code}:{source_category}]])",
-    "fr": "Ajout de la categorie [[{target}]] (base sur [[{source_code}:{source_category}]])",
-    "ru": "Добавление категории [[{target}]] (на основе [[{source_code}:{source_category}]])",
-    "uk": "Додавання категорії [[{target}]] (на основі [[{source_code}:{source_category}]])"
+    "be": "Дадаванне катэгорыі [[{target}]] на падставе [[{source_code}:{source_category}]]",
+    "de": "Hinzufugen der Kategorie [[{target}]] basierend auf [[{source_code}:{source_category}]]",
+    "default": "Adding category [[{target}]] based on [[{source_code}:{source_category}]]",
+    "en": "Adding category [[{target}]] based on [[{source_code}:{source_category}]]",
+    "es": "Anadiendo la categoria [[{target}]] basado en [[{source_code}:{source_category}]]",
+    "fr": "Ajout de la categorie [[{target}]] base sur [[{source_code}:{source_category}]]",
+    "ru": "Добавление категории [[{target}]] на основе [[{source_code}:{source_category}]]",
+    "uk": "Додавання категорії [[{target}]] на основі [[{source_code}:{source_category}]]"
   },
   "summary.sync.add_parent_category": {
-    "be": "Дадаванне бацькоўскай катэгорыі [[{target}]] (на падставе [[{source_code}:{source_category}]])",
-    "de": "Hinzufugen der Oberkategorie [[{target}]] (basierend auf [[{source_code}:{source_category}]])",
-    "default": "Adding parent category [[{target}]] (based on [[{source_code}:{source_category}]])",
-    "en": "Adding parent category [[{target}]] (based on [[{source_code}:{source_category}]])",
-    "es": "Anadiendo la categoria superior [[{target}]] (basado en [[{source_code}:{source_category}]])",
-    "fr": "Ajout de la categorie parente [[{target}]] (base sur [[{source_code}:{source_category}]])",
-    "ru": "Добавление родительской категории [[{target}]] (на основе [[{source_code}:{source_category}]])",
-    "uk": "Додавання батьківської категорії [[{target}]] (на основі [[{source_code}:{source_category}]])"
+    "be": "Дадаванне бацькоўскай катэгорыі [[{target}]] на падставе [[{source_code}:{source_category}]]",
+    "de": "Hinzufugen der Oberkategorie [[{target}]] basierend auf [[{source_code}:{source_category}]]",
+    "default": "Adding parent category [[{target}]] based on [[{source_code}:{source_category}]]",
+    "en": "Adding parent category [[{target}]] based on [[{source_code}:{source_category}]]",
+    "es": "Anadiendo la categoria superior [[{target}]] basado en [[{source_code}:{source_category}]]",
+    "fr": "Ajout de la categorie parente [[{target}]] base sur [[{source_code}:{source_category}]]",
+    "ru": "Добавление родительской категории [[{target}]] на основе [[{source_code}:{source_category}]]",
+    "uk": "Додавання батьківської категорії [[{target}]] на основі [[{source_code}:{source_category}]]"
   },
   "summary.sync.target_action.category": {
     "be": "катэгорыі",
@@ -93,13 +93,13 @@
     "uk": "батьківської категорії"
   },
   "summary.sync.template_default": {
-    "be": "Дадаванне {target_action} [[{target_category}]] (на падставе [[{source_lang}:{source_category}]])",
-    "de": "Hinzufugen der {target_action} [[{target_category}]] (basierend auf [[{source_lang}:{source_category}]])",
-    "default": "Adding {target_action_en} [[{target_category}]] (based on [[{source_lang}:{source_category}]])",
-    "en": "Adding {target_action_en} [[{target_category}]] (based on [[{source_lang}:{source_category}]])",
-    "es": "Anadiendo {target_action} [[{target_category}]] (basado en [[{source_lang}:{source_category}]])",
-    "fr": "Ajout de la {target_action} [[{target_category}]] (base sur [[{source_lang}:{source_category}]])",
-    "ru": "Добавление {target_action} [[{target_category}]] (на основе [[{source_lang}:{source_category}]])",
-    "uk": "Додавання {target_action} [[{target_category}]] (на основі [[{source_lang}:{source_category}]])"
+    "be": "Дадаванне {target_action} [[{target_category}]] на падставе [[{source_lang}:{source_category}]]",
+    "de": "Hinzufugen der {target_action} [[{target_category}]] basierend auf [[{source_lang}:{source_category}]]",
+    "default": "Adding {target_action_en} [[{target_category}]] based on [[{source_lang}:{source_category}]]",
+    "en": "Adding {target_action_en} [[{target_category}]] based on [[{source_lang}:{source_category}]]",
+    "es": "Anadiendo {target_action} [[{target_category}]] basado en [[{source_lang}:{source_category}]]",
+    "fr": "Ajout de la {target_action} [[{target_category}]] base sur [[{source_lang}:{source_category}]]",
+    "ru": "Добавление {target_action} [[{target_category}]] на основе [[{source_lang}:{source_category}]]",
+    "uk": "Додавання {target_action} [[{target_category}]] на основі [[{source_lang}:{source_category}]]"
   }
 }
