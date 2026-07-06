@@ -102,6 +102,7 @@ class LoginWorker(QThread):
                 self._input_event = None
 
         if cancelled:
+            self._stop = True
             raise RuntimeError(self._t('log.login.interactive_input_cancelled'))
 
         return '' if answer is None else str(answer)

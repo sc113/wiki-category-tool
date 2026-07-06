@@ -3707,10 +3707,50 @@ class MainWindow(QMainWindow):
             'template_manager': self.template_manager
         }
 
+    def _stop_worker_for_close(self, worker) -> bool:
+        """Остановить worker перед закрытием окна."""
+        try:
+            if worker is None or not hasattr(worker, 'isRunning') or not worker.isRunning():
+                return True
+        except Exception:
+            return True
+
+        try:
+            if hasattr(worker, 'request_stop'):
+                worker.request_stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(worker, 'provide_interactive_input'):
+                worker.provide_interactive_input(None)
+        except Exception:
+            pass
+        try:
+            if hasattr(worker, 'quit'):
+                worker.quit()
+        except Exception:
+            pass
+
+        try:
+            worker.wait(2500)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(worker, 'isRunning') and worker.isRunning() and hasattr(worker, 'terminate'):
+                worker.terminate()
+                worker.wait(2000)
+        except Exception:
+            pass
+
+        try:
+            return not (hasattr(worker, 'isRunning') and worker.isRunning())
+        except Exception:
+            return True
+
     def closeEvent(self, event):
         """Обработка закрытия окна"""
-        # Проверяем запущенные потоки как в оригинале
-        running_threads = []
+        running_workers = []
         tab_workers = [
             ('parse', self.parse_tab, 'worker'),
             ('replace', self.replace_tab, 'rworker'),
@@ -3725,9 +3765,9 @@ class MainWindow(QMainWindow):
         for tab_name, tab, worker_attr in tab_workers:
             worker = getattr(tab, worker_attr, None)
             if worker and hasattr(worker, 'isRunning') and worker.isRunning():
-                running_threads.append(tab_name)
+                running_workers.append((tab_name, worker))
 
-        if running_threads:
+        if running_workers:
             res = QMessageBox.question(
                 self,
                 self._t('ui.warning'),
@@ -3735,7 +3775,7 @@ class MainWindow(QMainWindow):
                     'ui.main.close_running_text',
                     self._ui_lang,
                     '',
-                ).format(tabs=', '.join(running_threads)),
+                ).format(tabs=', '.join(name for name, _worker in running_workers)),
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
@@ -3743,30 +3783,22 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
+            still_running = []
+            for tab_name, worker in running_workers:
+                if not self._stop_worker_for_close(worker):
+                    still_running.append(tab_name)
+
+            if still_running:
+                QMessageBox.warning(
+                    self,
+                    self._t('ui.warning'),
+                    self._fmt('ui.main.close_stop_failed', tabs=', '.join(still_running)),
+                )
+                event.ignore()
+                return
+
         # Не пытаемся сохранять/валидировать учётные данные при закрытии, чтобы не появлялись диалоги
         # (раньше вызывался save_creds(), что могло запрашивать ввод пароля при закрытии окна)
-
-        # Точечная остановка LoginWorker, чтобы избежать предупреждения QThread при выходе
-        try:
-            login_worker = getattr(self.auth_tab, '_login_worker', None)
-            if login_worker and hasattr(login_worker, 'isRunning') and login_worker.isRunning():
-                try:
-                    if hasattr(login_worker, 'request_stop'):
-                        login_worker.request_stop()
-                except Exception:
-                    pass
-                try:
-                    login_worker.wait(1500)
-                except Exception:
-                    pass
-                try:
-                    if hasattr(login_worker, 'isRunning') and login_worker.isRunning() and hasattr(login_worker, 'terminate'):
-                        login_worker.terminate()
-                        login_worker.wait(1000)
-                except Exception:
-                    pass
-        except Exception:
-            pass
 
         try:
             self._save_ui_settings()

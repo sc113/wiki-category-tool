@@ -582,15 +582,14 @@ class AuthTab(QWidget):
                 pass
             self._bring_to_front_sequence()
 
-            echo_mode = QLineEdit.Password if password else QLineEdit.Normal
             text, ok = QInputDialog.getText(
                 self,
                 self._t('ui.auth.verification_code_title'),
                 self._fmt('ui.auth.verification_code_prompt', prompt=prompt_from_site),
-                echo_mode,
+                QLineEdit.Normal,
             )
             if ok:
-                answer = (text or '').strip()
+                answer = ''.join((text or '').split())
         except Exception as e:
             self._log('log.auth.interactive_input_dialog_error', error=e)
             answer = None
@@ -600,6 +599,35 @@ class AuthTab(QWidget):
                     worker.provide_interactive_input(answer)
             except Exception:
                 pass
+
+    def _after_login_failure(self, msg: str):
+        """Обработчик ошибки авторизации."""
+        self._log('log.auth.authorization_error', error=msg)
+        try:
+            if self.status_label:
+                self.status_label.setText(self._t('ui.authorization_error'))
+        except Exception:
+            pass
+
+        self._apply_cred_style(False)
+        try:
+            self.login_btn.setEnabled(True)
+        except Exception:
+            pass
+        self._force_on_top(False)
+        self._bring_to_front_sequence()
+
+        try:
+            self.parent_window.raise_()
+            self.parent_window.activateWindow()
+        except Exception:
+            pass
+
+        QMessageBox.critical(
+            self,
+            self._t('ui.authorization_error'),
+            self._fmt('ui.auth.failed_to_authorize', error=msg),
+        )
 
     def save_creds(self):
         """Сохранить учетные данные и запустить авторизацию"""
@@ -683,19 +711,7 @@ class AuthTab(QWidget):
         # на успех
         worker.success.connect(self._after_login_success)
         # на провал
-        worker.failure.connect(lambda msg: [
-            self._log('log.auth.authorization_error', error=msg),
-            self.status_label.setText(self._t('ui.authorization_error')),
-            QMessageBox.critical(self, self._t('ui.authorization_error'),
-                                 self._fmt('ui.auth.failed_to_authorize', error=msg)),
-            self._apply_cred_style(False),
-            self.login_btn.setEnabled(True),
-            # вернуть окно на передний план после модального окна
-            (self.parent_window.raise_(), self.parent_window.activateWindow()),
-            # снять режим поверх других окон
-            self._force_on_top(False, delay_ms=600),
-            self._bring_to_front_sequence()
-        ])
+        worker.failure.connect(self._after_login_failure)
         worker.interactive_input_requested.connect(self._handle_login_interactive_input)
 
         self._log('log.auth.worker_started')
