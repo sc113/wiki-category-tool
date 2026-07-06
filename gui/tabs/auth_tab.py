@@ -19,7 +19,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
-    QPushButton, QToolButton, QMessageBox, QApplication
+    QPushButton, QToolButton, QMessageBox, QApplication, QInputDialog
 )
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QSignalBlocker
 from PySide6.QtGui import QDesktopServices
@@ -557,6 +557,50 @@ class AuthTab(QWidget):
         # Уведомить главное окно об успешной авторизации
         self.login_success.emit(u, pwd, lang, fam)
 
+    def _handle_login_interactive_input(self, question: str, password: bool):
+        """Показать GUI-запрос для дополнительных кодов pywikibot, например 2FA."""
+        worker = self.sender()
+        if worker is None or not hasattr(worker, 'provide_interactive_input'):
+            worker = getattr(self, '_login_worker', None)
+
+        answer = None
+        try:
+            prompt_from_site = (question or '').strip()
+            if not prompt_from_site:
+                prompt_from_site = self._t('ui.auth.verification_code_label')
+
+            try:
+                if self.status_label:
+                    self.status_label.setText(self._t('ui.auth.verification_code_status'))
+            except Exception:
+                pass
+
+            try:
+                self.parent_window.raise_()
+                self.parent_window.activateWindow()
+            except Exception:
+                pass
+            self._bring_to_front_sequence()
+
+            echo_mode = QLineEdit.Password if password else QLineEdit.Normal
+            text, ok = QInputDialog.getText(
+                self,
+                self._t('ui.auth.verification_code_title'),
+                self._fmt('ui.auth.verification_code_prompt', prompt=prompt_from_site),
+                echo_mode,
+            )
+            if ok:
+                answer = (text or '').strip()
+        except Exception as e:
+            self._log('log.auth.interactive_input_dialog_error', error=e)
+            answer = None
+        finally:
+            try:
+                if worker is not None and hasattr(worker, 'provide_interactive_input'):
+                    worker.provide_interactive_input(answer)
+            except Exception:
+                pass
+
     def save_creds(self):
         """Сохранить учетные данные и запустить авторизацию"""
         self._log('log.auth.login_button_clicked')
@@ -652,6 +696,7 @@ class AuthTab(QWidget):
             self._force_on_top(False, delay_ms=600),
             self._bring_to_front_sequence()
         ])
+        worker.interactive_input_requested.connect(self._handle_login_interactive_input)
 
         self._log('log.auth.worker_started')
         self._login_worker = worker
@@ -1006,6 +1051,10 @@ class AuthTab(QWidget):
                         pass
                     try:
                         w.failure.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        w.interactive_input_requested.disconnect()
                     except Exception:
                         pass
                 except Exception:

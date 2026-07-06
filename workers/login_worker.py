@@ -2,6 +2,8 @@
 Login worker for authenticating with Wikimedia projects.
 """
 
+import threading
+
 from PySide6.QtCore import QThread, Signal
 
 from ..core.pywikibot_config import write_pwb_credentials, apply_pwb_config, _delete_all_cookies, reset_pywikibot_session
@@ -21,6 +23,7 @@ class LoginWorker(QThread):
     
     success = Signal(str, str, str, str)  # username, password, lang, family
     failure = Signal(str)
+    interactive_input_requested = Signal(str, bool)  # question, password
 
     def __init__(self, username: str, password: str, lang: str, family: str):
         """
@@ -38,6 +41,10 @@ class LoginWorker(QThread):
         self.lang = lang
         self.family = family
         self._stop = False
+        self._input_lock = threading.Lock()
+        self._input_event = None
+        self._input_answer = None
+        self._input_cancelled = False
 
     def _t(self, key: str) -> str:
         return translate_runtime(key, '')
@@ -56,10 +63,80 @@ class LoginWorker(QThread):
     def request_stop(self):
         """Запрос на корректную остановку операции."""
         self._stop = True
+        self.provide_interactive_input(None)
         try:
             self.quit()
         except Exception:
             pass
+
+    def provide_interactive_input(self, answer):
+        """Передать ответ из GUI в поток авторизации."""
+        event = None
+        with self._input_lock:
+            self._input_answer = answer
+            self._input_cancelled = answer is None
+            event = self._input_event
+        if event is not None:
+            event.set()
+
+    def _request_interactive_input(self, question: str, password: bool = False) -> str:
+        """Запросить у GUI дополнительный код/ответ, который требует pywikibot."""
+        event = threading.Event()
+        with self._input_lock:
+            self._input_event = event
+            self._input_answer = None
+            self._input_cancelled = False
+
+        self._log('log.login.interactive_input_requested', question=question)
+        self.interactive_input_requested.emit(question, password)
+
+        while not event.wait(0.1):
+            if self._stop:
+                self.provide_interactive_input(None)
+                break
+
+        with self._input_lock:
+            answer = self._input_answer
+            cancelled = self._input_cancelled or self._stop
+            if self._input_event is event:
+                self._input_event = None
+
+        if cancelled:
+            raise RuntimeError(self._t('log.login.interactive_input_cancelled'))
+
+        return '' if answer is None else str(answer)
+
+    def _patch_pywikibot_input(self, pywikibot):
+        """Временно направить интерактивные запросы pywikibot в GUI."""
+        original_input = getattr(pywikibot, 'input', None)
+        pwb_bot = None
+        original_bot_input = None
+        try:
+            import pywikibot.bot as pwb_bot_module
+            pwb_bot = pwb_bot_module
+            original_bot_input = getattr(pwb_bot, 'input', None)
+        except Exception:
+            pwb_bot = None
+
+        def gui_input(question: str, password: bool = False, default='', force: bool = False) -> str:
+            if force and default is not None:
+                return str(default)
+            answer = self._request_interactive_input(str(question or ''), bool(password))
+            if answer == '' and default is not None:
+                return str(default)
+            return answer
+
+        pywikibot.input = gui_input
+        if pwb_bot is not None:
+            pwb_bot.input = gui_input
+        return original_input, pwb_bot, original_bot_input
+
+    def _restore_pywikibot_input(self, pywikibot, original_input, pwb_bot, original_bot_input) -> None:
+        """Вернуть pywikibot.input после попытки логина."""
+        if original_input is not None:
+            pywikibot.input = original_input
+        if pwb_bot is not None and original_bot_input is not None:
+            pwb_bot.input = original_bot_input
 
     def run(self):
         """Основной метод выполнения авторизации."""
@@ -106,10 +183,14 @@ class LoginWorker(QThread):
                 site.logout()
             except Exception:
                 pass
-            
+
             self._log('log.login.login_user', user=self.username)
-            site.login(user=self.username)
-            
+            input_patch = self._patch_pywikibot_input(pywikibot)
+            try:
+                site.login(user=self.username)
+            finally:
+                self._restore_pywikibot_input(pywikibot, *input_patch)
+
             # Проверяем подключение к сайту
             self._log('log.login.check_site')
             try:
@@ -144,9 +225,12 @@ class LoginWorker(QThread):
                 emsg = str(e)
             except Exception:
                 emsg = ''
+            cancelled_msg = self._t('log.login.interactive_input_cancelled')
             marker_ru = translate_key('log.login.password_change_marker', 'ru', '')
             marker_en = translate_key('log.login.password_change_marker', 'en', '')
-            if (
+            if cancelled_msg and emsg == cancelled_msg:
+                self.failure.emit(cancelled_msg)
+            elif (
                 'PasswordAuthenticationRequest' in emsg or
                 (marker_ru and marker_ru in emsg) or
                 (marker_en and marker_en in emsg) or
