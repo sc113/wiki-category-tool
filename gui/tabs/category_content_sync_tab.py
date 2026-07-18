@@ -2724,6 +2724,18 @@ class CategoryContentSyncTab(QWidget):
             self._init_progress(0)
             self._reset_current_category_progress()
             log_message(self.sync_log, self._t("ui.stopped", "Stopped!"), debug)
+        elif worker and getattr(worker, "failed", False):
+            message = self._t(
+                "ui.operation_failed",
+                "Operation failed: {error}",
+            ).format(error=getattr(worker, "failure_message", ""))
+            log_message(self.sync_log, message, debug)
+        elif int(getattr(worker, "error_count", 0) or 0) > 0:
+            message = self._t(
+                "ui.completed_with_errors",
+                "Operation completed with errors: {count}",
+            ).format(count=int(getattr(worker, "error_count", 0) or 0))
+            log_message(self.sync_log, message, debug)
         else:
             log_message(
                 self.sync_log,

@@ -6,6 +6,8 @@
 import csv
 import re
 
+import mwparserfromhell
+
 from ..constants import DEFAULT_EN_NS, EN_PREFIX_ALIASES
 from .localization import translate_runtime
 from .namespace_manager import _load_ns_info, get_policy_prefix
@@ -48,7 +50,8 @@ def category_prefix_aliases(family: str, lang: str) -> tuple[str, ...]:
 
 def normalize_category_name(name: str, prefixes: tuple[str, ...]) -> str:
     """Нормализует название категории для сравнения."""
-    value = re.sub(r'\s+', ' ', (name or '').strip())
+    # MediaWiki treats underscores in page titles as spaces.
+    value = re.sub(r'[_\s]+', ' ', (name or '').strip())
     lower = value.casefold()
     for prefix in prefixes:
         prefix_text = (prefix or '').strip().rstrip(':')
@@ -58,7 +61,7 @@ def normalize_category_name(name: str, prefixes: tuple[str, ...]) -> str:
         if lower.startswith(normalized_prefix):
             value = value[len(prefix_text) + 1:].strip()
             break
-    return re.sub(r'\s+', ' ', value).strip()
+    return re.sub(r'[_\s]+', ' ', value).strip()
 
 
 def load_redundant_category_rules(
@@ -151,6 +154,88 @@ def _category_pattern_with_optional_newline(family: str, lang: str):
     )
 
 
+def _inclusion_scopes(code):
+    """Return inclusion-tag contents from inner to outer, then the page root."""
+    scopes = []
+    inclusion_tags = {'noinclude', 'includeonly', 'onlyinclude'}
+    try:
+        tags = list(code.filter_tags(recursive=True))
+    except Exception:
+        tags = []
+    for tag in reversed(tags):
+        try:
+            tag_name = str(tag.tag or '').strip().casefold()
+            if tag_name in inclusion_tags and tag.contents is not None:
+                scopes.append(tag.contents)
+        except Exception:
+            continue
+    scopes.append(code)
+    return scopes
+
+
+def _category_link_data(link, prefixes: tuple[str, ...]):
+    """Return normalized name and original category payload for a category link."""
+    try:
+        title = str(link.title or '').strip()
+    except Exception:
+        return None
+    if ':' not in title:
+        return None
+    raw_prefix, raw_name = title.split(':', 1)
+    prefix_keys = {
+        str(prefix or '').strip().rstrip(':').casefold()
+        for prefix in prefixes
+        if str(prefix or '').strip()
+    }
+    if raw_prefix.strip().casefold() not in prefix_keys:
+        return None
+    cat_name_part = raw_name.strip()
+    normalized = normalize_category_name(cat_name_part, prefixes)
+    if not normalized:
+        return None
+    sort_key = None
+    try:
+        if link.text is not None:
+            sort_key = str(link.text)
+    except Exception:
+        sort_key = None
+    full_category = (
+        f'{cat_name_part}|{sort_key}' if sort_key is not None else cat_name_part
+    )
+    return normalized, cat_name_part, full_category
+
+
+def _rewrite_scope_categories(scope, entries, broad_categories_to_remove, category_prefix):
+    """Move direct categories to the bottom of this exact inclusion scope."""
+    keep_payloads: list[str] = []
+    seen: set[str] = set()
+    for link, normalized, _original, payload in entries:
+        try:
+            scope.remove(link, recursive=False)
+        except Exception:
+            try:
+                scope.nodes.remove(link)
+            except Exception:
+                continue
+        if normalized in broad_categories_to_remove or normalized in seen:
+            continue
+        seen.add(normalized)
+        keep_payloads.append(payload)
+
+    if not entries:
+        return
+
+    base = re.sub(r'\n{3,}', '\n\n', str(scope)).rstrip()
+    categories_block = '\n'.join(
+        f'[[{category_prefix}:{payload}]]' for payload in keep_payloads
+    )
+    if base and categories_block:
+        rebuilt = f'{base}\n\n{categories_block}'
+    else:
+        rebuilt = base or categories_block
+    scope.nodes[:] = mwparserfromhell.parse(rebuilt).nodes
+
+
 def extract_and_filter_categories(
     text: str,
     precise_to_broad_list_map: dict[str, set[str]],
@@ -160,21 +245,25 @@ def extract_and_filter_categories(
 ) -> tuple[str, dict[str, str], dict[str, str]]:
     """Удаляет широкие категории, если у страницы уже есть более точные."""
     prefixes = category_prefix_aliases(family, lang)
-    category_pattern = _category_pattern(family, lang)
-    original_categories_full = category_pattern.findall(text or '')
-
+    code = mwparserfromhell.parse(text or '')
     original_name_parts: dict[str, str] = {}
     category_names_in_text: set[str] = set()
-
-    for full_category in original_categories_full:
-        parts = full_category.split('|', 1)
-        cat_name_part = parts[0].strip()
-        normalized_name = normalize_category_name(cat_name_part, prefixes)
-        if not normalized_name:
-            continue
-        category_names_in_text.add(normalized_name)
-        if normalized_name not in original_name_parts:
-            original_name_parts[normalized_name] = cat_name_part
+    scoped_entries = []
+    for scope in _inclusion_scopes(code):
+        entries = []
+        try:
+            links = list(scope.filter_wikilinks(recursive=False))
+        except Exception:
+            links = []
+        for link in links:
+            data = _category_link_data(link, prefixes)
+            if data is None:
+                continue
+            normalized_name, cat_name_part, full_category = data
+            entries.append((link, normalized_name, cat_name_part, full_category))
+            category_names_in_text.add(normalized_name)
+            original_name_parts.setdefault(normalized_name, cat_name_part)
+        scoped_entries.append((scope, entries))
 
     broad_categories_to_remove: set[str] = set()
     precise_to_broad_found: dict[str, str] = {}
@@ -189,29 +278,16 @@ def extract_and_filter_categories(
     if not broad_categories_to_remove:
         return text, {}, original_name_parts
 
-    categories_to_keep_full: list[str] = []
-    processed_normalized_names: set[str] = set()
-    for full_cat in original_categories_full:
-        cat_name_part = full_cat.split('|', 1)[0].strip()
-        normalized_name = normalize_category_name(cat_name_part, prefixes)
-        if normalized_name not in broad_categories_to_remove and normalized_name not in processed_normalized_names:
-            categories_to_keep_full.append(full_cat)
-            processed_normalized_names.add(normalized_name)
-        elif normalized_name in broad_categories_to_remove:
-            processed_normalized_names.add(normalized_name)
-
-    new_text = category_pattern.sub('', text or '').strip()
-    new_text = re.sub(r'\n{3,}', '\n\n', new_text)
-
-    if categories_to_keep_full:
-        category_prefix = get_policy_prefix(family, lang, 14, 'Category:').rstrip(':')
-        categories_block = '\n'.join(
-            f'[[{category_prefix}:{category}]]'
-            for category in categories_to_keep_full
+    category_prefix = get_policy_prefix(family, lang, 14, 'Category:').rstrip(':')
+    for scope, entries in scoped_entries:
+        _rewrite_scope_categories(
+            scope,
+            entries,
+            broad_categories_to_remove,
+            category_prefix,
         )
-        new_text = f'{new_text}\n\n{categories_block}'.strip() if new_text else categories_block
 
-    return new_text, precise_to_broad_found, original_name_parts
+    return str(code), precise_to_broad_found, original_name_parts
 
 
 def deduplicate_target_categories_in_text(
@@ -236,33 +312,36 @@ def deduplicate_target_categories_in_text(
     if not targets:
         return text, {}, {}
 
-    category_pattern = _category_pattern_with_optional_newline(family, lang)
-    seen: set[str] = set()
+    code = mwparserfromhell.parse(text or '')
     removed_counts: dict[str, int] = {}
     original_name_parts: dict[str, str] = {}
+    for scope in _inclusion_scopes(code):
+        seen: set[str] = set()
+        try:
+            links = list(scope.filter_wikilinks(recursive=False))
+        except Exception:
+            links = []
+        for link in links:
+            data = _category_link_data(link, prefixes)
+            if data is None:
+                continue
+            normalized_name, cat_name_part, _payload = data
+            original_name_parts.setdefault(normalized_name, cat_name_part)
+            if normalized_name not in targets:
+                continue
+            if normalized_name in seen:
+                removed_counts[normalized_name] = removed_counts.get(normalized_name, 0) + 1
+                try:
+                    scope.remove(link, recursive=False)
+                except Exception:
+                    try:
+                        scope.nodes.remove(link)
+                    except Exception:
+                        pass
+            else:
+                seen.add(normalized_name)
 
-    def _replace_match(match):
-        full_match = match.group(0)
-        full_category = match.group(1)
-        cat_name_part = full_category.split('|', 1)[0].strip()
-        normalized_name = normalize_category_name(cat_name_part, prefixes)
-        if not normalized_name:
-            return full_match
-
-        if normalized_name not in original_name_parts:
-            original_name_parts[normalized_name] = cat_name_part
-
-        if normalized_name not in targets:
-            return full_match
-
-        if normalized_name in seen:
-            removed_counts[normalized_name] = removed_counts.get(normalized_name, 0) + 1
-            return ''
-
-        seen.add(normalized_name)
-        return full_match
-
-    new_text = category_pattern.sub(_replace_match, text or '')
+    new_text = str(code)
     if removed_counts:
         new_text = re.sub(r'\n{3,}', '\n\n', new_text)
     return new_text, removed_counts, original_name_parts

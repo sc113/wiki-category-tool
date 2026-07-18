@@ -49,11 +49,18 @@ class RedundantCategoryWorker(BaseWorker):
         self.pair_template = pair_template
 
     def run(self):
-        site = pywikibot.Site(self.lang, self.family)
+        try:
+            site = pywikibot.Site(self.lang, self.family)
+        except Exception as exc:
+            self._set_failure(exc)
+            self.progress.emit(
+                self._fmt('log.redundant_worker.auth_error', error_type=type(exc).__name__, error=exc))
+            return
         if self.username and self.password:
             try:
                 site.login(user=self.username)
             except Exception as exc:
+                self._set_failure(exc)
                 self.progress.emit(
                     self._fmt('log.redundant_worker.auth_error', error_type=type(exc).__name__, error=exc))
                 return
@@ -62,23 +69,27 @@ class RedundantCategoryWorker(BaseWorker):
             mode, precise_to_broad_map, dedupe_categories = load_redundant_category_rules(
                 self.categories_path, self.family, self.lang)
         except Exception as exc:
+            self._set_failure(exc)
             self.progress.emit(
                 self._fmt('log.redundant_worker.file_read_error', path=self.categories_path, error=exc))
             return
 
         if mode == REDUNDANT_MODE_PAIRS:
             if not precise_to_broad_map:
+                self._set_failure(self._fmt('log.redundant_worker.empty_pairs_file', path=self.categories_path))
                 self.progress.emit(
                     self._fmt('log.redundant_worker.empty_pairs_file', path=self.categories_path)
                 )
                 return
         elif mode == REDUNDANT_MODE_DEDUP:
             if not dedupe_categories:
+                self._set_failure(self._fmt('log.redundant_worker.empty_categories_file', path=self.categories_path))
                 self.progress.emit(
                     self._fmt('log.redundant_worker.empty_categories_file', path=self.categories_path)
                 )
                 return
         else:
+            self._set_failure(self._fmt('log.redundant_worker.unknown_mode', mode=mode))
             self.progress.emit(self._fmt('log.redundant_worker.unknown_mode', mode=mode))
             return
 
@@ -225,3 +236,4 @@ class RedundantCategoryWorker(BaseWorker):
                 skipped=skipped_count,
                 errors=error_count,
             ))
+        self.error_count = error_count

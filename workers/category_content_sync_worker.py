@@ -12,6 +12,7 @@ from typing import Optional
 
 import pywikibot
 import requests
+import mwparserfromhell
 from PySide6.QtCore import QThread, Signal
 
 from .base_worker import BaseWorker
@@ -19,6 +20,10 @@ from ..constants import REQUEST_HEADERS
 from ..core.api_client import WikimediaAPIClient
 from ..core.localization import translate_runtime
 from ..core.namespace_manager import get_policy_prefix, strip_ns_prefix
+from ..core.redundant_category_logic import (
+    category_prefix_aliases,
+    normalize_category_name,
+)
 from ..utils import (
     default_sync_add_category_summary,
     default_sync_add_parent_category_summary,
@@ -598,16 +603,19 @@ class CategoryContentSyncPreviewWorker(QThread):
 
     def run(self):
         if not self.process_articles and not self.process_subcategories:
+            self._set_failure(self._t("log.sync_worker.no_modes_selected"))
             self.progress.emit(
                 _t("log.sync_preview.no_modes_selected")
             )
             return
         if not self.source_lang or not self.target_lang:
+            self._set_failure(self._t("log.sync_worker.missing_languages"))
             self.progress.emit(
                 _t("log.sync_preview.missing_languages")
             )
             return
         if self.source_lang == self.target_lang:
+            self._set_failure(self._t("log.sync_worker.same_languages"))
             self.progress.emit(
                 _t("log.sync_preview.same_languages")
             )
@@ -617,6 +625,7 @@ class CategoryContentSyncPreviewWorker(QThread):
             self.target_categories, self.family, self.target_lang
         )
         if not normalized_targets:
+            self._set_failure(self._t("log.sync_worker.no_valid_targets"))
             self.progress.emit(_t("log.sync_preview.empty_categories"))
             return
 
@@ -624,6 +633,7 @@ class CategoryContentSyncPreviewWorker(QThread):
             source_site = pywikibot.Site(self.source_lang, self.family)
             target_site = pywikibot.Site(self.target_lang, self.family)
         except Exception as exc:
+            self._set_failure(exc)
             self.progress.emit(
                 _fmt("log.sync_preview.site_init_error", error_type=type(exc).__name__, error=exc)
             )
@@ -719,6 +729,9 @@ class CategoryContentSyncWorker(BaseWorker):
         self._target_category_prefix = get_policy_prefix(
             self.family, self.target_lang, 14, "Category:"
         )
+        self._target_category_prefixes = category_prefix_aliases(
+            self.family, self.target_lang
+        )
 
     def run(self):
         if not self.process_articles and not self.process_subcategories:
@@ -756,6 +769,7 @@ class CategoryContentSyncWorker(BaseWorker):
             try:
                 target_site.login(user=self.username)
             except Exception as exc:
+                self._set_failure(exc)
                 self.progress.emit(
                     self._fmt(
                         "log.sync_worker.target_auth_error",
@@ -985,6 +999,7 @@ class CategoryContentSyncWorker(BaseWorker):
                     already=stats_subcats["already"],
                 )
             )
+        self.error_count = int(stats_articles["error"]) + int(stats_subcats["error"])
 
     def _emit_category_done(self) -> None:
         try:
@@ -1041,16 +1056,35 @@ class CategoryContentSyncWorker(BaseWorker):
             pass
 
     def _category_already_exists(self, text: str, category_name: str) -> bool:
-        normalized_text = _normalize_space(text)
-        base_category_name = _normalize_space(category_name.split(":", 1)[-1])
-        target_prefix_pattern = re.escape(
-            (self._target_category_prefix or "Category:").rstrip(":")
+        prefixes = getattr(self, "_target_category_prefixes", None) or (
+            category_prefix_aliases(self.family, self.target_lang)
         )
-        category_tag_pattern = (
-            rf"\[\[\s*{target_prefix_pattern}\s*:\s*"
-            rf"{re.escape(base_category_name)}(?:\s*\|[^\]]*)?\s*\]\]"
+        target_name = normalize_category_name(category_name, prefixes).casefold()
+        if not target_name:
+            return False
+
+        try:
+            wikicode = mwparserfromhell.parse(text or "")
+        except Exception:
+            return False
+
+        prefix_keys = tuple(
+            f"{prefix.strip().rstrip(':').casefold()}:"
+            for prefix in prefixes
+            if prefix and prefix.strip().rstrip(":")
         )
-        return bool(re.search(category_tag_pattern, normalized_text, re.IGNORECASE))
+        for link in wikicode.filter_wikilinks(recursive=True):
+            raw_title = str(link.title or "").strip()
+            # [[:Category:Foo]] is an ordinary link, not category membership.
+            if not raw_title or raw_title.startswith(":"):
+                continue
+            title_key = raw_title.casefold()
+            if not any(title_key.startswith(prefix) for prefix in prefix_keys):
+                continue
+            candidate = normalize_category_name(raw_title, prefixes).casefold()
+            if candidate == target_name:
+                return True
+        return False
 
     def _wait_before_lookup(self):
         now = time.time()

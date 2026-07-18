@@ -11,6 +11,10 @@ from ..constants import REQUEST_HEADERS, MIN_REQUEST_INTERVAL, MAX_RATE_INTERVAL
 from .localization import translate_runtime
 
 
+class APIRequestError(RuntimeError):
+    """The API request failed, as opposed to returning a legitimate missing page."""
+
+
 class WikimediaAPIClient:
     """HTTP client with rate limiting for Wikimedia API operations."""
     
@@ -175,6 +179,7 @@ class WikimediaAPIClient:
             "format": "json"
         }
 
+        last_error: Exception | None = None
         for attempt in range(1, retries + 1):
             try:
                 debug(f"API POST batch content lang={lang} count={len(normalized)}")
@@ -184,10 +189,20 @@ class WikimediaAPIClient:
 
                 if r.status_code == 429:
                     debug(f"API ERR 429 (rate limit) for batch; attempt {attempt}/{retries}")
+                    last_error = APIRequestError("HTTP 429 while fetching page batch")
                     if attempt < retries:
                         self._rate_backoff(0.6 * attempt)
                         continue
-                    return {}
+                    raise last_error
+
+                if r.status_code in (500, 502, 503, 504, 520, 521, 522, 524):
+                    last_error = APIRequestError(
+                        f"HTTP {r.status_code} while fetching page batch"
+                    )
+                    if attempt < retries:
+                        self._rate_backoff(0.5 * attempt)
+                        continue
+                    raise last_error
 
                 if r.status_code in (413, 414) and len(normalized) > 1:
                     # Payload too large / URI too long even with POST — split batch
@@ -201,10 +216,17 @@ class WikimediaAPIClient:
 
                 if r.status_code != 200:
                     debug(f"API ERR {r.status_code} for batch")
-                    return {}
+                    raise APIRequestError(
+                        f"HTTP {r.status_code} while fetching page batch"
+                    )
 
                 data = r.json()
-                pages = data.get("query", {}).get("pages", {})
+                if data.get("error"):
+                    raise APIRequestError(
+                        f"MediaWiki API error while fetching page batch: {data['error']}"
+                    )
+                query = data.get("query", {})
+                pages = query.get("pages", {})
                 result: dict[str, List[str]] = {}
                 for p in pages.values():
                     if "missing" in p:
@@ -213,16 +235,41 @@ class WikimediaAPIClient:
                     title = p.get("title") or ""
                     text = p.get("revisions", [{}])[0].get("*", "")
                     result[title] = (text.split("\n") if text else [])
+
+                # MediaWiki can normalize spaces, underscores, and first-letter case.
+                # Keep aliases in the result so the caller can preserve input order
+                # without mistaking a normalized title for a missing page.
+                for item in query.get("normalized", []) or []:
+                    source = str(item.get("from") or "")
+                    target = str(item.get("to") or "")
+                    if source and target in result:
+                        result[source] = result[target]
                 return result
 
-            except requests.exceptions.Timeout:
+            except APIRequestError:
+                raise
+            except requests.exceptions.RequestException as e:
+                last_error = e
                 if attempt < retries:
-                    time.sleep(2 ** attempt)
+                    self._rate_backoff(0.5 * attempt)
+                    time.sleep(min(4.0, 0.5 * (2 ** (attempt - 1))))
+                    continue
+                raise APIRequestError(
+                    f"Network error while fetching page batch: {e}"
+                ) from e
             except Exception as e:
+                last_error = e
                 debug(f"Batch fetch error: {e}")
-                return {}
+                if attempt < retries:
+                    self._rate_backoff(0.4 * attempt)
+                    continue
+                raise APIRequestError(
+                    f"Failed to fetch page batch: {e}"
+                ) from e
 
-        return {}
+        raise APIRequestError(
+            f"Failed to fetch page batch: {last_error or 'unknown error'}"
+        )
     
     def get_namespace_info(self, family: str, lang: str) -> dict:
         """

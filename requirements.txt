@@ -2,4 +2,5 @@ PySide6>=6.11.1
 pywikibot>=11.3.0
 requests>=2.34.2
 packaging>=26.2
+mwparserfromhell>=0.7.2
 

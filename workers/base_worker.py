@@ -4,6 +4,7 @@ Base worker class with common rate limiting functionality for Wiki Category Tool
 
 import time
 import re
+import threading
 from PySide6.QtCore import QThread, Signal
 import pywikibot
 
@@ -41,7 +42,10 @@ class BaseWorker(QThread):
         self.lang = lang
         self.family = family
         self._stop = False
+        self._stop_event = threading.Event()
         self.saved_edits = 0
+        self.failed = False
+        self.failure_message = ''
         self._last_rate_notice_ts = 0.0
         
         # Инициализация rate limiting
@@ -60,14 +64,14 @@ class BaseWorker(QThread):
     def request_stop(self):
         """Запрос на корректную остановку операции."""
         self._stop = True
-        # Попробуем разбудить поток, если он спит в ожидании
-        try:
-            # Небольшой пинок событий, чтобы выйти из внутренних циклов ожидания
-            time.sleep(0)
-        except Exception:
-            pass
+        self._stop_event.set()
 
-    def graceful_stop(self, timeout_ms: int = 7000):
+    def _set_failure(self, error) -> None:
+        """Marks a fatal worker failure for a truthful final UI status."""
+        self.failed = True
+        self.failure_message = str(error or '')
+
+    def graceful_stop(self, timeout_ms: int = 7000) -> bool:
         """Корректно останавливает поток и ждёт завершения."""
         try:
             self.request_stop()
@@ -82,13 +86,10 @@ class BaseWorker(QThread):
             self.wait(timeout_ms)
         except Exception:
             pass
-        # Если поток всё ещё работает, принудительно завершаем
         try:
-            if hasattr(self, 'isRunning') and self.isRunning():
-                self.terminate()
-                self.wait(2000)
+            return not (hasattr(self, 'isRunning') and self.isRunning())
         except Exception:
-            pass
+            return False
     
     def _init_save_ratelimit(self):
         """Инициализация адаптивного rate limiting."""
@@ -96,13 +97,22 @@ class BaseWorker(QThread):
         self._save_min_interval = 0.25
         self._last_save_ts = 0.0
     
-    def _wait_before_save(self):
+    def _interruptible_wait(self, seconds: float) -> bool:
+        """Ждёт указанное время и возвращает False, если поступила остановка."""
+        if self._stop or self._stop_event.is_set():
+            return False
+        if seconds > 0 and self._stop_event.wait(seconds):
+            return False
+        return not self._stop
+
+    def _wait_before_save(self) -> bool:
         """Ожидание перед сохранением согласно rate limiting."""
         now = time.time()
         to_wait = max(0.0, (self._last_save_ts + self._save_min_interval) - now)
-        if to_wait > 0:
-            time.sleep(to_wait)
+        if not self._interruptible_wait(to_wait):
+            return False
         self._last_save_ts = time.time()
+        return True
     
     def _increase_save_interval(self, attempt: int):
         """
@@ -200,8 +210,11 @@ class BaseWorker(QThread):
             True если сохранение успешно, False в противном случае
         """
         for attempt in range(1, retries + 1):
+            if self._stop or self._stop_event.is_set():
+                return False
             try:
-                self._wait_before_save()
+                if not self._wait_before_save():
+                    return False
                 started_at = time.time()
                 page.text = text
                 page.save(summary=summary, minor=minor, quiet=True)
@@ -216,10 +229,8 @@ class BaseWorker(QThread):
                     hinted_wait = self._extract_wait_seconds(str(e))
                     wait_s = max(self._save_min_interval, hinted_wait, 0.35 * attempt)
                     self._emit_rate_notice(wait_s, attempt, retries)
-                    try:
-                        time.sleep(wait_s)
-                    except Exception:
-                        pass
+                    if not self._interruptible_wait(wait_s):
+                        return False
                     continue
                 try:
                     self.progress.emit(self._fmt('log.base.save_error', error_type=type(e).__name__, error=e))

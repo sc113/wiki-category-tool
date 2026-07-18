@@ -6,8 +6,7 @@ import csv
 from PySide6.QtCore import Signal
 
 from .base_worker import BaseWorker
-from ..core.api_client import WikimediaAPIClient
-from ..utils import write_row
+from ..core.api_client import APIRequestError, WikimediaAPIClient
 
 
 class ParseWorker(BaseWorker):
@@ -39,6 +38,9 @@ class ParseWorker(BaseWorker):
         self.api_client = WikimediaAPIClient()
         self.output_file = None
         self.writer = None
+        self.failed = False
+        self.failure_message = ''
+        self.processed_count = 0
 
     def run(self):
         """Основной метод выполнения чтения страниц."""
@@ -47,6 +49,8 @@ class ParseWorker(BaseWorker):
             self.output_file = open(self.out_path, 'w', newline='', encoding='utf-8-sig')
             self.writer = csv.writer(self.output_file, delimiter='\t')
         except Exception as e:
+            self.failed = True
+            self.failure_message = str(e)
             self.progress.emit(self._fmt('log.parse.file_create_error', error=e))
             return
         
@@ -56,19 +60,27 @@ class ParseWorker(BaseWorker):
         batch_size = 50
         titles = list(self.titles)
         i = 0
-        while i < len(titles) and not self._stop:
+        while i < len(titles) and not self._stop and not self.failed:
             batch = titles[i:i + batch_size]
             i += batch_size
+            # Разрешаем HTML сущности в заголовках перед запросом
             try:
-                # Разрешаем HTML сущности в заголовках перед запросом
-                try:
-                    import html as _html
-                except Exception:
-                    _html = None
-                decoded = [(_html.unescape(t) if _html else t) for t in batch]
-                mapping = self.api_client.fetch_contents_batch(decoded, self.ns_sel, lang=self.lang, family=self.family)
+                import html as _html
             except Exception:
-                mapping = {}
+                _html = None
+            decoded = [(_html.unescape(t) if _html else t) for t in batch]
+            try:
+                mapping = self.api_client.fetch_contents_batch(decoded, self.ns_sel, lang=self.lang, family=self.family)
+            except APIRequestError as exc:
+                self.failed = True
+                self.failure_message = str(exc)
+                self.progress.emit(self._fmt('log.parse.batch_error', error=exc))
+                break
+            except Exception as exc:
+                self.failed = True
+                self.failure_message = str(exc)
+                self.progress.emit(self._fmt('log.parse.batch_error', error=exc))
+                break
 
             # Сопоставляем результаты, чтобы сохранить в исходном порядке по заголовкам батча
             title_to_lines = mapping or {}
@@ -118,35 +130,53 @@ class ParseWorker(BaseWorker):
                     self.progress.emit(self._fmt('log.parse.not_found', title=original))
                     # В файл не пишем пустые результаты
                     processed_count += 1
+                    self.processed_count = processed_count
                     self.item_processed.emit()
                 else:
                     # Записываем с тем названием, которое вернул API (found_key), а не с original
                     title_to_write = found_key if found_key else original
                     self.progress.emit(self._fmt('log.parse.lines_count', title=original, lines=len(lines)))
-                    self._write_result_immediately((title_to_write, lines))
+                    if not self._write_result_immediately((title_to_write, lines)):
+                        break
                     processed_count += 1
+                    self.processed_count = processed_count
                     self.item_processed.emit()
         
         # Закрываем файл
         try:
             if self.output_file:
                 self.output_file.close()
-            if processed_count > 0:
+            if self.failed and processed_count > 0:
+                self.progress.emit(
+                    self._fmt(
+                        'log.parse.partial_saved_to_file',
+                        count=processed_count,
+                        path=self.out_path,
+                    )
+                )
+            elif processed_count > 0:
                 self.progress.emit(self._fmt('log.parse.saved_to_file', count=processed_count, path=self.out_path))
             else:
                 self.progress.emit(self._t('log.parse.no_data_to_save'))
         except Exception as e:
+            self.failed = True
+            self.failure_message = str(e)
             self.progress.emit(self._fmt('log.parse.file_close_error', error=e))
     
     def _write_result_immediately(self, result):
         """Немедленная запись результата в файл"""
         try:
             title, lines = result
-            if lines:
-                self.writer.writerow([title, *lines])
-                self.output_file.flush()  # Принудительная запись на диск
+            # Empty pages are valid data too; preserve them as ``Title<TAB>``.
+            row = [title, *lines] if lines else [title, '']
+            self.writer.writerow(row)
+            self.output_file.flush()  # Принудительная запись на диск
+            return True
         except Exception as e:
+            self.failed = True
+            self.failure_message = str(e)
             self.progress.emit(self._fmt('log.parse.result_write_error', error=e))
+            return False
     
     def request_stop(self):
         """Переопределяем метод остановки для корректного закрытия файла"""

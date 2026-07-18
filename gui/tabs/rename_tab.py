@@ -1144,7 +1144,16 @@ class RenameTab(QWidget):
             pass
         self.rename_btn.setEnabled(True)
         self.rename_stop_btn.setEnabled(False)
-        msg = self._t('ui.stopped', 'Stopped!') if stopped else self._t('ui.rename_completed')
+        if stopped:
+            msg = self._t('ui.stopped', 'Stopped!')
+        elif worker and getattr(worker, 'failed', False):
+            msg = self._fmt(
+                'ui.operation_failed',
+                'Operation failed: {error}',
+                error=getattr(worker, 'failure_message', ''),
+            )
+        else:
+            msg = self._t('ui.rename_completed')
         try:
             # Служебное системное сообщение: статус ℹ️, без иконки объекта
             log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, msg, 'manual', 'info', None, None, True)

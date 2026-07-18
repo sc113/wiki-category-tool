@@ -3737,13 +3737,6 @@ class MainWindow(QMainWindow):
             pass
 
         try:
-            if hasattr(worker, 'isRunning') and worker.isRunning() and hasattr(worker, 'terminate'):
-                worker.terminate()
-                worker.wait(2000)
-        except Exception:
-            pass
-
-        try:
             return not (hasattr(worker, 'isRunning') and worker.isRunning())
         except Exception:
             return True

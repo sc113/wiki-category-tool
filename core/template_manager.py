@@ -4,6 +4,7 @@ Template management module for handling template rules and caching.
 import os
 import json
 import re
+import mwparserfromhell
 from typing import Dict, List, Tuple, Any, Optional
 from threading import Event
 
@@ -288,6 +289,21 @@ class TemplateManager:
         except Exception:
             pass
     
+    @staticmethod
+    def _parse_single_template(template_chunk: str):
+        """Parse a chunk containing exactly one top-level template."""
+        try:
+            code = mwparserfromhell.parse(template_chunk or '')
+            templates = list(code.filter_templates(recursive=False))
+            if len(templates) != 1:
+                return None
+            template = templates[0]
+            if str(code).strip() != str(template).strip():
+                return None
+            return template
+        except Exception:
+            return None
+
     def _parse_template_tokens(self, template_chunk: str) -> Tuple[str, List[str]]:
         """
         Parse template {{...}} into name and parameter list.
@@ -298,15 +314,10 @@ class TemplateManager:
         Returns:
             Tuple of (template_name, parameters_list)
         """
-        if not (template_chunk.startswith('{{') and template_chunk.endswith('}}')):
+        template = self._parse_single_template(template_chunk)
+        if template is None:
             return '', []
-        inner = template_chunk[2:-2]
-        parts = inner.split('|')
-        if not parts:
-            return '', []
-        head = parts[0]
-        params = parts[1:]
-        return head, params
+        return str(template.name), [str(param) for param in template.params]
     
     def _split_params(self, params: List[str]) -> Tuple[List[str], List[Tuple[str, str, str]]]:
         """
@@ -349,15 +360,16 @@ class TemplateManager:
                 'unnamed': [ (idx1_based, old_val_stripped, new_val_stripped), ... ]
             }
         """
-        name_b, params_b = self._parse_template_tokens(before_chunk)
-        name_a, params_a = self._parse_template_tokens(after_chunk)
-        result = {'name': name_a or name_b, 'named': {}, 'unnamed': []}
-        
-        if not params_b or not params_a:
+        before = self._parse_single_template(before_chunk)
+        after = self._parse_single_template(after_chunk)
+        result = {
+            'name': str(after.name if after is not None else before.name if before is not None else ''),
+            'named': {},
+            'unnamed': [],
+        }
+
+        if before is None or after is None:
             return result
-            
-        un_b, nm_b = self._split_params(params_b)
-        un_a, nm_a = self._split_params(params_a)
         
         # Match named parameters by name (case-insensitive, normalize spaces/underscores)
         def _norm_name(s: str) -> str:
@@ -369,14 +381,20 @@ class TemplateManager:
             return s2.casefold()
         
         map_b: Dict[str, str] = {}
-        for left, eq, val in nm_b:
-            nm = _norm_name(left)
-            map_b[nm] = (val or '').strip()
+        un_b: List[str] = []
+        for param in before.params:
+            if param.showkey:
+                map_b[_norm_name(str(param.name))] = str(param.value).strip()
+            else:
+                un_b.append(str(param.value))
             
         map_a: Dict[str, str] = {}
-        for left, eq, val in nm_a:
-            nm = _norm_name(left)
-            map_a[nm] = (val or '').strip()
+        un_a: List[str] = []
+        for param in after.params:
+            if param.showkey:
+                map_a[_norm_name(str(param.name))] = str(param.value).strip()
+            else:
+                un_a.append(str(param.value))
             
         for nm, oldv in map_b.items():
             newv = map_a.get(nm)
@@ -638,12 +656,8 @@ class TemplateManager:
             mode = self.normalize_dedupe_mode(dedupe_mode)
             if mode not in ('left', 'right'):
                 return template_text
-            chunk = template_text
-            if not (chunk.startswith('{{') and chunk.endswith('}}')):
-                return template_text
-            inner = chunk[2:-2]
-            parts = inner.split('|') if inner else []
-            if len(parts) <= 1:
+            template = self._parse_single_template(template_text)
+            if template is None:
                 return template_text
             def _norm_val(s: str) -> str:
                 try:
@@ -651,21 +665,22 @@ class TemplateManager:
                 except Exception:
                     return (s or '').strip()
             tgt = _norm_val(target_new_value)
-            pos_list = []
-            for idx1, tok in enumerate(parts[1:], 1):
+            matches = []
+            for param in template.params:
                 try:
-                    if '=' in tok:
+                    if param.showkey:
                         continue
-                    if _norm_val(tok) == tgt and tgt != '':
-                        pos_list.append(idx1)
+                    if _norm_val(str(param.value)) == tgt and tgt != '':
+                        matches.append(param)
                 except Exception:
                     continue
-            if len(pos_list) < 2:
+            if len(matches) < 2:
                 return template_text
-            keep = pos_list[0] if mode == 'left' else pos_list[-1]
-            to_remove = {p for p in pos_list if p != keep}
-            rebuilt = [parts[0]] + [tok for idx, tok in enumerate(parts[1:], 1) if idx not in to_remove]
-            return '{{' + '|'.join(rebuilt) + '}}'
+            keep = matches[0] if mode == 'left' else matches[-1]
+            for param in matches:
+                if param is not keep:
+                    template.remove(param)
+            return str(template)
         except Exception:
             return template_text
     
@@ -682,219 +697,187 @@ class TemplateManager:
             Tuple of (new_chunk, number_of_replacements)
         """
         try:
-            name, params = self._parse_template_tokens(chunk)
-            if not params:
+            template = self._parse_single_template(chunk)
+            if template is None or not template.params:
                 return chunk, 0
-                
-            tmpl_key = self._norm_tmpl_key(name, family, lang)
-            if not tmpl_key:
-                return chunk, 0
-                
+
+            tmpl_key = self._norm_tmpl_key(str(template.name), family, lang)
             bucket = self.template_auto_cache.get(tmpl_key) or {}
             if not bucket:
                 return chunk, 0
-                
-            unnamed, named = self._split_params(params)
-            changed = False
-            # Индексы безымянных параметров, которые нужно удалить при реконструкции (дедупликация)
-            drop_unnamed_indices: set[int] = set()
-            
-            # Старые маппинги больше не используются — применяем только rules
-            
-            # Нормализация через utils для единообразия по всему проекту
+
             from ..utils import normalize_spaces_for_compare as _norm
-            def _normalize_for_compare(s: str) -> str:
-                return _norm(s)
-            
-            # First try unnamed sequences
+
+            def _normalize_for_compare(value: str) -> str:
+                return _norm(value)
+
+            def _strip_quotes(value: str) -> str:
+                stripped = str(value or '').strip()
+                if (
+                    len(stripped) >= 2
+                    and stripped[0] == stripped[-1]
+                    and stripped[0] in ('"', "'")
+                ):
+                    return stripped[1:-1]
+                return stripped
+
+            def _unnamed_params():
+                return [param for param in template.params if not param.showkey]
+
+            changed = False
+            drop_params = []
+
+            # Compatibility with legacy cached positional mappings.
             applied_sequence = False
-            for seq in (bucket.get('unnamed_sequence') or []):
-                ok = True
-                for idx1, oldv, newv in seq:
-                    if idx1 - 1 >= len(unnamed) or _normalize_for_compare(unnamed[idx1 - 1]) != _normalize_for_compare(oldv):
-                        ok = False
+            for sequence in bucket.get('unnamed_sequence') or []:
+                positional = _unnamed_params()
+                valid = True
+                for idx1, old_value, _new_value in sequence:
+                    idx = int(idx1) - 1
+                    if (
+                        idx < 0
+                        or idx >= len(positional)
+                        or _normalize_for_compare(str(positional[idx].value))
+                        != _normalize_for_compare(old_value)
+                    ):
+                        valid = False
                         break
-                if ok:
-                    # Apply all sequence elements
-                    tmp = list(unnamed)
-                    for idx1, oldv, newv in seq:
-                        tmp[idx1 - 1] = newv
-                    unnamed = tmp
+                if valid:
+                    for idx1, _old_value, new_value in sequence:
+                        positional[int(idx1) - 1].value = str(new_value)
                     changed = True
                     applied_sequence = True
                     break
-            
-            # If no sequence applied - single unnamed rules
-            if not applied_sequence and (bucket.get('unnamed_single') or {}):
-                mapping = bucket.get('unnamed_single') or {}
-                # For each rule find EXACTLY one match
-                tmp = list(unnamed)
-                for oldv, newv in mapping.items():
-                    matches = [i for i, tok in enumerate(tmp) if _normalize_for_compare(tok) == _normalize_for_compare(oldv)]
-                    if len(matches) == 1:
-                        tmp[matches[0]] = newv
-                        changed = True
-                unnamed = tmp
 
-            # Дополнительно применяем независимые правила bucket['rules'] (поддержка множества правил на шаблон)
-            # Применяем только те, для которых auto=approve
-            # bucket-level автофлаг
-            bucket_auto = str((bucket.get('auto') or '')).strip().casefold()
-            for rule in (bucket.get('rules') or []):
+            if not applied_sequence:
+                for old_value, new_value in (bucket.get('unnamed_single') or {}).items():
+                    positional = _unnamed_params()
+                    matches = [
+                        param
+                        for param in positional
+                        if _normalize_for_compare(str(param.value))
+                        == _normalize_for_compare(old_value)
+                    ]
+                    if len(matches) == 1:
+                        matches[0].value = str(new_value)
+                        changed = True
+
+            bucket_auto = str(bucket.get('auto') or '').strip().casefold()
+            for rule in bucket.get('rules') or []:
                 try:
-                    rtype = rule.get('type')
                     rule_auto = str(rule.get('auto', 'none')).strip().casefold()
-                    # Разрешаем применение, если auto=approve у правила ИЛИ у всего шаблона
-                    if not ((rule_auto == 'approve') or (bucket_auto == 'approve')):
+                    if rule_auto != 'approve' and bucket_auto != 'approve':
                         continue
-                    if rtype == 'named':
-                        nm_cf = (rule.get('param') or '').strip().casefold()
-                        src = (rule.get('from') or '').strip()
-                        dst = (rule.get('to') or '').strip()
-                        new_named2: List[Tuple[str, str, str]] = []
-                        for left, eq, val in named:
-                            left_cf = re.sub(r"[_\s]+", " ", (left or '').strip()).casefold()
-                            if left_cf == nm_cf and _normalize_for_compare(val) == _normalize_for_compare(src):
-                                val = dst
-                                changed = True
-                            new_named2.append((left, eq, val))
-                        named = new_named2
-                    elif rtype == 'unnamed_single':
-                        src = (rule.get('from') or '').strip()
-                        dst = (rule.get('to') or '').strip()
-                        tmp = list(unnamed)
-                        # Сопоставление допускает точное совпадение и совпадение со снятыми внешними кавычками
-                        def _strip_quotes(s: str) -> str:
-                            try:
-                                ss = (s or '').strip()
-                                if len(ss) >= 2 and ss[0] == ss[-1] and ss[0] in ('"', "'"):
-                                    return ss[1:-1]
-                                return ss
-                            except Exception:
-                                return s
-                        src_norm = _normalize_for_compare(src)
-                        matches: list[tuple[int, bool, str]] = []  # (index, had_quotes, quote_char)
-                        for i, tok in enumerate(tmp):
-                            try:
-                                t_norm = _normalize_for_compare(tok)
-                                t_plain = _strip_quotes(tok)
-                                t_plain_norm = _normalize_for_compare(t_plain)
-                                
-                                # ЗАЩИТА ОТ ПОВТОРНОЙ ЗАМЕНЫ: пропускаем, если значение уже содержит целевую подстроку
-                                # Например, если src="в Аксае", dst="в Аксае (Дагестан)",
-                                # то "в Аксае (Дагестан)" не должно считаться совпадением
-                                if dst and (dst in tok or dst in t_plain):
-                                    continue
-                                
-                                if t_norm == src_norm:
-                                    matches.append((i, False, ''))
-                                    continue
-                                # Сравнить со снятыми кавычками
-                                if t_plain_norm == src_norm:
-                                    qc = ''
-                                    st = (tok or '').strip()
-                                    if len(st) >= 2 and st[0] == st[-1] and st[0] in ('"', "'"):
-                                        qc = st[0]
-                                    matches.append((i, True, qc))
-                            except Exception:
+                    rule_type = str(rule.get('type') or '')
+
+                    if rule_type == 'named':
+                        target_name = re.sub(
+                            r'[_\s]+', ' ', str(rule.get('param') or '').strip()
+                        ).casefold()
+                        source = str(rule.get('from') or '').strip()
+                        target = str(rule.get('to') or '').strip()
+                        for param in template.params:
+                            if not param.showkey:
                                 continue
-                        if len(matches) == 1:
-                            # Пробное применение для оценки дублей, если дедуп не задан
-                            trial_tmp = list(tmp)
-                            idx, had_quotes, qch = matches[0]
-                            new_val = (f"{qch}{dst}{qch}") if (had_quotes and qch) else dst
-                            trial_tmp[idx] = new_val
-                            # Определим режим дедупликации, если сохранён
-                            try:
-                                dedupe_mode = str(rule.get('dedupe') or '').strip()
-                            except Exception:
-                                dedupe_mode = ''
-                            # Если дедуп не задан (unset) и создаются дубли — НЕ применяем автоматически (пусть отработает интерактивный диалог)
-                            if not dedupe_mode:
-                                # Учитываем возможные кавычки вокруг целевого значения при проверке дублей
-                                dup_idx = [i for i, tok in enumerate(trial_tmp) if _normalize_for_compare(_strip_quotes(tok)) == _normalize_for_compare(dst)]
-                                if len(dup_idx) >= 2:
-                                    # пропускаем авто‑замену этой позиции, чтобы диалог показался позже
-                                    pass
-                                else:
-                                    tmp = trial_tmp
-                                    changed = True
-                            else:
-                                # Обратная совместимость: keep_first/keep_second → left/right
-                                if dedupe_mode == 'keep_first':
-                                    dedupe_mode = 'left'
-                                elif dedupe_mode == 'keep_second':
-                                    dedupe_mode = 'right'
-                                tmp = trial_tmp
+                            param_name = re.sub(
+                                r'[_\s]+', ' ', str(param.name).strip()
+                            ).casefold()
+                            if (
+                                param_name == target_name
+                                and _normalize_for_compare(str(param.value))
+                                == _normalize_for_compare(source)
+                            ):
+                                param.value = target
                                 changed = True
-                                # Применяем удаление дублей по политике, если они есть
-                                dup_idx = [i for i, tok in enumerate(tmp) if _normalize_for_compare(_strip_quotes(tok)) == _normalize_for_compare(dst)]
-                                if len(dup_idx) >= 2:
-                                    if dedupe_mode == 'left':
-                                        for i in dup_idx[1:]:
-                                            drop_unnamed_indices.add(i)
-                                    elif dedupe_mode == 'right':
-                                        for i in dup_idx[:-1]:
-                                            drop_unnamed_indices.add(i)
-                                    elif dedupe_mode == 'keep_both':
-                                        pass
-                        unnamed = tmp
-                    elif rtype == 'unnamed_sequence':
-                        seq = rule.get('sequence') or []
-                        ok = True
-                        for item in seq:
-                            idx1 = int(item.get('idx', 0))
-                            src = (item.get('from') or '').strip()
-                            if idx1 - 1 >= len(unnamed) or _normalize_for_compare(unnamed[idx1 - 1]) != _normalize_for_compare(src):
-                                ok = False
+
+                    elif rule_type == 'unnamed_single':
+                        source = str(rule.get('from') or '').strip()
+                        target = str(rule.get('to') or '').strip()
+                        positional = _unnamed_params()
+                        matches = []
+                        for index, param in enumerate(positional):
+                            value = str(param.value)
+                            plain = _strip_quotes(value)
+                            if target and (target in value or target in plain):
+                                continue
+                            if (
+                                _normalize_for_compare(value)
+                                == _normalize_for_compare(source)
+                                or _normalize_for_compare(plain)
+                                == _normalize_for_compare(source)
+                            ):
+                                quote_char = ''
+                                stripped = value.strip()
+                                if (
+                                    len(stripped) >= 2
+                                    and stripped[0] == stripped[-1]
+                                    and stripped[0] in ('"', "'")
+                                ):
+                                    quote_char = stripped[0]
+                                matches.append((index, param, quote_char))
+                        if len(matches) != 1:
+                            continue
+
+                        match_index, match_param, quote_char = matches[0]
+                        new_value = (
+                            f'{quote_char}{target}{quote_char}' if quote_char else target
+                        )
+                        trial_values = [str(param.value) for param in positional]
+                        trial_values[match_index] = new_value
+                        duplicate_indices = [
+                            index
+                            for index, value in enumerate(trial_values)
+                            if _normalize_for_compare(_strip_quotes(value))
+                            == _normalize_for_compare(target)
+                        ]
+                        dedupe_mode = self.normalize_dedupe_mode(rule.get('dedupe'))
+                        if len(duplicate_indices) >= 2 and not dedupe_mode:
+                            continue
+
+                        match_param.value = new_value
+                        changed = True
+                        if len(duplicate_indices) >= 2 and dedupe_mode in ('left', 'right'):
+                            keep_index = (
+                                duplicate_indices[0]
+                                if dedupe_mode == 'left'
+                                else duplicate_indices[-1]
+                            )
+                            drop_params.extend(
+                                positional[index]
+                                for index in duplicate_indices
+                                if index != keep_index
+                            )
+
+                    elif rule_type == 'unnamed_sequence':
+                        sequence = rule.get('sequence') or []
+                        positional = _unnamed_params()
+                        valid = True
+                        for item in sequence:
+                            idx = int(item.get('idx', 0)) - 1
+                            source = str(item.get('from') or '').strip()
+                            if (
+                                idx < 0
+                                or idx >= len(positional)
+                                or _normalize_for_compare(str(positional[idx].value))
+                                != _normalize_for_compare(source)
+                            ):
+                                valid = False
                                 break
-                        if ok:
-                            tmp = list(unnamed)
-                            for item in seq:
-                                idx1 = int(item.get('idx', 0))
-                                dst = (item.get('to') or '').strip()
-                                tmp[idx1 - 1] = dst
-                            unnamed = tmp
+                        if valid:
+                            for item in sequence:
+                                idx = int(item.get('idx', 0)) - 1
+                                positional[idx].value = str(item.get('to') or '').strip()
                             changed = True
                 except Exception:
                     continue
-            
-            if not changed:
-                return chunk, 0
-            
-            # Rebuild template
-            parts_new: List[str] = [name]
-            # Preserve order: first unnamed and named in original params order
-            rebuilt_params: List[str] = []
-            unnamed_idx = 0
-            named_idx = 0
-            
-            for raw in params:
-                if '=' in raw:
-                    # Named сохраняем как есть по текущему списку named
-                    try:
-                        left, eq, val = named[named_idx]
-                    except Exception:
-                        # На всякий случай: если рассинхронизация
-                        left, eq, val = ('', '=', '')
-                    named_idx += 1
-                    rebuilt_params.append(f"{left}{eq}{val}")
-                else:
-                    # Проверяем, не помечен ли текущий безымянный индекс
-                    if unnamed_idx in drop_unnamed_indices:
-                        unnamed_idx += 1
-                        continue
-                    try:
-                        tok = unnamed[unnamed_idx]
-                    except Exception:
-                        tok = ''
-                    unnamed_idx += 1
-                    rebuilt_params.append(tok)
-                    
-            parts_new.extend(rebuilt_params)
-            new_inner = '|'.join(parts_new)
-            return '{{' + new_inner + '}}', 1
-            
+
+            for param in drop_params:
+                try:
+                    template.remove(param)
+                except Exception:
+                    pass
+
+            return (str(template), 1) if changed else (chunk, 0)
         except Exception:
             return chunk, 0
     
@@ -915,46 +898,36 @@ class TemplateManager:
             self._maybe_reload_rules()
             if not self.template_auto_cache:
                 return text, 0
-                
+
+            code = mwparserfromhell.parse(text or '')
             total_applied = 0
-            start = 0
-            out_text = text
-            
-            while True:
-                l = out_text.find('{{', start)
-                if l == -1:
-                    break
-                r = out_text.find('}}', l + 2)
-                if r == -1:
-                    break
-                    
-                chunk = out_text[l:r+2]
-                if '|' not in chunk:
-                    start = r + 2
-                    continue
-                
-                # Check approve flag for specific template
-                name, _ = self._parse_template_tokens(chunk)
-                tmpl_key = self._norm_tmpl_key(name, family, lang)
+            # ``filter_templates`` is pre-order. Reverse it so nested templates
+            # are processed before their parents and every rule stays scoped to
+            # the template it was learned from.
+            templates = list(code.filter_templates(recursive=True))
+            for template in reversed(templates):
+                chunk = str(template)
+                tmpl_key = self._norm_tmpl_key(str(template.name), family, lang)
                 bucket = self.template_auto_cache.get(tmpl_key) or {}
-                # Автоприменяем, если для шаблона существуют сохранённые правила
-                # (rules/unnamed_*), либо явно разрешён автоаппрув, либо включён глобальный флаг.
-                has_rules = bool((bucket.get('rules') or [])) or bool(bucket.get('unnamed_single')) or bool(bucket.get('unnamed_sequence'))
-                auto_allowed = has_rules or (str(bucket.get('auto', '')).strip().casefold() == 'approve') or bool(self.auto_confirm_direct_all)
+                has_rules = (
+                    bool(bucket.get('rules') or [])
+                    or bool(bucket.get('unnamed_single'))
+                    or bool(bucket.get('unnamed_sequence'))
+                )
+                auto_allowed = (
+                    has_rules
+                    or str(bucket.get('auto', '')).strip().casefold() == 'approve'
+                    or bool(self.auto_confirm_direct_all)
+                )
                 if not auto_allowed:
-                    start = r + 2
                     continue
-                
+
                 new_chunk, applied = self._apply_cache_to_chunk(family, lang, chunk)
                 if applied and new_chunk != chunk:
-                    out_text = out_text[:l] + new_chunk + out_text[r+2:]
+                    code.replace(template, new_chunk, recursive=True)
                     total_applied += applied
-                    start = l + len(new_chunk)
-                else:
-                    start = r + 2
-                    
-            return out_text, total_applied
-            
+
+            return str(code), total_applied
         except Exception:
             return text, 0
     

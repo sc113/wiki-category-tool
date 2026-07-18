@@ -407,7 +407,20 @@ class CreateTab(QWidget):
         self.preview_create_btn.setEnabled(True)
         self.create_btn.setEnabled(True)
         self.create_stop_btn.setEnabled(False)
-        msg = self._t('ui.stopped') if stopped else self._t('log.create.finished')
+        if stopped:
+            msg = self._t('ui.stopped')
+        elif worker and getattr(worker, 'failed', False):
+            msg = self._fmt(
+                'ui.operation_failed',
+                error=getattr(worker, 'failure_message', ''),
+            )
+        elif int((stats or {}).get('failed', 0) or 0) > 0:
+            msg = self._fmt(
+                'ui.completed_with_errors',
+                count=int(stats.get('failed', 0) or 0),
+            )
+        else:
+            msg = self._t('log.create.finished')
         log_message(self.create_log, msg)
         init_progress(self.create_label, self.create_bar, 0)
 

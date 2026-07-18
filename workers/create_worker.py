@@ -3,6 +3,7 @@ Create worker for creating new pages in Wikimedia projects.
 """
 
 import csv
+import re
 import pywikibot
 
 from .base_worker import BaseWorker
@@ -27,17 +28,20 @@ def _format_summary(template: str, content: str) -> str:
         return template
 
     lines = content.split('\n')
-    result = template
 
-    # Заменяем $1, $2, $3... на соответствующие строки
-    for i, line in enumerate(lines, start=1):
-        result = result.replace(f'${i}', line)
+    def _replace_placeholder(match: re.Match) -> str:
+        leading = match.group('leading') or ''
+        index = int(match.group('index')) - 1
+        if 0 <= index < len(lines):
+            return leading + lines[index]
+        return ''
 
-    # Удаляем неиспользованные теги $N (если строк меньше чем тегов)
-    import re
-    result = re.sub(r'\s*\$\d+', '', result)
-
-    return result
+    # Заменяем за один проход, чтобы $1 не повреждал $10, $11, ...
+    return re.sub(
+        r'(?P<leading>\s*)\$(?P<index>\d+)',
+        _replace_placeholder,
+        template,
+    )
 
 
 class CreateWorker(BaseWorker):
@@ -78,14 +82,23 @@ class CreateWorker(BaseWorker):
 
     def run(self):
         """Основной метод выполнения создания страниц."""
-        site = pywikibot.Site(self.lang, self.family)
         from ..utils import debug
         debug(f'Login attempt create lang={self.lang}')
+
+        try:
+            site = pywikibot.Site(self.lang, self.family)
+        except Exception as e:
+            self._set_failure(e)
+            self.stats['failed'] += 1
+            self.progress.emit(self._fmt('log.create.error', error=e))
+            return
 
         if self.username and self.password:
             try:
                 site.login(user=self.username)
             except Exception as e:
+                self._set_failure(e)
+                self.stats['failed'] += 1
                 self.progress.emit(
                     self._fmt('log.worker.auth_error', error_type=type(e).__name__, error=e)
                 )
@@ -123,6 +136,8 @@ class CreateWorker(BaseWorker):
                                 self._fmt('log.create.created', title=title, lines=len(lines))
                             )
                         else:
+                            if self._stop:
+                                break
                             self.stats['failed'] += 1
                             self.progress.emit(
                                 self._fmt('log.create.failed_create', title=title)
@@ -132,6 +147,7 @@ class CreateWorker(BaseWorker):
                         self.progress.emit(self._fmt('log.create.exists', title=title))
                     self.item_processed.emit()
         except Exception as e:
+            self._set_failure(e)
             self.stats['failed'] += 1
             self.progress.emit(self._fmt('log.create.error', error=e))
         finally:

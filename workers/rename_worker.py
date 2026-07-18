@@ -314,13 +314,25 @@ class RenameWorker(BaseWorker):
 
     def run(self):
         """Основной метод выполнения переименования."""
-        site = pywikibot.Site(self.lang, self.family)
         debug(f'Login attempt rename lang={self.lang}')
+
+        try:
+            site = pywikibot.Site(self.lang, self.family)
+        except Exception as e:
+            self._set_failure(e)
+            self._emitf(
+                'log.rename_worker.auth_error',
+                'Site initialization error: {error_type}: {error}',
+                error_type=type(e).__name__,
+                error=e,
+            )
+            return
 
         if self.username and self.password:
             try:
                 site.login(user=self.username)
             except Exception as e:
+                self._set_failure(e)
                 self._emitf(
                     'log.rename_worker.auth_error',
                     'Authorization error: {error_type}: {error}',
@@ -342,10 +354,10 @@ class RenameWorker(BaseWorker):
                 for row in rows:
                     if self._stop:
                         break
-                    if len(row) < 3:
+                    if len(row) < 2:
                         self._emitf(
                             'log.rename_worker.invalid_row',
-                            'Invalid row (3 columns required): {row}',
+                            'Invalid row (at least 2 columns required): {row}',
                             row=row,
                         )
                         try:
@@ -353,7 +365,24 @@ class RenameWorker(BaseWorker):
                         except Exception:
                             pass
                         continue
-                    old_name_raw, new_name_raw, reason = [((c or '').strip().lstrip('\ufeff')) for c in row[:3]]
+                    old_name_raw = (row[0] or '').strip().lstrip('\ufeff')
+                    new_name_raw = (row[1] or '').strip().lstrip('\ufeff')
+                    reason = (
+                        (row[2] or '').strip().lstrip('\ufeff')
+                        if len(row) >= 3
+                        else ''
+                    )
+                    if not old_name_raw or not new_name_raw:
+                        self._emitf(
+                            'log.rename_worker.invalid_row',
+                            'Invalid row (old and new titles are required): {row}',
+                            row=row,
+                        )
+                        try:
+                            self.tsv_progress_inc.emit()
+                        except Exception:
+                            pass
+                        continue
                     # Запомним комментарий текущей строки (для операций переноса содержимого)
                     self._current_row_reason = reason
 
@@ -401,6 +430,7 @@ class RenameWorker(BaseWorker):
                     leave_redirect = self.leave_cat_redirect if is_category else self.leave_other_redirect
                     
                     # Если переименование категории выключено — пропускаем сам move для категорий
+                    move_succeeded = True
                     if is_category and not self.move_category:
                         try:
                             self._emitf(
@@ -412,10 +442,18 @@ class RenameWorker(BaseWorker):
                         except Exception:
                             pass
                     else:
-                        self._move_page(site, old_name, new_name, reason, leave_redirect)
+                        move_succeeded = self._move_page(
+                            site, old_name, new_name, reason, leave_redirect
+                        )
                     
                     # Если это категория и хотя бы одна фаза переноса включена — переносим участников
-                    if is_category and self.move_members and (self.phase1_enabled or self.find_in_templates) and not self._stop:
+                    transfer_requested = bool(
+                        is_category
+                        and self.move_members
+                        and (self.phase1_enabled or self.find_in_templates)
+                        and not self._stop
+                    )
+                    if transfer_requested and move_succeeded:
                         try:
                             self._debugf(
                                 'log.rename_worker.category_transfer_start_debug',
@@ -432,18 +470,33 @@ class RenameWorker(BaseWorker):
                                 title=old_name,
                                 error=e,
                             )
+                    elif transfer_requested and not move_succeeded:
+                        self._emitf(
+                            'log.rename_worker.category_transfer_skipped_move_failed',
+                            "Category content transfer skipped because rename failed: '{old}' → '{new}'.",
+                            old=old_name,
+                            new=new_name,
+                        )
                     # Инкремент общего прогресса по строкам TSV
                     try:
                         self.tsv_progress_inc.emit()
                     except Exception:
                         pass
         except Exception as e:
+            self._set_failure(e)
             self._emitf('log.rename_worker.tsv_error', 'TSV file error: {error}', error=e)
         finally:
             # Финальные сообщения об окончании теперь пишет UI
             pass
 
-    def _move_page(self, site: pywikibot.Site, old_name: str, new_name: str, reason: str, leave_redirect: bool):
+    def _move_page(
+        self,
+        site: pywikibot.Site,
+        old_name: str,
+        new_name: str,
+        reason: str,
+        leave_redirect: bool,
+    ) -> bool:
         """
         Переименование страницы с retry логикой.
         
@@ -484,7 +537,7 @@ class RenameWorker(BaseWorker):
                         'Page <b>{title}</b> not found.',
                         title=html.escape(old_name),
                     )
-                return
+                return False
             if new_page.exists():
                 # Структурированное событие; текстовый лог используем только как фолбэк
                 try:
@@ -502,7 +555,7 @@ class RenameWorker(BaseWorker):
                             'Destination page {title} already exists.',
                             title=new_name,
                         )
-                return
+                return False
 
             # Сформируем комментарий к правке для операции переименования
             # В summary оставляем только дополнительный комментарий (без «Old → New»),
@@ -529,9 +582,11 @@ class RenameWorker(BaseWorker):
             # Адаптивный retry для move операций
             for attempt in range(1, 4):
                 try:
-                    self._wait_before_save()
+                    if not self._wait_before_save():
+                        return False
                     # Для актуальных версий pywikibot используется параметр noredirect
                     page.move(new_name, reason=move_summary, noredirect=(not leave_redirect))
+                    self.saved_edits = int(getattr(self, 'saved_edits', 0) or 0) + 1
                     self._decay_save_interval()
 
                     # Если пользователь просил не оставлять редирект, но он всё же остался,
@@ -581,7 +636,7 @@ class RenameWorker(BaseWorker):
                         self.progress.emit(msg)
                     except Exception:
                         self.progress.emit(self._tr('log.rename_worker.rename_success', 'Renamed successfully'))
-                    return
+                    return True
                 except Exception as e:
                     if self._is_rate_error(e) and attempt < 3:
                         self._increase_save_interval(attempt)
@@ -611,7 +666,7 @@ class RenameWorker(BaseWorker):
                             error_type=type(e).__name__,
                             error=e,
                         )
-                    return
+                    return False
         except Exception as e:
             try:
                 self._emitf(
@@ -627,6 +682,7 @@ class RenameWorker(BaseWorker):
                     title=old_name,
                     error=e,
                 )
+        return False
 
     def _move_category_members(self, site: pywikibot.Site, old_name: str, new_name: str):
         """
@@ -666,9 +722,6 @@ class RenameWorker(BaseWorker):
             try:
                 from ..core.api_client import REQUEST_SESSION, _rate_wait, WikimediaAPIClient
                 from ..constants import REQUEST_HEADERS
-                import requests
-                import urllib.parse
-                
                 api_client = WikimediaAPIClient()
                 api_url = api_client._build_api_url(self.family, self.lang)
                 params = {
@@ -1321,11 +1374,6 @@ class RenameWorker(BaseWorker):
             return word
 
     def _process_locatives_heuristic(self, text: str, old_cat_full: str, new_cat_full: str, page_title: str) -> tuple[str, int]:
-        from ..utils import debug
-        try:
-            import re
-        except Exception:
-            re = None
         try:
             old_name = old_cat_full.split(':', 1)[-1] if ':' in old_cat_full else old_cat_full
             new_name = new_cat_full.split(':', 1)[-1] if ':' in new_cat_full else new_cat_full
@@ -1601,7 +1649,6 @@ class RenameWorker(BaseWorker):
                     except Exception:
                         pass
                     # Всегда ручное подтверждение (локативы): массовые действия отключены
-                    loc_mass_disabled = True
                     result = self._request_template_confirmation(
                         page_title=page_title,
                         template=full_template,

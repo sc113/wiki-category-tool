@@ -4,7 +4,7 @@ Namespace management module for handling Wikimedia project namespaces.
 import os
 import json
 import re
-from typing import Dict, Set, Tuple, List, Optional, Any
+from typing import Dict, Set, Tuple, List, Optional
 
 from ..constants import DEFAULT_EN_NS, EN_PREFIX_ALIASES
 from .localization import translate_runtime
@@ -361,7 +361,15 @@ class NamespaceManager:
         t = (title or '').lstrip('\ufeff').strip()
         if not t:
             return t
-        if self.has_prefix_by_policy(family, lang, t, {ns_id}):
+        # Выбранный namespace добавляется только к заголовкам без
+        # какого-либо уже известного префикса. Иначе Template:Foo при
+        # выборе Category превращался в Category:Template:Foo.
+        known_ns_ids: Set[int] = set(DEFAULT_EN_NS.keys())
+        try:
+            known_ns_ids.update(self._load_ns_info(family, lang).keys())
+        except Exception:
+            pass
+        if self.has_prefix_by_policy(family, lang, t, known_ns_ids):
             return t
         prefix = self.get_policy_prefix(family, lang, ns_id, default_en)
         return f"{prefix}{t}"
@@ -381,7 +389,10 @@ class NamespaceManager:
                     return base_title
                 alias_to_ns = {'cat': 14, 'category': 14,
                                'tpl': 10, 'template': 10, 'art': 0, 'article': 0}
-                ns_id = alias_to_ns.get(sel, int(sel))
+                if sel in alias_to_ns:
+                    ns_id = alias_to_ns[sel]
+                else:
+                    ns_id = int(sel)
             else:
                 ns_id = int(selection)
         except Exception:
@@ -435,8 +446,6 @@ class NamespaceManager:
         When force_load=False, берём данные только из памяти/дискового кэша,
         без сетевых запросов. При отсутствии кэша — показываем общий набор
         namespace'ов с английскими подписями. """
-        from ..utils import debug
-
         # debug(f"Заполнение namespace комбобокса для {family}:{lang}")  # Убираем спам
 
         # Сохраняем текущий выбор перед очисткой

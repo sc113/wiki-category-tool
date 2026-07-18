@@ -419,9 +419,20 @@ class ReplaceTab(QWidget):
         except Exception:
             pass
         if stopped:
-            log_message(self.rep_log, self._t('ui.stopped'))
+            message = self._t('ui.stopped')
+        elif worker and getattr(worker, 'failed', False):
+            message = self._fmt(
+                'ui.operation_failed',
+                error=getattr(worker, 'failure_message', ''),
+            )
+        elif int((stats or {}).get('failed', 0) or 0) > 0:
+            message = self._fmt(
+                'ui.completed_with_errors',
+                count=int(stats.get('failed', 0) or 0),
+            )
         else:
-            log_message(self.rep_log, self._t('log.replace.finished'))
+            message = self._t('log.replace.finished')
+        log_message(self.rep_log, message)
         self.preview_btn.setEnabled(True)
         self.replace_btn.setEnabled(True)
         self.replace_stop_btn.setEnabled(False)

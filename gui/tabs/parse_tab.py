@@ -258,31 +258,48 @@ class ParseTab(QWidget):
     def _on_parse_finished(self):
         try:
             self.parse_btn.setEnabled(True)
-            if getattr(self, 'worker', None) and getattr(self.worker, '_stop', False):
+            worker = getattr(self, 'worker', None)
+            failed = bool(worker and getattr(worker, 'failed', False))
+            out_path = self.out_path.text().strip()
+
+            def _open_result():
+                try:
+                    if out_path and os.path.isfile(out_path):
+                        os.startfile(out_path)
+                    else:
+                        QMessageBox.information(
+                            self,
+                            self._t('ui.file_not_found'),
+                            self._t('ui.result_file_not_found'),
+                        )
+                except Exception as exc:
+                    QMessageBox.warning(self, self._t('ui.error'), str(exc))
+
+            if worker and getattr(worker, '_stop', False):
                 self.parse_stop_btn.setText(self._t('ui.stop'))
                 self.parse_stop_btn.setEnabled(False)
                 message = self._t('ui.stopped')
+            elif failed:
+                self.parse_stop_btn.setText(self._t('ui.open'))
+                self.parse_stop_btn.setEnabled(bool(os.path.isfile(out_path)))
+                try:
+                    self.parse_stop_btn.clicked.disconnect()
+                except Exception:
+                    pass
+                self.parse_stop_btn.clicked.connect(_open_result)
+                message = self._fmt(
+                    'ui.parse.failed',
+                    error=getattr(worker, 'failure_message', ''),
+                )
             else:
                 self.parse_stop_btn.setText(self._t('ui.open'))
                 self.parse_stop_btn.setEnabled(True)
                 try:
                     if self.parent_window and hasattr(self.parent_window, 'record_operation'):
                         self.parent_window.record_operation(
-                            'parse', self.parse_bar.maximum())
+                            'parse', int(getattr(worker, 'processed_count', 0) or 0))
                 except Exception:
                     pass
-                out_path = self.out_path.text().strip()
-
-                def _open_result():
-                    try:
-                        if out_path and os.path.isfile(out_path):
-                            os.startfile(out_path)
-                        else:
-                            QMessageBox.information(
-                                self, self._t('ui.file_not_found'), self._t('ui.result_file_not_found'))
-                    except Exception as exc:
-                        QMessageBox.warning(self, self._t('ui.error'), str(exc))
-
                 try:
                     self.parse_stop_btn.clicked.disconnect()
                 except Exception:
