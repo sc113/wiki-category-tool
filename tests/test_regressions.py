@@ -28,6 +28,7 @@ from wiki_cat_tool.workers.create_worker import _format_summary as format_create
 from wiki_cat_tool.workers.parse_worker import ParseWorker
 import wiki_cat_tool.workers.rename_worker as rename_worker_module
 from wiki_cat_tool.workers.replace_worker import _format_summary as format_replace_summary
+from wiki_cat_tool.gui.widgets.ui_helpers import count_unprefixed_titles
 
 
 class _NamespaceAPI:
@@ -36,6 +37,19 @@ class _NamespaceAPI:
 
 
 class RegressionTests(unittest.TestCase):
+    def test_create_warning_counts_only_unprefixed_titles(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tsv_path = Path(tmp_dir) / "create.tsv"
+            tsv_path.write_text(
+                "Plain title\tBody\n"
+                "Category:Prefixed\tBody\n"
+                "\tIgnored\n"
+                "Another plain title\tBody\n",
+                encoding="utf-8-sig",
+            )
+
+            self.assertEqual(2, count_unprefixed_titles(str(tsv_path)))
+
     def test_category_reordering_preserves_include_scopes(self):
         original_aliases = redundant_logic.category_prefix_aliases
         original_prefix = redundant_logic.get_policy_prefix

@@ -28,7 +28,7 @@ from ..widgets.ui_helpers import (
     add_info_button, pick_file,
     open_from_edit, log_message, set_start_stop_ratio,
     tsv_preview_from_path, init_progress, inc_progress,
-    is_default_summary, count_non_empty_titles
+    is_default_summary, count_non_empty_titles, count_unprefixed_titles
 )
 
 
@@ -332,6 +332,35 @@ class CreateTab(QWidget):
             QMessageBox.warning(self, self._t('ui.error'), self._t('ui.you_need_to_sign_in'))
             return
 
+        ns_sel = self.ns_combo_create.currentData()
+        is_auto_ns = str(ns_sel or 'auto').strip().lower() == 'auto'
+        if is_auto_ns:
+            try:
+                unprefixed_count = count_unprefixed_titles(
+                    self.tsv_path_create.text()
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    self._t('ui.error'),
+                    self._fmt('ui.failed_read_tsv', error=e),
+                )
+                return
+
+            if unprefixed_count:
+                reply = QMessageBox.warning(
+                    self,
+                    self._t('ui.confirm_launch'),
+                    self._fmt(
+                        'ui.create.unprefixed_auto_warning',
+                        count=unprefixed_count,
+                    ),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
         apply_pwb_config(lang, fam)
 
         summary = self.summary_edit_create.text().strip()
@@ -345,8 +374,6 @@ class CreateTab(QWidget):
         self.create_stop_btn.setEnabled(True)
         # Настраиваем прогресс-бар
         init_progress(self.create_label, self.create_bar, page_count)
-
-        ns_sel = self.ns_combo_create.currentData()
 
         # Создаем и запускаем worker
         self.cworker = CreateWorker(

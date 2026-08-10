@@ -2445,6 +2445,17 @@ def count_non_empty_titles(file_path: str) -> int:
     return sum(1 for r in rows if r and (r[0] or '').strip())
 
 
+def count_unprefixed_titles(file_path: str) -> int:
+    """Считает непустые заголовки без маркера префикса пространства имён."""
+    with open(file_path, newline='', encoding='utf-8-sig') as f:
+        rows = list(csv.reader(f, delimiter='\t'))
+    return sum(
+        1
+        for row in rows
+        if row and (title := (row[0] or '').strip()) and ':' not in title
+    )
+
+
 # ====== SUMMARY HELPERS ======
 def is_default_summary(text: str, default_fn) -> bool:
     """Проверяет, является ли text пустым или одним из дефолтных значений для стандартных языков."""

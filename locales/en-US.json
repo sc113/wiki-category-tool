@@ -113,6 +113,7 @@
   "ui.create.existing_pages_intro": "The following pages already exist:\n\n",
   "ui.create.existing_pages_more": "\n... and {count} more",
   "ui.create.no_pages_in_file": "There are no pages to create in the file.",
+  "ui.create.unprefixed_auto_warning": "The file contains titles without a namespace prefix: {count}.\nWith “Auto” selected, they will be created in the main namespace as regular pages.\n\nIf you intended to create categories, select the “Category” prefix or add it to the titles in the TSV file.\n\nContinue creating?",
   "ui.create_button": "Create",
   "ui.create_list_tsv": "Create list (.tsv):",
   "ui.create_runs": "Create runs",
