@@ -3,6 +3,8 @@ from __future__ import annotations
 # The test suite is runnable both from the package directory and its parent.
 # ruff: noqa: E402
 
+import csv
+import io
 import sys
 import tempfile
 import time
@@ -16,6 +18,10 @@ if str(PACKAGE_PARENT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_PARENT))
 
 from wiki_cat_tool.core.api_client import APIRequestError, WikimediaAPIClient
+from wiki_cat_tool.core.localization import (
+    get_runtime_ui_language,
+    set_runtime_ui_language,
+)
 from wiki_cat_tool.core.namespace_manager import NamespaceManager
 import wiki_cat_tool.core.redundant_category_logic as redundant_logic
 from wiki_cat_tool.core.template_manager import TemplateManager
@@ -25,7 +31,7 @@ from wiki_cat_tool.workers.category_content_sync_worker import (
 )
 import wiki_cat_tool.workers.create_worker as create_worker_module
 from wiki_cat_tool.workers.create_worker import _format_summary as format_create_summary
-from wiki_cat_tool.workers.parse_worker import ParseWorker
+from wiki_cat_tool.workers.parse_worker import ParseWorker, _LiteralQuoteTsvWriter
 import wiki_cat_tool.workers.rename_worker as rename_worker_module
 from wiki_cat_tool.workers.replace_worker import _format_summary as format_replace_summary
 from wiki_cat_tool.gui.widgets.ui_helpers import count_unprefixed_titles
@@ -37,6 +43,75 @@ class _NamespaceAPI:
 
 
 class RegressionTests(unittest.TestCase):
+    def test_tsv_writer_keeps_interior_double_quotes_literal(self):
+        output = io.StringIO(newline="")
+        writer = _LiteralQuoteTsvWriter(output)
+        row = [
+            'Kategori:"Vikibahar 2021" yarışmasının Sanat konusunda maddeleri',
+            '[[Kategori:"Vikibahar 2021" yarışmasının Sanat konusunda maddeleri]]',
+        ]
+
+        writer.writerow(row)
+
+        self.assertEqual("\t".join(row) + "\r\n", output.getvalue())
+        output.seek(0)
+        self.assertEqual(row, next(csv.reader(output, delimiter="\t")))
+
+    def test_tsv_writer_quotes_only_fields_that_require_it(self):
+        output = io.StringIO(newline="")
+        writer = _LiteralQuoteTsvWriter(output)
+        row = ['"Leading quote"', "text with\ta tab"]
+
+        writer.writerow(row)
+
+        output.seek(0)
+        self.assertEqual(row, next(csv.reader(output, delimiter="\t")))
+
+    def test_template_edit_summary_uses_target_wiki_language(self):
+        previous_ui_language = get_runtime_ui_language()
+        self.addCleanup(set_runtime_ui_language, previous_ui_language)
+        set_runtime_ui_language("ru")
+
+        worker = rename_worker_module.RenameWorker.__new__(
+            rename_worker_module.RenameWorker
+        )
+        worker.lang = "tr"
+        worker.override_comment = ""
+        worker._current_row_reason = "ana makalenin başlığına göre current"
+
+        summary = worker._build_summary(
+            'Kategori:"Vikibahar 2017" yarışmasının Beyaz Rusya maddeleri',
+            'Kategori:"Vikibahar 2017" yarışmasının Belarus maddeleri',
+            mode="template",
+            template_label="Şablon:Vikibahar 2017",
+        )
+
+        self.assertIn(
+            "([[\u015eablon:Vikibahar 2017]] üzerinden kategorilendirme)",
+            summary,
+        )
+        self.assertNotIn("категоризация через", summary)
+
+    def test_template_edit_summary_falls_back_to_english(self):
+        worker = rename_worker_module.RenameWorker.__new__(
+            rename_worker_module.RenameWorker
+        )
+        worker.lang = "ja"
+        worker.override_comment = ""
+        worker._current_row_reason = ""
+
+        summary = worker._build_summary(
+            "Category:Old",
+            "Category:New",
+            mode="template",
+            template_label="Template:Example",
+        )
+
+        self.assertIn(
+            "(categorization via [[Template:Example]])",
+            summary,
+        )
+
     def test_create_warning_counts_only_unprefixed_titles(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tsv_path = Path(tmp_dir) / "create.tsv"

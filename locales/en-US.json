@@ -843,8 +843,6 @@
   "log.rename_worker.skip_no_changes_with_source": "→ {category} : \"{title}\" - skipped, no changes ({source})",
   "log.rename_worker.skip_user": "→ {category} : \"{title}\" - skipped by user ({source})",
   "log.rename_worker.stopped_by_user": "Process stopped by user.",
-  "log.rename_worker.summary.template_name_fallback": "Name",
-  "log.rename_worker.summary.template_via": " (categorization via {templates})",
   "log.rename_worker.template_auto_apply": "Auto-applied by rule (auto=approve) for template {template}",
   "log.rename_worker.template_auto_skip": "Template {template}: marked for auto-skip, skipping without dialog",
   "log.rename_worker.template_categories_name": "Categories",

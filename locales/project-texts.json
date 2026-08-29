@@ -1,4 +1,16 @@
 {
+  "summary.rename.template_name_fallback": {
+    "default": "Name",
+    "en": "Name",
+    "ru": "Название",
+    "tr": "Ad"
+  },
+  "summary.rename.template_via": {
+    "default": " (categorization via {templates})",
+    "en": " (categorization via {templates})",
+    "ru": " (категоризация через {templates})",
+    "tr": " ({templates} üzerinden kategorilendirme)"
+  },
   "summary.create": {
     "be": "Стварэнне новай катэгорыі з адзінай структурай: $1 $2 $3",
     "de": "Erstellung einer neuen Kategorie mit vorbereitetem Inhalt: $1 $2 $3",

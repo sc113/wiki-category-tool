@@ -843,8 +843,6 @@
   "log.rename_worker.skip_no_changes_with_source": "→ {category} : \"{title}\" — пропущено, без изменений ({source})",
   "log.rename_worker.skip_user": "→ {category} : \"{title}\" — пропущено пользователем ({source})",
   "log.rename_worker.stopped_by_user": "Процесс остановлен пользователем.",
-  "log.rename_worker.summary.template_name_fallback": "Название",
-  "log.rename_worker.summary.template_via": " (категоризация через {templates})",
   "log.rename_worker.template_auto_apply": "Автоприменено по правилу (auto=approve) для шаблона {template}",
   "log.rename_worker.template_auto_skip": "Шаблон {template}: отмечен на автопропуск — пропускаем без диалога",
   "log.rename_worker.template_categories_name": "Категории",

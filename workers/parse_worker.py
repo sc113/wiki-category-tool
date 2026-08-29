@@ -2,11 +2,36 @@
 Parse worker for reading pages from Wikimedia projects.
 """
 
-import csv
 from PySide6.QtCore import Signal
 
 from .base_worker import BaseWorker
 from ..core.api_client import APIRequestError, WikimediaAPIClient
+
+
+class _LiteralQuoteTsvWriter:
+    """Write TSV while keeping ordinary double quotes literal.
+
+    Python's default CSV writer treats every double quote as a reason to quote
+    the whole field and double the quote characters. In a tab-separated file,
+    interior quotes do not need escaping. Fields that actually contain a tab,
+    a line break, or start with a quote still use standard CSV-style quoting so
+    the existing ``csv.reader(..., delimiter='\t')`` calls can read them safely.
+    """
+
+    def __init__(self, file_obj):
+        self.file_obj = file_obj
+
+    @staticmethod
+    def _format_field(value) -> str:
+        text = '' if value is None else str(value)
+        if text.startswith('"') or any(char in text for char in ('\t', '\r', '\n')):
+            escaped = text.replace('"', '""')
+            return f'"{escaped}"'
+        return text
+
+    def writerow(self, row) -> None:
+        fields = (self._format_field(value) for value in row)
+        self.file_obj.write('\t'.join(fields) + '\r\n')
 
 
 class ParseWorker(BaseWorker):
@@ -47,7 +72,7 @@ class ParseWorker(BaseWorker):
         # Открываем файл для живой записи результатов
         try:
             self.output_file = open(self.out_path, 'w', newline='', encoding='utf-8-sig')
-            self.writer = csv.writer(self.output_file, delimiter='\t')
+            self.writer = _LiteralQuoteTsvWriter(self.output_file)
         except Exception as e:
             self.failed = True
             self.failure_message = str(e)

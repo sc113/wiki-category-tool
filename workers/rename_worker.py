@@ -12,7 +12,7 @@ from .base_worker import BaseWorker
 from ..core.namespace_manager import normalize_title_by_selection, title_has_ns_prefix, _ensure_title_with_ns
 
 from ..core.template_manager import TemplateManager
-from ..core.localization import translate_runtime
+from ..core.localization import translate_project_key, translate_runtime
 from ..constants import DEFAULT_EN_NS
 from ..utils import format_russian_pages_nominative
 from ..utils import align_first_letter_case
@@ -152,6 +152,19 @@ class RenameWorker(BaseWorker):
         except Exception:
             return text
 
+    def _project_tf(self, key: str, default: str = '', **kwargs) -> str:
+        """Format public wiki text in the target project's language.
+
+        Edit summaries are visible on-wiki and must not inherit the desktop UI
+        language. Project text falls back to English when the target language
+        has no dedicated translation.
+        """
+        text = translate_project_key(key, self.lang, default)
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+
     def _emitf(self, key: str, default: str = '', **kwargs) -> None:
         self.progress.emit(self._tf(key, default, **kwargs))
 
@@ -212,7 +225,7 @@ class RenameWorker(BaseWorker):
         mode: 'move' | 'phase1' | 'template'
         - move: [[Old]] → [[New]] — reason
         - phase1: [[OldCat]] → [[NewCat]] — reason
-        - template: [[OldCat]] → [[NewCat]] (категоризация через [[Шаблон:Имя]], [[Шаблон:Имя2]]…) — reason
+        - template: [[OldCat]] → [[NewCat]] (categorization via [[Template:Name]]) — reason
         """
         reason_text = self.override_comment or (self._current_row_reason or '')
         base = f"[[{old_full}]] → [[{new_full}]]"
@@ -227,11 +240,15 @@ class RenameWorker(BaseWorker):
                 labels = []
             if not labels:
                 try:
-                    labels = [f"{self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))}{self._tr('log.rename_worker.summary.template_name_fallback', 'Name')}"]
+                    name = self._project_tf(
+                        'summary.rename.template_name_fallback',
+                        'Name',
+                    )
+                    labels = [f"{self._policy_prefix(10, DEFAULT_EN_NS.get(10, 'Template:'))}{name}"]
                 except Exception:
-                    labels = [f"{DEFAULT_EN_NS.get(10, 'Template:')}{self._tr('log.rename_worker.summary.template_name_fallback', 'Name')}"]
+                    labels = [f"{DEFAULT_EN_NS.get(10, 'Template:')}Name"]
             formatted = ', '.join(f"[[{lbl}]]" for lbl in labels)
-            base = f"{base}{self._tf('log.rename_worker.summary.template_via', ' (categorization via {templates})', templates=formatted)}"
+            base = f"{base}{self._project_tf('summary.rename.template_via', ' (categorization via {templates})', templates=formatted)}"
         if reason_text:
             return f"{base} — {reason_text}"
         return base
