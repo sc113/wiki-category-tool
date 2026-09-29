@@ -96,6 +96,9 @@ class RenameWorker(BaseWorker):
             move_category: Переименовывать саму категорию
         """
         super().__init__(username, password, lang, family)
+        self.renamed_count = 0
+        self.error_count = 0
+        self.error_pages: dict[str, list[str]] = {}
         self.tsv_path = tsv_path
         self.ns_sel = ns_selection
         self.leave_cat_redirect = leave_cat_redirect
@@ -167,6 +170,31 @@ class RenameWorker(BaseWorker):
 
     def _emitf(self, key: str, default: str = '', **kwargs) -> None:
         self.progress.emit(self._tf(key, default, **kwargs))
+
+    def _record_error(self, title: str, message: str) -> None:
+        """Store a failed action and send a typed, theme-aware log event."""
+        self.error_count += 1
+        if title:
+            self.error_pages.setdefault(title, []).append(message)
+        self.log_event.emit({
+            'type': 'operation_error',
+            'title': title,
+            'message': message,
+            'status': 'error',
+        })
+
+    def _report_save_error(self, page: pywikibot.Page, error: Exception) -> None:
+        try:
+            title = page.title()
+        except Exception:
+            title = ''
+        self._record_error(title, self._tf(
+            'log.rename_worker.save_error_detail',
+            'Could not save {title}: {error_type}: {error}',
+            title=title,
+            error_type=type(error).__name__,
+            error=error,
+        ))
 
     def _debugf(self, key: str, default: str = '', **kwargs) -> None:
         debug(self._tf(key, default, **kwargs))
@@ -310,6 +338,8 @@ class RenameWorker(BaseWorker):
                     'auto_confirm': response_data.get('auto_confirm', False),
                     'auto_skip': response_data.get('auto_skip', False),
                     'edited_template': response_data.get('edited_template', ''),
+                    'skip_reason': response_data.get('skip_reason', ''),
+                    'error': response_data.get('error', ''),
                     # Если dedupe_mode не передан (диалог без дублей) — оставляем неустановленным (None)
                     'dedupe_mode': (response_data.get('dedupe_mode') if response_data.get('dedupe_mode') else None)
                 }
@@ -337,12 +367,12 @@ class RenameWorker(BaseWorker):
             site = pywikibot.Site(self.lang, self.family)
         except Exception as e:
             self._set_failure(e)
-            self._emitf(
+            self._record_error('', self._tf(
                 'log.rename_worker.auth_error',
                 'Site initialization error: {error_type}: {error}',
                 error_type=type(e).__name__,
                 error=e,
-            )
+            ))
             return
 
         if self.username and self.password:
@@ -350,12 +380,12 @@ class RenameWorker(BaseWorker):
                 site.login(user=self.username)
             except Exception as e:
                 self._set_failure(e)
-                self._emitf(
+                self._record_error('', self._tf(
                     'log.rename_worker.auth_error',
                     'Authorization error: {error_type}: {error}',
                     error_type=type(e).__name__,
                     error=e,
-                )
+                ))
                 return
 
         try:
@@ -372,11 +402,11 @@ class RenameWorker(BaseWorker):
                     if self._stop:
                         break
                     if len(row) < 2:
-                        self._emitf(
+                        self._record_error((row[0] or '').strip() if row else '', self._tf(
                             'log.rename_worker.invalid_row',
                             'Invalid row (at least 2 columns required): {row}',
                             row=row,
-                        )
+                        ))
                         try:
                             self.tsv_progress_inc.emit()
                         except Exception:
@@ -390,11 +420,11 @@ class RenameWorker(BaseWorker):
                         else ''
                     )
                     if not old_name_raw or not new_name_raw:
-                        self._emitf(
+                        self._record_error(old_name_raw, self._tf(
                             'log.rename_worker.invalid_row',
                             'Invalid row (old and new titles are required): {row}',
                             row=row,
-                        )
+                        ))
                         try:
                             self.tsv_progress_inc.emit()
                         except Exception:
@@ -428,18 +458,12 @@ class RenameWorker(BaseWorker):
                         try:
                             old_full_check = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
                             if not pywikibot.Page(site, old_full_check).exists():
-                                try:
-                                    self._emitf(
-                                        'log.rename_worker.category_missing_transfer_disabled_html',
-                                        'Category <b>{title}</b> does not exist. Content transfer is disabled.',
-                                        title=html.escape(old_full_check),
-                                    )
-                                except Exception:
-                                    self._emitf(
-                                        'log.rename_worker.category_missing_transfer_disabled',
-                                        'Category {title} does not exist. Content transfer is disabled.',
-                                        title=old_full_check,
-                                    )
+                                self._record_error(old_full_check, self._tf(
+                                    'log.rename_worker.category_missing_transfer_disabled',
+                                    'Category {title} does not exist. Content transfer is disabled.',
+                                    title=old_full_check,
+                                ))
+                                self.tsv_progress_inc.emit()
                                 continue
                         except Exception:
                             pass
@@ -459,9 +483,18 @@ class RenameWorker(BaseWorker):
                         except Exception:
                             pass
                     else:
+                        errors_before_move = self.error_count
                         move_succeeded = self._move_page(
                             site, old_name, new_name, reason, leave_redirect
                         )
+                        if not move_succeeded and not self._stop and self.error_count == errors_before_move:
+                            self._record_error(old_name, self._tf(
+                                'log.rename_worker.rename_failed_unknown',
+                                'Could not rename {old} → {new}.',
+                                old=old_name, new=new_name,
+                            ))
+                        elif move_succeeded:
+                            self.renamed_count += 1
                     
                     # Если это категория и хотя бы одна фаза переноса включена — переносим участников
                     transfer_requested = bool(
@@ -481,12 +514,12 @@ class RenameWorker(BaseWorker):
                             debug(f'move_members={self.move_members}, phase1_enabled={self.phase1_enabled}, find_in_templates={self.find_in_templates}')
                             self._move_category_members(site, old_name, new_name)
                         except Exception as e:
-                            self._emitf(
+                            self._record_error(old_name, self._tf(
                                 'log.rename_worker.category_transfer_error_named',
                                 "Category content transfer error for '{title}': {error}",
                                 title=old_name,
                                 error=e,
-                            )
+                            ))
                     elif transfer_requested and not move_succeeded:
                         self._emitf(
                             'log.rename_worker.category_transfer_skipped_move_failed',
@@ -501,7 +534,7 @@ class RenameWorker(BaseWorker):
                         pass
         except Exception as e:
             self._set_failure(e)
-            self._emitf('log.rename_worker.tsv_error', 'TSV file error: {error}', error=e)
+            self._record_error('', self._tf('log.rename_worker.tsv_error', 'TSV file error: {error}', error=e))
         finally:
             # Финальные сообщения об окончании теперь пишет UI
             pass
@@ -528,50 +561,16 @@ class RenameWorker(BaseWorker):
             page = pywikibot.Page(site, old_name)
             new_page = pywikibot.Page(site, new_name)
             if not page.exists():
-                # Сообщение должно корректно отражать тип объекта и позволять UI
-                # определить его по префиксу. Для категории выводим только
-                # заголовок с префиксом «Категория:…» без лишнего слова «Категория » перед ним.
-                try:
-                    typ = self._page_kind(page)
-                except Exception:
-                    typ = 'page'
-                if typ == 'category':
-                    try:
-                        self._emitf(
-                            'log.rename_worker.not_found_html',
-                            '<b>{title}</b> not found.',
-                            title=html.escape(old_name),
-                        )
-                    except Exception:
-                        self._emitf(
-                            'log.rename_worker.not_found_plain',
-                            '{title} not found.',
-                            title=old_name,
-                        )
-                else:
-                    self._emitf(
-                        'log.rename_worker.page_not_found_html',
-                        'Page <b>{title}</b> not found.',
-                        title=html.escape(old_name),
-                    )
+                self._record_error(old_name, self._tf(
+                    'log.rename_worker.not_found_plain',
+                    '{title} not found.', title=old_name,
+                ))
                 return False
             if new_page.exists():
-                # Структурированное событие; текстовый лог используем только как фолбэк
-                try:
-                    self.log_event.emit({'type': 'destination_exists', 'title': new_name, 'status': 'info'})
-                except Exception:
-                    try:
-                        self._emitf(
-                            'log.rename_worker.destination_exists_html',
-                            'Destination page <b>{title}</b> already exists.',
-                            title=html.escape(new_name),
-                        )
-                    except Exception:
-                        self._emitf(
-                            'log.rename_worker.destination_exists_plain',
-                            'Destination page {title} already exists.',
-                            title=new_name,
-                        )
+                self._record_error(old_name, self._tf(
+                    'log.rename_worker.destination_exists_plain',
+                    'Destination page {title} already exists.', title=new_name,
+                ))
                 return False
 
             # Сформируем комментарий к правке для операции переименования
@@ -667,38 +666,21 @@ class RenameWorker(BaseWorker):
                         except Exception:
                             pass
                         continue
-                    try:
-                        self._emitf(
-                            'log.rename_worker.rename_error_html',
-                            'Rename error <b>{title}</b>: {error_type}: {error}',
-                            title=html.escape(old_name),
-                            error_type=type(e).__name__,
-                            error=e,
-                        )
-                    except Exception:
-                        self._emitf(
-                            'log.rename_worker.rename_error_plain',
-                            'Rename error {title}: {error_type}: {error}',
-                            title=old_name,
-                            error_type=type(e).__name__,
-                            error=e,
-                        )
+                    self._record_error(old_name, self._tf(
+                        'log.rename_worker.rename_error_plain',
+                        'Rename error {title}: {error_type}: {error}',
+                        title=old_name,
+                        error_type=type(e).__name__,
+                        error=e,
+                    ))
                     return False
         except Exception as e:
-            try:
-                self._emitf(
-                    'log.rename_worker.rename_critical_error_html',
-                    'Critical rename error <b>{title}</b>: {error}',
-                    title=html.escape(old_name),
-                    error=e,
-                )
-            except Exception:
-                self._emitf(
-                    'log.rename_worker.rename_critical_error_plain',
-                    'Critical rename error {title}: {error}',
-                    title=old_name,
-                    error=e,
-                )
+            self._record_error(old_name, self._tf(
+                'log.rename_worker.rename_critical_error_plain',
+                'Critical rename error {title}: {error}',
+                title=old_name,
+                error=e,
+            ))
         return False
 
     def _move_category_members(self, site: pywikibot.Site, old_name: str, new_name: str):
@@ -841,6 +823,13 @@ class RenameWorker(BaseWorker):
                         pass
                     try:
                         page = pywikibot.Page(site, title)
+                        errors_before_member = self.error_count
+                        if not page.exists():
+                            self._record_error(title, self._tf(
+                                'log.rename_worker.not_found_plain',
+                                '{title} not found.', title=title,
+                            ))
+                            continue
                         self._debugf('log.rename_worker.member_processing', 'Processing page: {title}', title=page.title())
                         changes_made = self._process_category_member(site, page, old_cat_full, new_cat_full)
 
@@ -855,12 +844,12 @@ class RenameWorker(BaseWorker):
                             try:
                                 _, phase2_changes = self._process_title_templates(site, title, old_cat_full, new_cat_full)
                             except Exception as e:
-                                self._emitf(
+                                self._record_error(title, self._tf(
                                     'log.rename_worker.template_processing_error',
                                     'Template processing error on page {title}: {error}',
                                     title=title,
                                     error=e,
-                                )
+                                ))
                                 self._debugf(
                                     'log.rename_worker.template_processing_error',
                                     'Template processing error on page {title}: {error}',
@@ -872,7 +861,7 @@ class RenameWorker(BaseWorker):
 
                         # Если ни фаза 1, ни фаза 2 не внесли изменений — добавим понятную строку в лог
                         try:
-                            if changes_made == 0 and (not self.find_in_templates or (phase2_changes == 0 and not getattr(self, '_last_template_interactions', False))):
+                            if self.error_count == errors_before_member and changes_made == 0 and (not self.find_in_templates or (phase2_changes == 0 and not getattr(self, '_last_template_interactions', False))):
                                 # Для корректной классификации как «шаблонной» операции
                                 # укажем источник вида «<локальный префикс шаблона>…». Тогда в колонке «Тип» будет ✍️, а не 📝.
                                 if self.find_in_templates:
@@ -893,12 +882,12 @@ class RenameWorker(BaseWorker):
                         except Exception:
                             pass
                     except Exception as e:
-                        self._emitf(
+                        self._record_error(title, self._tf(
                             'log.rename_worker.page_processing_error',
                             'Page processing error {title}: {error}',
                             title=title,
                             error=e,
-                        )
+                        ))
                         self._debugf(
                             'log.rename_worker.page_processing_error',
                             'Page processing error {title}: {error}',
@@ -918,12 +907,12 @@ class RenameWorker(BaseWorker):
                 except Exception:
                     pass
             except Exception as e:
-                self._emitf(
+                self._record_error(old_cat_full, self._tf(
                     'log.rename_worker.category_contents_error',
                     'Category content fetch error {title}: {error}',
                     title=old_cat_full,
                     error=e,
-                )
+                ))
                 self._debugf(
                     'log.rename_worker.category_contents_error',
                     'Category content fetch error {title}: {error}',
@@ -932,11 +921,11 @@ class RenameWorker(BaseWorker):
                 )
                 
         except Exception as e:
-            self._emitf(
+            self._record_error(old_name, self._tf(
                 'log.rename_worker.category_transfer_error',
                 'Category content transfer error: {error}',
                 error=e,
-            )
+            ))
 
     def _process_category_member(self, site: pywikibot.Site, page: pywikibot.Page, old_cat_full: str, new_cat_full: str) -> int:
         """
@@ -997,29 +986,16 @@ class RenameWorker(BaseWorker):
                             title=page.title(),
                             result=moved_text,
                         )
-                else:
-                    try:
-                        self._emitf(
-                            'log.rename_worker.save_error_html',
-                            'Save error <b>{title}</b>',
-                            title=html.escape(page.title()),
-                        )
-                    except Exception:
-                        self._emitf(
-                            'log.rename_worker.save_error_plain',
-                            'Save error {title}',
-                            title=page.title(),
-                        )
             
             return changes_made
             
         except Exception as e:
-            self._emitf(
+            self._record_error(page.title(), self._tf(
                 'log.rename_worker.page_processing_error',
                 'Page processing error {title}: {error}',
                 title=page.title(),
                 error=e,
-            )
+            ))
             return 0
 
     def _process_title_templates(self, site: pywikibot.Site, title: str, old_cat_full: str, new_cat_full: str) -> tuple[str, int]:
@@ -1273,14 +1249,10 @@ class RenameWorker(BaseWorker):
                                 except Exception:
                                     pass
                 except Exception as _loc_e:
-                    try:
-                        self._debugf(
-                            'log.rename_worker.locative_runtime_error',
-                            'Locative heuristic error: {error}',
-                            error=_loc_e,
-                        )
-                    except Exception:
-                        pass
+                    self._record_error(title, self._tf(
+                        'log.rename_worker.locative_runtime_error',
+                        'Locative heuristic error: {error}', error=_loc_e,
+                    ))
             
             # Если никаких изменений не было сделано
             if changes_made == 0:
@@ -1291,12 +1263,12 @@ class RenameWorker(BaseWorker):
                 )
                 
         except Exception as e:
-            self._emitf(
+            self._record_error(title, self._tf(
                 'log.rename_worker.template_processing_error',
                 'Template processing error on page {title}: {error}',
                 title=title,
                 error=e,
-            )
+            ))
             self._debugf(
                 'log.rename_worker.template_processing_error',
                 'Template processing error on page {title}: {error}',
@@ -1748,7 +1720,10 @@ class RenameWorker(BaseWorker):
                     break
             return modified_text, changes
         except Exception as e:
-            self._debugf('log.rename_worker.locative_processing_error', 'Locative processing error: {error}', error=e)
+            self._record_error(page_title, self._tf(
+                'log.rename_worker.locative_processing_error',
+                'Locative processing error: {error}', error=e,
+            ))
             return text, 0
 
     def _replace_category_links_in_text(self, text: str, family: str, lang: str, old_cat_full: str, new_cat_full: str) -> tuple[str, int]:
@@ -2565,11 +2540,11 @@ class RenameWorker(BaseWorker):
                         continue
                         
                 except Exception as e:
-                    self._debugf(
+                    self._record_error(page_title, self._tf(
                         'log.rename_worker.confirmation_request_error',
                         'Confirmation request error: {error}',
                         error=e,
-                    )
+                    ))
                     continue
         
         self._debugf(
@@ -2632,14 +2607,21 @@ class RenameWorker(BaseWorker):
             self._prompt_events.pop(req_id, None)
             self._prompt_results.pop(req_id, None)
             
-            action = str(result.get('action') or '') or 'skip'
+            action = 'cancel' if self._stop else (str(result.get('action') or '') or 'skip')
+            if result.get('skip_reason') == 'dialog_error' or action == 'error':
+                self._record_error(page_title, self._tf(
+                    'log.rename_worker.request_template_confirmation_error',
+                    'Template confirmation error: {error}',
+                    error=result.get('error') or self._tr('ui.error', 'Error'),
+                ))
+                action = 'error'
             result['action'] = action
             return result
             
         except Exception as e:
-            self._debugf(
+            self._record_error(page_title, self._tf(
                 'log.rename_worker.request_template_confirmation_error',
                 'Error in _request_template_confirmation: {error}',
                 error=e,
-            )
-            return {'action': 'skip'}
+            ))
+            return {'action': 'error'}

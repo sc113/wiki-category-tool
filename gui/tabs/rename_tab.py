@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QCheckBox, QGroupBox
 )
 from PySide6.QtCore import Qt, Signal, QUrl, QEvent, QTimer
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QBrush, QColor, QDesktopServices
 from PySide6.QtWidgets import QHeaderView
 
 from ...constants import PREFIX_TOOLTIP
@@ -623,6 +623,12 @@ class RenameTab(QWidget):
                 }
                 """
             )
+        # QColor, заданный при добавлении строки, нужно обновить при смене темы.
+        error_color = '#b3261e' if self._is_light_theme() else '#ff9cab'
+        for index in range(self.rename_log_tree.topLevelItemCount()):
+            row = self.rename_log_tree.topLevelItem(index)
+            if row.data(2, Qt.UserRole) == 'error':
+                row.setForeground(2, QBrush(QColor(error_color)))
 
     def showEvent(self, event):
         try:
@@ -1155,10 +1161,37 @@ class RenameTab(QWidget):
         else:
             msg = self._t('ui.rename_completed')
         try:
-            # Служебное системное сообщение: статус ℹ️, без иконки объекта
-            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, msg, 'manual', 'info', None, None, True)
+            log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, msg,
+                         'manual', 'error' if worker and getattr(worker, 'failed', False) else 'info',
+                         None, None, True)
         except Exception:
             pass
+        if worker is not None:
+            try:
+                renamed = int(getattr(worker, 'renamed_count', 0) or 0)
+                errors = int(getattr(worker, 'error_count', 0) or 0)
+                error_pages = getattr(worker, 'error_pages', {}) or {}
+                log_tree_add(
+                    self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None,
+                    self._fmt('ui.rename_summary', 'Total: renamed {renamed}; errors {errors}.',
+                              renamed=renamed, errors=errors),
+                    'manual', 'info', None, None, True,
+                )
+                if error_pages:
+                    log_tree_add(
+                        self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None,
+                        self._fmt('ui.rename_error_pages', 'Pages with errors ({count}):',
+                                  count=len(error_pages)),
+                        'manual', 'info', None, None, True,
+                    )
+                    for title, messages in error_pages.items():
+                        log_tree_add(
+                            self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), title,
+                            '; '.join(dict.fromkeys(messages)), 'manual', 'error',
+                            None, None, True,
+                        )
+            except Exception as e:
+                debug(f'Rename summary log error: {e}')
         # Прогресс-бары остаются видимыми по требованию UX
         try:
             self.rename_outer_bar.setVisible(True)
@@ -1320,16 +1353,10 @@ class RenameTab(QWidget):
                 
         except Exception as e:
             debug(self._fmt('log.rename_tab.template_review_dialog_error', error=e))
-            # При ошибке безопасно пропускаем кейс, не останавливая процесс
-            try:
-                # Логируем как ошибку, но продолжаем
-                msg = self._fmt('log.rename_tab.template_review_dialog_continue', error=e)
-                log_tree_add(self.rename_log_tree, datetime.now().strftime('%H:%M:%S'), None, msg, 'manual', 'error', None, None, True)
-            except Exception:
-                pass
+            # Передаём ошибку вместе с заголовком страницы для общего лога и итога.
             response_data = {
-                'req_id': payload.get('request_id'),
-                'result': 'skip',
+                'req_id': payload.get('request_id') if isinstance(payload, dict) else None,
+                'result': 'error',
                 'skip_reason': 'dialog_error',
                 'error': str(e)
             }

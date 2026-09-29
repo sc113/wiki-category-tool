@@ -232,9 +232,12 @@ class BaseWorker(QThread):
                     if not self._interruptible_wait(wait_s):
                         return False
                     continue
-                try:
-                    self.progress.emit(self._fmt('log.base.save_error', error_type=type(e).__name__, error=e))
-                except Exception:
-                    pass
+                self._report_save_error(page, e)
                 return False
         return False
+
+    def _report_save_error(self, page: 'pywikibot.Page', error: Exception) -> None:
+        try:
+            self.progress.emit(self._fmt('log.base.save_error', error_type=type(error).__name__, error=error))
+        except Exception:
+            pass

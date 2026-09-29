@@ -36,6 +36,13 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
         # Нормализуем статус к известным ключам
         if status not in ('success', 'skipped', 'error', 'not_found', 'info'):
             status = 'info'
+        if et == 'operation_error':
+            page_title = str(event.get('title') or '').strip()
+            message = str(event.get('message') or '').strip()
+            obj_type = _detect_object_type_by_ns(tree, page_title) if page_title else None
+            log_tree_add(tree, ts, page_title or None, message, 'manual',
+                         'error', None, obj_type, True)
+            return
         if et == 'category_move_start':
             old_cat = html.unescape((event.get('old_category') or '').strip())
             new_cat = html.unescape((event.get('new_category') or '').strip())
@@ -197,10 +204,11 @@ def _has_locale_token(text: str, key: str, *defaults: str) -> bool:
 
 
 def _status_meta(widget=None) -> dict[str, dict[str, str]]:
+    error_color = '#b3261e' if _log_theme_mode(widget) == 'light' else '#ff9cab'
     return {
         'success': {'emoji': '✅', 'color': '#4f83d1', 'label': _t(widget, 'ui.success', 'Success')},
         'skipped': {'emoji': '⏭️', 'color': '#6b7280', 'label': _t(widget, 'ui.skipped', 'Skipped')},
-        'error': {'emoji': '❌', 'color': '#ef4444', 'label': _t(widget, 'ui.error', 'Error')},
+        'error': {'emoji': '❌', 'color': error_color, 'label': _t(widget, 'ui.error', 'Error')},
         'not_found': {'emoji': '⚠️', 'color': '#f97316', 'label': _t(widget, 'ui.not_found', 'Not found')},
         'info': {'emoji': 'ℹ️', 'color': '#3b82f6', 'label': _t(widget, 'ui.info', 'Info')},
     }
@@ -1628,6 +1636,7 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
             page_cell = page or ''
         row = QTreeWidgetItem(
             [timestamp, action_cell, status_text, title_cell, page_cell, src_cell])
+        row.setData(2, Qt.UserRole, status)
         try:
             for col in range(6):
                 row.setText(col, _ui_translate(tree, row.text(col)))

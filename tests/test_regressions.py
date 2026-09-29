@@ -307,6 +307,88 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual("", worker._move_page.call_args.args[3])
             worker._move_category_members.assert_not_called()
 
+    def test_rename_counts_successes_and_reports_failed_pages(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tsv_path = Path(tmp_dir) / "rename.tsv"
+            tsv_path.write_text(
+                "OldSuccess\tNewSuccess\n"
+                "OldMissing\tNewMissing\n"
+                "OldBlocked\tNewBlocked\n"
+                "OldRejected\tNewRejected\n",
+                encoding="utf-8-sig",
+            )
+            with patch.object(rename_worker_module, "TemplateManager", return_value=Mock()):
+                worker = rename_worker_module.RenameWorker(
+                    str(tsv_path), "", "", "en", "wikipedia", 0,
+                    False, True, True, False, False,
+                )
+
+            events = []
+            worker.log_event.connect(events.append)
+            worker._wait_before_save = Mock(return_value=True)
+
+            def make_page(_site, title):
+                page = Mock()
+                page.exists.return_value = title in {
+                    "OldSuccess", "OldBlocked", "NewBlocked", "OldRejected",
+                }
+                if title == "OldRejected":
+                    page.move.side_effect = RuntimeError("permission denied")
+                return page
+
+            with (
+                patch.object(rename_worker_module.pywikibot, "Site", return_value=Mock()),
+                patch.object(rename_worker_module.pywikibot, "Page", side_effect=make_page),
+                patch.object(rename_worker_module, "normalize_title_by_selection", side_effect=lambda title, *_args: title),
+            ):
+                worker.run()
+
+            self.assertEqual(1, worker.renamed_count)
+            self.assertEqual(3, worker.error_count)
+            self.assertEqual(["OldMissing", "OldBlocked", "OldRejected"], list(worker.error_pages))
+            self.assertEqual(
+                ["OldMissing", "OldBlocked", "OldRejected"],
+                [event["title"] for event in events if event["type"] == "operation_error"],
+            )
+
+    def test_template_dialog_failure_is_an_error_not_a_skip(self):
+        with patch.object(rename_worker_module, "TemplateManager", return_value=Mock()):
+            worker = rename_worker_module.RenameWorker(
+                "unused.tsv", "", "", "en", "wikipedia", 0,
+                False, True, True, True, False,
+            )
+        worker.template_review_request.connect(
+            lambda payload: worker._on_review_response({
+                "req_id": payload["request_id"],
+                "result": "error",
+                "skip_reason": "dialog_error",
+                "error": "dialog failed",
+            })
+        )
+
+        result = worker._request_template_confirmation(
+            "ProblemPage", "Example", "Category:Old", "Category:New", "partial",
+        )
+
+        self.assertEqual("error", result["action"])
+        self.assertEqual(1, worker.error_count)
+        self.assertIn("ProblemPage", worker.error_pages)
+
+    def test_rename_transfer_save_error_keeps_member_title(self):
+        with patch.object(rename_worker_module, "TemplateManager", return_value=Mock()):
+            worker = rename_worker_module.RenameWorker(
+                "unused.tsv", "", "", "en", "wikipedia", 14,
+                False, True, True, False, True,
+            )
+        worker._wait_before_save = Mock(return_value=True)
+        member = Mock()
+        member.title.return_value = "MemberPage"
+        member.save.side_effect = RuntimeError("edit denied")
+
+        self.assertFalse(worker._save_with_retry(member, "new text", "summary", True))
+        self.assertEqual(1, worker.error_count)
+        self.assertIn("MemberPage", worker.error_pages)
+
     def test_empty_existing_page_is_written_to_tsv(self):
         worker = ParseWorker(["Empty"], "unused.tsv", "auto", "en", "wikipedia")
         worker.writer = Mock()
