@@ -99,6 +99,7 @@ class RenameWorker(BaseWorker):
         self.renamed_count = 0
         self.error_count = 0
         self.error_pages: dict[str, list[str]] = {}
+        self._move_was_resumed = False
         self.tsv_path = tsv_path
         self.ns_sel = ns_selection
         self.leave_cat_redirect = leave_cat_redirect
@@ -469,6 +470,11 @@ class RenameWorker(BaseWorker):
                             pass
 
                     leave_redirect = self.leave_cat_redirect if is_category else self.leave_other_redirect
+                    transfer_enabled = bool(
+                        is_category
+                        and self.move_members
+                        and (self.phase1_enabled or self.find_in_templates)
+                    )
                     
                     # Если переименование категории выключено — пропускаем сам move для категорий
                     move_succeeded = True
@@ -484,8 +490,10 @@ class RenameWorker(BaseWorker):
                             pass
                     else:
                         errors_before_move = self.error_count
+                        self._move_was_resumed = False
                         move_succeeded = self._move_page(
-                            site, old_name, new_name, reason, leave_redirect
+                            site, old_name, new_name, reason, leave_redirect,
+                            allow_transfer_resume=transfer_enabled and not self._stop,
                         )
                         if not move_succeeded and not self._stop and self.error_count == errors_before_move:
                             self._record_error(old_name, self._tf(
@@ -493,16 +501,11 @@ class RenameWorker(BaseWorker):
                                 'Could not rename {old} → {new}.',
                                 old=old_name, new=new_name,
                             ))
-                        elif move_succeeded:
+                        elif move_succeeded and not self._move_was_resumed:
                             self.renamed_count += 1
                     
                     # Если это категория и хотя бы одна фаза переноса включена — переносим участников
-                    transfer_requested = bool(
-                        is_category
-                        and self.move_members
-                        and (self.phase1_enabled or self.find_in_templates)
-                        and not self._stop
-                    )
+                    transfer_requested = transfer_enabled and not self._stop
                     if transfer_requested and move_succeeded:
                         try:
                             self._debugf(
@@ -546,6 +549,7 @@ class RenameWorker(BaseWorker):
         new_name: str,
         reason: str,
         leave_redirect: bool,
+        allow_transfer_resume: bool = False,
     ) -> bool:
         """
         Переименование страницы с retry логикой.
@@ -560,13 +564,31 @@ class RenameWorker(BaseWorker):
         try:
             page = pywikibot.Page(site, old_name)
             new_page = pywikibot.Page(site, new_name)
-            if not page.exists():
+            old_exists = page.exists()
+            new_exists = new_page.exists()
+            if allow_transfer_resume and (not old_exists or new_exists):
+                if self._can_resume_category_transfer(
+                    site, page, new_page, old_exists, new_exists
+                ):
+                    self._move_was_resumed = True
+                    self.log_event.emit({
+                        'type': 'rename_transfer_resumed',
+                        'title': old_name,
+                        'message': self._tf(
+                            'log.rename_worker.rename_transfer_resumed',
+                            'Category {old} was already renamed to {new}; resuming content transfer.',
+                            old=old_name, new=new_name,
+                        ),
+                        'status': 'info',
+                    })
+                    return True
+            if not old_exists:
                 self._record_error(old_name, self._tf(
                     'log.rename_worker.not_found_plain',
                     '{title} not found.', title=old_name,
                 ))
                 return False
-            if new_page.exists():
+            if new_exists:
                 self._record_error(old_name, self._tf(
                     'log.rename_worker.destination_exists_plain',
                     'Destination page {title} already exists.', title=new_name,
@@ -682,6 +704,40 @@ class RenameWorker(BaseWorker):
                 error=e,
             ))
         return False
+
+    @staticmethod
+    def _can_resume_category_transfer(
+        site: pywikibot.Site,
+        old_page: pywikibot.Page,
+        new_page: pywikibot.Page,
+        old_exists: bool,
+        new_exists: bool,
+    ) -> bool:
+        """Resume only when the old title demonstrably points to the new one."""
+        if not new_exists:
+            return False
+        try:
+            if new_page.isRedirectPage():
+                return False
+            if old_exists:
+                return (
+                    old_page.isRedirectPage()
+                    and site.sametitle(
+                        old_page.getRedirectTarget().title(), new_page.title()
+                    )
+                )
+            # With suppressed redirects, the latest move log is the evidence.
+            entry = next(iter(site.logevents(
+                logtype='move', page=old_page.title(), total=1,
+            )), None)
+            return bool(
+                entry
+                and site.sametitle(entry['title'], old_page.title())
+                and site.sametitle(entry.target_title, new_page.title())
+            )
+        except Exception as e:
+            debug(f'Could not verify an earlier category move: {e}')
+            return False
 
     def _move_category_members(self, site: pywikibot.Site, old_name: str, new_name: str):
         """

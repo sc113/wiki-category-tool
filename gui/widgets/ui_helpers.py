@@ -43,6 +43,12 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
             log_tree_add(tree, ts, page_title or None, message, 'manual',
                          'error', None, obj_type, True)
             return
+        if et == 'rename_transfer_resumed':
+            page_title = str(event.get('title') or '').strip()
+            message = str(event.get('message') or '').strip()
+            log_tree_add(tree, ts, page_title or None, message, 'manual',
+                         'info', None, 'category', True)
+            return
         if et == 'category_move_start':
             old_cat = html.unescape((event.get('old_category') or '').strip())
             new_cat = html.unescape((event.get('new_category') or '').strip())

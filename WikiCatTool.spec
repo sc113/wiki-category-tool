@@ -67,6 +67,18 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# QtCore uses the Windows ICU API. A same-named ICU DLL from an unrelated
+# directory on PATH can be collected here and break the frozen Qt imports.
+# Keep ICU files only when they ship with this PySide6 installation.
+import PySide6
+_pyside_root = os.path.normcase(os.path.abspath(os.path.dirname(PySide6.__file__)))
+a.binaries = [
+    entry for entry in a.binaries
+    if not (
+        os.path.basename(entry[0]).lower() in {'icuuc.dll', 'icudt78.dll'}
+        and not os.path.normcase(os.path.abspath(entry[1])).startswith(_pyside_root + os.sep)
+    )
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(

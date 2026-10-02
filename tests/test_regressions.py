@@ -33,6 +33,7 @@ import wiki_cat_tool.workers.create_worker as create_worker_module
 from wiki_cat_tool.workers.create_worker import _format_summary as format_create_summary
 from wiki_cat_tool.workers.parse_worker import ParseWorker, _LiteralQuoteTsvWriter
 import wiki_cat_tool.workers.rename_worker as rename_worker_module
+from pywikibot.logentries import MoveEntry
 from wiki_cat_tool.workers.replace_worker import _format_summary as format_replace_summary
 from wiki_cat_tool.gui.widgets.ui_helpers import count_unprefixed_titles
 
@@ -306,6 +307,102 @@ class RegressionTests(unittest.TestCase):
             worker._move_page.assert_called_once()
             self.assertEqual("", worker._move_page.call_args.args[3])
             worker._move_category_members.assert_not_called()
+
+    def test_category_transfer_resumes_after_stop_between_move_and_transfer(self):
+        old_title = "Category:Old"
+        new_title = "Category:New"
+        for leave_redirect in (True, False):
+            with self.subTest(leave_redirect=leave_redirect):
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tsv_path = Path(tmp_dir) / "rename.tsv"
+                    tsv_path.write_text(f"{old_title}\t{new_title}\n", encoding="utf-8-sig")
+                    state = {"moved": False, "move_calls": 0}
+                    stop_worker = []
+                    site = Mock()
+                    site.sametitle.side_effect = lambda left, right: left == right
+                    site.logevents.return_value = [MoveEntry({
+                        "type": "move",
+                        "title": old_title,
+                        "params": {"target_title": new_title},
+                    }, site)]
+
+                    class FakePage:
+                        def __init__(self, _site, title):
+                            self._title = title
+
+                        def title(self):
+                            return self._title
+
+                        def exists(self):
+                            if self._title == old_title:
+                                return not state["moved"] or leave_redirect
+                            return state["moved"]
+
+                        def isRedirectPage(self):
+                            return self._title == old_title and state["moved"] and leave_redirect
+
+                        def getRedirectTarget(self):
+                            return FakePage(site, new_title)
+
+                        def move(self, *_args, **_kwargs):
+                            state["moved"] = True
+                            state["move_calls"] += 1
+                            stop_worker[0].request_stop()
+
+                    with (
+                        patch.object(rename_worker_module, "TemplateManager", return_value=Mock()),
+                        patch.object(rename_worker_module.pywikibot, "Site", return_value=site),
+                        patch.object(rename_worker_module.pywikibot, "Page", side_effect=FakePage),
+                        patch.object(rename_worker_module, "normalize_title_by_selection", side_effect=lambda title, *_args: title),
+                    ):
+                        first = rename_worker_module.RenameWorker(
+                            str(tsv_path), "", "", "en", "wikipedia", 14,
+                            leave_redirect, True, True, False, True,
+                        )
+                        first._wait_before_save = Mock(return_value=True)
+                        first._move_category_members = Mock()
+                        stop_worker.append(first)
+                        first.run()
+                        first._move_category_members.assert_not_called()
+
+                        second = rename_worker_module.RenameWorker(
+                            str(tsv_path), "", "", "en", "wikipedia", 14,
+                            leave_redirect, True, True, False, True,
+                        )
+                        second._move_category_members = Mock()
+                        events = []
+                        second.log_event.connect(events.append)
+                        second.run()
+
+                    self.assertEqual(1, state["move_calls"])
+                    second._move_category_members.assert_called_once_with(site, old_title, new_title)
+                    self.assertEqual(0, second.renamed_count)
+                    self.assertEqual(0, second.error_count)
+                    self.assertTrue(any(e["type"] == "rename_transfer_resumed" for e in events))
+
+    def test_category_transfer_does_not_resume_for_unrelated_destination(self):
+        old_page = Mock()
+        old_page.isRedirectPage.return_value = False
+        old_page.title.return_value = "Category:Old"
+        new_page = Mock()
+        new_page.isRedirectPage.return_value = False
+        new_page.title.return_value = "Category:New"
+        site = Mock()
+        site.sametitle.side_effect = lambda left, right: left == right
+
+        self.assertFalse(rename_worker_module.RenameWorker._can_resume_category_transfer(
+            site, old_page, new_page, True, True,
+        ))
+        site.logevents.assert_not_called()
+
+        site.logevents.return_value = [MoveEntry({
+            "type": "move",
+            "title": "Category:Old",
+            "params": {"target_title": "Category:Elsewhere"},
+        }, site)]
+        self.assertFalse(rename_worker_module.RenameWorker._can_resume_category_transfer(
+            site, old_page, new_page, False, True,
+        ))
 
     def test_rename_counts_successes_and_reports_failed_pages(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

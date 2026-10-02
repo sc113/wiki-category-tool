@@ -833,6 +833,7 @@
   "log.rename_worker.rename_error_html": "Ошибка переименования <b>{title}</b>: {error_type}: {error}",
   "log.rename_worker.rename_error_plain": "Ошибка переименования {title}: {error_type}: {error}",
   "log.rename_worker.rename_failed_unknown": "Не удалось переименовать {old} → {new}.",
+  "log.rename_worker.rename_transfer_resumed": "Категория {old} уже переименована в {new}; продолжаем перенос содержимого.",
   "log.rename_worker.save_error_detail": "Не удалось сохранить {title}: {error_type}: {error}",
   "log.rename_worker.rename_rate_limit": "Лимит запросов при переименовании: пауза {wait:.2f}s · попытка {attempt}/3",
   "log.rename_worker.rename_started_html": "Начинаем переименование: <b>{old}</b> → <b>{new}</b>",

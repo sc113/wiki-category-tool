@@ -833,6 +833,7 @@
   "log.rename_worker.rename_error_html": "Rename error <b>{title}</b>: {error_type}: {error}",
   "log.rename_worker.rename_error_plain": "Rename error {title}: {error_type}: {error}",
   "log.rename_worker.rename_failed_unknown": "Could not rename {old} → {new}.",
+  "log.rename_worker.rename_transfer_resumed": "Category {old} was already renamed to {new}; resuming content transfer.",
   "log.rename_worker.save_error_detail": "Could not save {title}: {error_type}: {error}",
   "log.rename_worker.rename_rate_limit": "Rename rate limit: pause {wait:.2f}s · attempt {attempt}/3",
   "log.rename_worker.rename_started_html": "Starting rename: <b>{old}</b> → <b>{new}</b>",
