@@ -11,7 +11,7 @@ from collections import deque
 from PySide6.QtCore import QThread, Signal
 
 from ..constants import REQUEST_HEADERS
-from ..core.api_client import WikimediaAPIClient
+from ..core.api_client import APIRequestError, WikimediaAPIClient
 from ..core.localization import translate_runtime
 
 
@@ -256,6 +256,8 @@ class CategoryFetchWorker(QThread):
                 return
             self.result_ready.emit(titles, stats)
         except Exception as exc:
+            if self._stop:
+                return
             self.failed.emit(
                 self._fmt("ui.source.api_error", "API error: {error}", error=exc)
             )
@@ -558,6 +560,7 @@ class CategoryFetchWorker(QThread):
         processed_categories: int = 0,
         queued_categories: int = 0,
         current_depth: int = 0,
+        subcategory_counts: dict[str, int] | None = None,
     ) -> list[str]:
         return self._fetch_category_members(
             category=category,
@@ -568,6 +571,7 @@ class CategoryFetchWorker(QThread):
             processed_categories=processed_categories,
             queued_categories=queued_categories,
             current_depth=current_depth,
+            subcategory_counts=subcategory_counts,
         )
 
     def _fetch_category_members(
@@ -582,24 +586,42 @@ class CategoryFetchWorker(QThread):
         processed_categories: int = 0,
         queued_categories: int = 0,
         current_depth: int = 0,
+        subcategory_counts: dict[str, int] | None = None,
     ) -> list[str]:
         api_url = self.api_client._build_api_url(fam, lang)
-        params = {
-            "action": "query",
-            "list": "categorymembers",
-            "cmtitle": category,
-            "cmtype": cmtype,
-            "cmlimit": "max",
-            "format": "json",
-        }
+        with_subcategory_info = cmtype == "subcat" and subcategory_counts is not None
+        if with_subcategory_info:
+            base_params = {
+                "action": "query",
+                "generator": "categorymembers",
+                "gcmtitle": category,
+                "gcmtype": "subcat",
+                "gcmlimit": "max",
+                "prop": "categoryinfo",
+                "format": "json",
+                "formatversion": 2,
+            }
+        else:
+            base_params = {
+                "action": "query",
+                "list": "categorymembers",
+                "cmtitle": category,
+                "cmtype": cmtype,
+                "cmlimit": "max",
+                "format": "json",
+            }
+        params = dict(base_params)
 
         titles: list[str] = []
+        seen_titles: set[str] = set()
         retries = 0
         batches = 0
         last_progress_at = 0.0
         while not self._stop:
             try:
                 self.api_client._rate_wait()
+                if self._stop:
+                    break
                 response = self.api_client.session.get(
                     api_url,
                     params=params,
@@ -611,14 +633,7 @@ class CategoryFetchWorker(QThread):
                     retries += 1
                     self.api_client._rate_backoff(0.6 * retries)
                     continue
-                self.progress.emit(
-                    self._fmt(
-                        "ui.source.api_error",
-                        "API error: {error}",
-                        error=exc,
-                    )
-                )
-                break
+                raise APIRequestError(str(exc)) from exc
 
             if response.status_code == 429 and retries < 3:
                 retries += 1
@@ -636,7 +651,7 @@ class CategoryFetchWorker(QThread):
                     if cmtype == "subcat"
                     else "HTTP {status} while fetching pages for {category}"
                 )
-                self.progress.emit(
+                raise APIRequestError(
                     self._fmt(
                         key,
                         fallback,
@@ -644,27 +659,50 @@ class CategoryFetchWorker(QThread):
                         category=category,
                     )
                 )
-                break
 
             retries = 0
             try:
                 payload = response.json()
-            except Exception:
-                self.progress.emit(
+            except Exception as exc:
+                raise APIRequestError(
                     self._fmt(
                         "ui.source.json_parse_error",
                         "Failed to parse JSON for {category}",
                         category=category,
                     )
-                )
-                break
+                ) from exc
+            if not isinstance(payload, dict):
+                raise APIRequestError(f"Invalid API response for {category}")
+            if payload.get("error"):
+                raise APIRequestError(f"MediaWiki API error: {payload['error']}")
 
-            batch = [
-                str(member.get("title", "")).strip()
-                for member in payload.get("query", {}).get("categorymembers", [])
-            ]
-            batch_titles = [title for title in batch if title]
-            titles.extend(batch_titles)
+            query = payload.get("query", {})
+            if with_subcategory_info:
+                members = query.get("pages", [])
+                if isinstance(members, dict):
+                    members = members.values()
+            else:
+                members = query.get("categorymembers", [])
+            batch_titles: list[str] = []
+            for member in members:
+                title = str(member.get("title", "")).strip()
+                if not title:
+                    continue
+                title_key = title.casefold()
+                if with_subcategory_info:
+                    info = member.get("categoryinfo")
+                    count = info.get("subcats") if isinstance(info, dict) else None
+                    if type(count) is int and count >= 0:
+                        # Property continuation can repeat a title. Keep metadata
+                        # from later batches, and favour a positive count if it changes.
+                        subcategory_counts[title_key] = max(
+                            subcategory_counts.get(title_key, 0), count
+                        )
+                if title_key in seen_titles:
+                    continue
+                seen_titles.add(title_key)
+                titles.append(title)
+                batch_titles.append(title)
 
             next_continue = payload.get("continue")
             batches += 1
@@ -700,7 +738,9 @@ class CategoryFetchWorker(QThread):
                 )
             if not next_continue:
                 break
-            params.update(next_continue)
+            # Each module can finish independently; do not retain an old
+            # categoryinfo continuation token when advancing the generator.
+            params = {**base_params, **next_continue}
 
         return titles
 
@@ -718,6 +758,7 @@ class CategoryFetchWorker(QThread):
 
         while queue and not self._stop:
             current_category, current_depth = queue.popleft()
+            subcategory_counts: dict[str, int] = {}
             direct_subcats = self._fetch_direct_subcategories(
                 category=current_category,
                 lang=lang,
@@ -726,6 +767,9 @@ class CategoryFetchWorker(QThread):
                 processed_categories=processed,
                 queued_categories=len(queue),
                 current_depth=current_depth,
+                subcategory_counts=(
+                    subcategory_counts if current_depth < max_depth else None
+                ),
             )
             child_depth = current_depth + 1
             for subcat in direct_subcats:
@@ -735,7 +779,9 @@ class CategoryFetchWorker(QThread):
                 visited.add(subcat_key)
                 found.append(subcat)
                 found_depths[subcat_key] = child_depth
-                if current_depth < max_depth:
+                # A terminal category still belongs in the result. Only skip
+                # reading its children when the API explicitly reports zero.
+                if current_depth < max_depth and subcategory_counts.get(subcat_key) != 0:
                     queue.append((subcat, child_depth))
 
             processed += 1
