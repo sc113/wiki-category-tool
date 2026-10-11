@@ -12,14 +12,14 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QTimer, QSignalBlocker, QThread, Signal, Qt, QSettings, QSize, QByteArray
+from PySide6.QtCore import QEvent, QTimer, QSignalBlocker, QThread, Signal, Qt, QSettings, QSize, QByteArray, QRectF
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QMessageBox, QToolButton, QWidget, QVBoxLayout, QLabel,
     QHBoxLayout, QFrame, QPushButton, QApplication, QStyle, QCheckBox, QGroupBox,
     QLineEdit, QTextEdit, QPlainTextEdit, QTreeWidget, QSizePolicy, QSpinBox, QAbstractSpinBox, QProgressBar,
     QComboBox, QGraphicsDropShadowEffect
 )
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen
 from PySide6.QtSvg import QSvgRenderer
 
 from ..constants import APP_VERSION
@@ -56,6 +56,20 @@ class NSLoadThread(QThread):
             pass
 
 
+class _CategoryTransferNavGroup(QFrame):
+    """A fractional-width outline that remains visible at standard scaling."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(self.property('outline_color') or '#2a4856'))
+        pen.setWidthF(0.5)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+
+
 class MainWindow(QMainWindow):
     """Основное окно приложения"""
     ns_update_finished = Signal(str, str, bool)  # family, lang, ok
@@ -68,8 +82,11 @@ class MainWindow(QMainWindow):
         3: ('ui.main.tab.create.tag', 'ui.bulk_create', 'ui.main.tab.create.subtitle'),
         4: ('ui.main.tab.rename.tag', 'ui.main.tab.rename.title', 'ui.main.tab.rename.subtitle'),
         5: ('ui.main.tab.cleanup.tag', 'ui.main.tab.cleanup.title', 'ui.main.tab.cleanup.subtitle'),
-        6: ('ui.main.tab.sync.tag', 'ui.category_sync_label', 'ui.main.tab.sync.subtitle'),
+        6: ('ui.transfer.sync_tag', 'ui.transfer.sync_title', 'ui.transfer.sync_subtitle'),
         7: ('ui.main.tab.overview.tag', 'ui.overview', 'ui.main.tab.overview.subtitle'),
+        8: ('ui.transfer.recon_tag', 'ui.transfer.recon_title', 'ui.transfer.subtitle'),
+        9: ('ui.transfer.links_tag', 'ui.transfer.links_title', 'ui.transfer.links_subtitle'),
+        10: ('ui.transfer.interwiki_tag', 'ui.transfer.interwiki_title', 'ui.transfer.interwiki_subtitle'),
     }
     _NAV_ITEMS = [
         (1, 'ui.read', 'read'),
@@ -77,8 +94,14 @@ class MainWindow(QMainWindow):
         (3, 'ui.create', 'create'),
         (4, 'ui.rename', 'rename'),
         (5, 'ui.redundant_categories', 'cleanup'),
-        (6, 'ui.category_sync_label', 'sync'),
+        (10, 'ui.transfer.nav_interwiki', 'sync'),
     ]
+    _TRANSFER_NAV_ITEMS = [
+        (8, 'ui.transfer.nav_recon', 'read'),
+        (9, 'ui.transfer.nav_links', 'create'),
+        (6, 'ui.transfer.nav_sync', 'sync'),
+    ]
+    _SIDEBAR_EXPANDED_WIDTH = 248
 
     def __init__(self):
         super().__init__()
@@ -195,6 +218,8 @@ class MainWindow(QMainWindow):
         self.rename_tab = None
         self.redundant_categories_tab = None
         self.category_content_sync_tab = None
+        self.category_transfer_tab = None
+        self.category_interwiki_tab = None
         self.overview_tab = None
         self._ns_thread = None
         self._rules_file_path = None
@@ -232,8 +257,7 @@ class MainWindow(QMainWindow):
         self.sidebar = QFrame(root)
         self.sidebar.setObjectName('sidebar')
         try:
-            self.sidebar.setMinimumWidth(248)
-            self.sidebar.setMaximumWidth(248)
+            self.sidebar.setFixedWidth(self._SIDEBAR_EXPANDED_WIDTH)
         except Exception:
             pass
         sidebar_layout = QVBoxLayout(self.sidebar)
@@ -436,6 +460,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget(self.content_frame)
         self.tabs.setObjectName('contentTabs')
+        self.tabs.tabBar().setObjectName('mainNavigationTabs')
         try:
             self.tabs.tabBar().hide()
         except Exception:
@@ -457,9 +482,18 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._nav_buttons = {}
-        for index, text_key, icon_key in self._NAV_ITEMS:
+        self.transfer_nav_group = _CategoryTransferNavGroup(self.nav_host)
+        self.transfer_nav_group.setObjectName('categoryTransferNavGroup')
+        group_layout = QVBoxLayout(self.transfer_nav_group)
+        group_layout.setContentsMargins(6, 8, 6, 6)
+        group_layout.setSpacing(5)
+        self.transfer_nav_title = QLabel(self._t('ui.transfer.title'), self.transfer_nav_group)
+        self.transfer_nav_title.setObjectName('categoryTransferNavTitle')
+        group_layout.addWidget(self.transfer_nav_title)
+        for index, text_key, icon_key in self._NAV_ITEMS + self._TRANSFER_NAV_ITEMS:
+            grouped = index in {item[0] for item in self._TRANSFER_NAV_ITEMS}
             label = self._nav_title(text_key)
-            btn = QPushButton(label, self.nav_host)
+            btn = QPushButton(label, self.transfer_nav_group if grouped else self.nav_host)
             btn.setObjectName('navButton')
             btn.setCheckable(True)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -471,8 +505,9 @@ class MainWindow(QMainWindow):
                 pass
             btn.clicked.connect(
                 lambda _checked=False, i=index: self._set_tab_from_nav(i))
-            self.nav_layout.addWidget(btn)
+            (group_layout if grouped else self.nav_layout).addWidget(btn)
             self._nav_buttons[index] = btn
+        self.nav_layout.addWidget(self.transfer_nav_group)
         self.nav_layout.addStretch(1)
         self._refresh_nav_icons()
         self._apply_sidebar_collapse_mode()
@@ -825,13 +860,28 @@ class MainWindow(QMainWindow):
 
     def _apply_sidebar_collapse_mode(self):
         collapsed = bool(self._sidebar_collapsed)
+        group = getattr(self, 'transfer_nav_group', None)
+        if group is not None:
+            border, title_color = {
+                'light': ('#c4d2db', '#8a9aa6'),
+                'dark': ('#34404c', '#83919d'),
+            }.get(self._theme_mode, ('#2a4856', '#71929e'))
+            group.setProperty('outline_color', border)
+            group.setStyleSheet(
+                'QFrame#categoryTransferNavGroup { border: none; background: transparent; }'
+                f'QLabel#categoryTransferNavTitle {{ border: none; background: transparent; padding: 0 3px 3px; color: {title_color}; font-weight: 400; }}'
+                'QFrame#categoryTransferNavGroup QPushButton#navButton { '
+                'min-height: 0; max-height: 16777215px; padding: 4px 7px; }'
+            )
+            group.update()
+            group.layout().setContentsMargins(1, 5, 1, 5) if collapsed else group.layout().setContentsMargins(6, 8, 6, 6)
+            self.transfer_nav_title.setVisible(not collapsed)
         try:
             if collapsed:
                 self.sidebar.setMinimumWidth(58)
                 self.sidebar.setMaximumWidth(58)
             else:
-                self.sidebar.setMinimumWidth(248)
-                self.sidebar.setMaximumWidth(248)
+                self.sidebar.setFixedWidth(self._SIDEBAR_EXPANDED_WIDTH)
             if hasattr(self, '_sidebar_layout') and self._sidebar_layout is not None:
                 if collapsed:
                     self._sidebar_layout.setContentsMargins(2, 10, 6, 8)
@@ -877,22 +927,23 @@ class MainWindow(QMainWindow):
                 label = btn.property('nav_label') or ''
                 if collapsed:
                     btn.setText('')
-                    btn.setToolTip(str(label))
+                    btn.setToolTip(str(label).replace('\n', ' '))
                     btn.setMinimumWidth(40)
                     btn.setMaximumWidth(40)
                     btn.setMinimumHeight(40)
                     btn.setMaximumHeight(40)
                     btn.setIconSize(QSize(20, 20))
-                    self.nav_layout.setAlignment(btn, Qt.AlignHCenter)
+                    btn.parentWidget().layout().setAlignment(btn, Qt.AlignHCenter)
                 else:
                     btn.setText(str(label))
                     btn.setToolTip('')
                     btn.setMinimumWidth(0)
                     btn.setMaximumWidth(16777215)
-                    btn.setMinimumHeight(44)
-                    btn.setMaximumHeight(44)
+                    height = 44
+                    btn.setMinimumHeight(height)
+                    btn.setMaximumHeight(height)
                     btn.setIconSize(QSize(18, 18))
-                    self.nav_layout.setAlignment(btn, Qt.Alignment())
+                    btn.parentWidget().layout().setAlignment(btn, Qt.Alignment())
                 try:
                     st = btn.style()
                     if st:
@@ -1193,6 +1244,10 @@ class MainWindow(QMainWindow):
             pass
         self._update_header_for_tab(self.tabs.currentIndex() if hasattr(self, 'tabs') else -1)
         self._apply_widget_text_translation()
+        for name in ('category_transfer_tab', 'category_interwiki_tab', 'category_content_sync_tab'):
+            tab = getattr(self, name, None)
+            if tab is not None and hasattr(tab, 'refresh_localized_texts'):
+                tab.refresh_localized_texts()
         try:
             from .widgets.shared_panels import CategorySourcePanel
             for panel in self.findChildren(CategorySourcePanel):
@@ -1341,6 +1396,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        self._apply_sidebar_collapse_mode()
         self._save_ui_settings()
         QTimer.singleShot(0, self._apply_windows_titlebar_theme)
         QTimer.singleShot(0, self._refresh_nav_icons)
@@ -1690,7 +1746,7 @@ class MainWindow(QMainWindow):
                 border: 0;
                 background: transparent;
             }
-            QTabBar::tab {
+            QTabBar#mainNavigationTabs::tab {
                 width: 0;
                 height: 0;
                 margin: 0;
@@ -2563,7 +2619,7 @@ class MainWindow(QMainWindow):
                 border: 0;
                 background: transparent;
             }
-            QTabBar::tab {
+            QTabBar#mainNavigationTabs::tab {
                 width: 0;
                 height: 0;
                 margin: 0;
@@ -3055,8 +3111,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.create_tab, self._t('ui.create'))
         self.tabs.addTab(self.rename_tab, self._t('ui.rename'))
         self.tabs.addTab(self.redundant_categories_tab, self._t('ui.main.tab.cleanup.title'))
-        self.tabs.addTab(self.category_content_sync_tab, self._t('ui.category_sync_label'))
+        self.tabs.addTab(self.category_content_sync_tab, self._t('ui.transfer.sync_title'))
         self.tabs.addTab(self.overview_tab, self._t('ui.overview'))
+        self.tabs.addTab(self.category_transfer_tab, self._t('ui.transfer.recon_title'))
+        self.tabs.addTab(self.category_transfer_tab.creation_stage, self._t('ui.transfer.links_title'))
+        self.tabs.addTab(self.category_interwiki_tab, self._t('ui.transfer.interwiki_title'))
         try:
             self.tabs.setCurrentIndex(0)
         except Exception:
@@ -3105,6 +3164,8 @@ class MainWindow(QMainWindow):
         from .tabs.rename_tab import RenameTab
         from .tabs.redundant_categories_tab import RedundantCategoriesTab
         from .tabs.category_content_sync_tab import CategoryContentSyncTab
+        from .tabs.category_transfer_tab import CategoryTransferTab
+        from .tabs.category_interwiki_tab import CategoryInterwikiTab
         from .tabs.overview_tab import OverviewTab
         # Создание вкладок с передачей core компонентов
         self.auth_tab = AuthTab(self)
@@ -3114,6 +3175,8 @@ class MainWindow(QMainWindow):
         self.rename_tab = RenameTab(self)
         self.redundant_categories_tab = RedundantCategoriesTab(self)
         self.category_content_sync_tab = CategoryContentSyncTab(self)
+        self.category_transfer_tab = CategoryTransferTab(self)
+        self.category_interwiki_tab = CategoryInterwikiTab(self)
         self.overview_tab = OverviewTab(self)
 
         # Передача core компонентов во вкладки
@@ -3125,6 +3188,8 @@ class MainWindow(QMainWindow):
             self.rename_tab,
             self.redundant_categories_tab,
             self.category_content_sync_tab,
+            self.category_transfer_tab,
+            self.category_interwiki_tab,
             self.overview_tab,
         ]:
             if hasattr(tab, 'set_core_components'):
@@ -3435,6 +3500,8 @@ class MainWindow(QMainWindow):
                 getattr(self, 'rename_tab', None),
                 getattr(self, 'redundant_categories_tab', None),
                 getattr(self, 'category_content_sync_tab', None),
+                getattr(self, 'category_transfer_tab', None),
+                getattr(self, 'category_interwiki_tab', None),
             ] if tab is not None
         ]
 
@@ -3752,6 +3819,12 @@ class MainWindow(QMainWindow):
             ('redundant', self.redundant_categories_tab, 'rcworker'),
             ('sync', self.category_content_sync_tab, 'sync_worker'),
             ('sync_preview', self.category_content_sync_tab, 'preview_worker'),
+            ('transfer_read', self.category_transfer_tab, 'read_worker'),
+            ('transfer_create', self.category_transfer_tab, 'create_worker'),
+            ('transfer_preview', self.category_transfer_tab, 'preview_worker'),
+            ('transfer_content', self.category_transfer_tab, 'content_worker'),
+            ('interwiki_preview', self.category_interwiki_tab, 'preview_worker'),
+            ('interwiki_link', self.category_interwiki_tab, 'link_worker'),
             ('auth', self.auth_tab, '_login_worker')
         ]
 

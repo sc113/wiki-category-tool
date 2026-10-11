@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import time
+import threading
 from urllib.parse import quote
 from typing import Optional
 
@@ -16,8 +17,8 @@ import mwparserfromhell
 from PySide6.QtCore import QThread, Signal
 
 from .base_worker import BaseWorker
-from ..constants import REQUEST_HEADERS
 from ..core.api_client import WikimediaAPIClient
+from ..core.category_transfer import CategoryPair, CategoryTransferReader, TransferStopped
 from ..core.localization import translate_runtime
 from ..core.namespace_manager import get_policy_prefix, strip_ns_prefix
 from ..core.redundant_category_logic import (
@@ -60,8 +61,6 @@ def _normalize_category_name(raw_name: str, family: str, lang: str) -> str:
     base = strip_ns_prefix(family, lang, raw, 14)
     if not base:
         base = raw
-    if ":" in base:
-        base = base.split(":", 1)[-1]
     base = base.strip()
     if not base:
         return ""
@@ -268,6 +267,7 @@ class CategoryContentSyncPreviewWorker(QThread):
         process_articles: bool,
         process_subcategories: bool,
         article_depth: int,
+        category_pairs: tuple[CategoryPair, ...] = (),
     ):
         super().__init__()
         self.target_categories = list(target_categories or [])
@@ -283,9 +283,20 @@ class CategoryContentSyncPreviewWorker(QThread):
         self.preview_api_timeout = 4
         self.api_client = WikimediaAPIClient()
         self._stop = False
+        self._stop_event = threading.Event()
+        self.failed = False
+        self.failure_message = ""
+        self.category_pairs = {pair.target_title.casefold(): pair for pair in category_pairs}
 
     def request_stop(self):
         self._stop = True
+        self._stop_event.set()
+
+    def _set_failure(self, error):
+        self.failed = True
+        self.failure_message = str(error)
+
+    _t = staticmethod(_t)
 
     @staticmethod
     def _iter_chunks(values: list[str], chunk_size: int):
@@ -305,8 +316,11 @@ class CategoryContentSyncPreviewWorker(QThread):
         return f"https://{host}/w/api.php"
 
     def _source_sitelink_key(self) -> str:
+        return self._source_sitelink_key_for(self.source_lang)
+
+    def _source_sitelink_key_for(self, code) -> str:
         family = (self.family or "").strip().lower()
-        lang = (self.source_lang or "").strip().lower()
+        lang = (code or "").strip().lower()
         if family == "wikipedia":
             return f"{lang}wiki"
         if family == "commons":
@@ -316,72 +330,20 @@ class CategoryContentSyncPreviewWorker(QThread):
         return f"{lang}{family}"
 
     def _api_get_json(self, url: str, params: dict) -> tuple[dict, int]:
-        attempts = max(1, int(self.preview_api_retries or 1))
-        timeout = max(3, int(self.preview_api_timeout or 8))
-        for attempt in range(1, attempts + 1):
-            if self._stop:
-                return {}, 0
-            try:
-                self.api_client._rate_wait()
-            except Exception:
-                pass
-            try:
-                response = self.api_client.session.post(
-                    url,
-                    data=params,
-                    timeout=(3, timeout),
-                    headers=REQUEST_HEADERS,
-                )
-                status = int(response.status_code or 0)
-            except requests.exceptions.Timeout:
-                status = 0
-                if attempt < attempts:
-                    try:
-                        self.api_client._rate_backoff(0.35 * attempt)
-                    except Exception:
-                        pass
-                    continue
-                return {}, status
-            except Exception:
-                status = 0
-                if attempt < attempts:
-                    try:
-                        self.api_client._rate_backoff(0.25 * attempt)
-                    except Exception:
-                        pass
-                    continue
-                return {}, status
-
-            if self._stop:
-                return {}, status
-
-            if status == 200:
-                try:
-                    data = response.json()
-                except Exception:
-                    data = {}
-                if isinstance(data, dict):
-                    return data, status
-                return {}, status
-
-            if status == 429 and attempt < attempts:
-                try:
-                    self.api_client._rate_backoff(0.6 * attempt)
-                except Exception:
-                    pass
-                if attempt == 1:
-                    self.progress.emit("[Preview API] 429 (rate limit), retrying...")
-                continue
-
-            if status in (502, 503, 504, 520, 521, 522, 524) and attempt < attempts:
-                try:
-                    self.api_client._rate_backoff(0.45 * attempt)
-                except Exception:
-                    pass
-                continue
-
-            return {}, status
-        return {}, 0
+        # Share cancellation, Retry-After handling and explicit API errors with
+        # scanning/preparation. A failed read must never mean a missing sitelink.
+        if self._stop:
+            raise TransferStopped()
+        encoded = requests.Request("GET", url, params=params).prepare().url
+        if len(encoded.encode("ascii")) > CategoryTransferReader._MAX_QUERY_URL_BYTES:
+            return {}, 414
+        reader = getattr(self, "_preview_reader", None)
+        if reader is None:
+            reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event, 0.12)
+            reader.on_retry = self.progress.emit
+            self._preview_reader = reader
+        lang = self.source_lang if f"{self.source_lang}." in url else self.target_lang
+        return reader.request(lang, params, wikidata="www.wikidata.org" in url), 200
 
     def _build_preview_rows_batch(
         self,
@@ -394,6 +356,30 @@ class CategoryContentSyncPreviewWorker(QThread):
             return []
         if self._stop:
             return []
+
+        pairs = tuple(self.category_pairs[title.casefold()] for title in batch_titles
+                      if title.casefold() in self.category_pairs)
+        if pairs:
+            reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event)
+            try:
+                checked = reader.check_pairs(pairs)
+            finally:
+                reader.close()
+            rows = []
+            for pair, result in zip(pairs, checked):
+                valid = result["status"] == "already_linked"
+                rows.append({
+                    "phase": "details", "row_key": pair.target_title.casefold(),
+                    "target_title": pair.target_title, "target_url": _build_page_url(target_site, pair.target_title),
+                    "qid": result.get("qid", ""), "qid_url": f"https://www.wikidata.org/wiki/{result.get('qid', '')}",
+                    "source_title": result["row"].source_title,
+                    "source_url": _build_page_url(source_site, result["row"].source_title),
+                    "count_text": "—" if valid else "0", "method": "Wikidata",
+                    "status": "preview_ready" if valid else "error", "error": result.get("error", ""),
+                })
+            remaining = [title for title in batch_titles if title.casefold() not in self.category_pairs]
+            rows.extend(self._build_preview_rows_batch(batch_titles=remaining, source_site=source_site, target_site=target_site))
+            return rows
 
         target_api = self._site_api_url(target_site)
         source_api = self._site_api_url(source_site)
@@ -448,6 +434,29 @@ class CategoryContentSyncPreviewWorker(QThread):
 
         source_title_by_row_key: dict[str, str] = {}
         method_by_row_key: dict[str, str] = {}
+
+        # Wikipedia pageprops can lag after a new sitelink. Ask Wikidata by
+        # page title before treating a category as having no item.
+        missing_items = [title for title in batch_titles if title.casefold() not in qid_by_row_key]
+        if missing_items and not self._stop:
+            target_key = self._source_sitelink_key_for(self.target_lang)
+            def _items_by_title(titles):
+                data, status = self._api_get_json("https://www.wikidata.org/w/api.php", {
+                    "action": "wbgetentities", "format": "json", "sites": target_key,
+                    "titles": "|".join(titles), "props": "sitelinks",
+                    "sitefilter": f"{target_key}|{self._source_sitelink_key()}",
+                })
+                if status == 414 and len(titles) > 1:
+                    mid = len(titles) // 2
+                    return {**_items_by_title(titles[:mid]), **_items_by_title(titles[mid:])}
+                return data.get("entities", {})
+            for entity in _items_by_title(missing_items).values():
+                if "missing" in entity or not entity.get("id"):
+                    continue
+                target_title = entity.get("sitelinks", {}).get(target_key, {}).get("title", "")
+                row_key = target_title.casefold()
+                if row_key in requested_keys:
+                    qid_by_row_key[row_key] = entity["id"]
 
         qids = sorted({qid for qid in qid_by_row_key.values() if qid})
         if qids and not self._stop:
@@ -602,6 +611,20 @@ class CategoryContentSyncPreviewWorker(QThread):
         return rows
 
     def run(self):
+        try:
+            self._run_preview()
+        except TransferStopped:
+            self._stop = True
+        except Exception as error:
+            self._set_failure(error)
+            self.progress.emit(str(error))
+        finally:
+            reader = getattr(self, "_preview_reader", None)
+            if reader is not None:
+                reader.close()
+            self.api_client.session.close()
+
+    def _run_preview(self):
         if not self.process_articles and not self.process_subcategories:
             self._set_failure(self._t("log.sync_worker.no_modes_selected"))
             self.progress.emit(
@@ -712,6 +735,7 @@ class CategoryContentSyncWorker(BaseWorker):
         process_subcategories: bool,
         article_depth: int,
         edit_summary: str = "",
+        category_pairs: tuple[CategoryPair, ...] = (),
     ):
         super().__init__(username, password, target_lang, family)
         self.target_categories = list(target_categories or [])
@@ -722,6 +746,7 @@ class CategoryContentSyncWorker(BaseWorker):
         self.process_subcategories = bool(process_subcategories)
         self.article_depth = max(0, int(article_depth or 0))
         self.edit_summary = str(edit_summary or "").strip()
+        self.category_pairs = {pair.target_title.casefold(): pair for pair in category_pairs}
         self.transferred_success_total = 0
         self._lookup_min_interval = 0.12
         self._lookup_last_ts = 0.0
@@ -1167,6 +1192,22 @@ class CategoryContentSyncWorker(BaseWorker):
         target_site: pywikibot.Site,
     ) -> tuple[Optional[str], str]:
         method = ""
+        pair = self.category_pairs.get(target_category_name.casefold())
+        if pair is not None:
+            # Never guess another source for a pair handed off by stage two.
+            reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event)
+            try:
+                result = reader.check_pairs((pair,))[0]
+                if result["status"] == "already_linked":
+                    return result["row"].source_title, "Wikidata"
+                self.progress.emit(result["error"])
+            except TransferStopped:
+                return None, ""
+            except Exception as error:
+                self.progress.emit(str(error))
+            finally:
+                reader.close()
+            return None, ""
         try:
             target_cat = pywikibot.Category(target_site, target_category_name)
         except Exception:
@@ -1188,7 +1229,7 @@ class CategoryContentSyncWorker(BaseWorker):
             base_name = target_cat.title(with_ns=False)
             constructed = pywikibot.Category(source_site, base_name)
             if constructed.exists() and not constructed.isRedirectPage():
-                return constructed.title(), self._t("ui.sync.method.constructed", "Constructed")
+                return constructed.title(), _t("ui.sync.method.constructed", "Constructed")
         except Exception:
             pass
         return None, method
@@ -1258,7 +1299,7 @@ class CategoryContentSyncWorker(BaseWorker):
         for source_page in source_cat.articles(recurse=recurse_value):
             if self._stop:
                 break
-            if isinstance(source_page, pywikibot.Category):
+            if isinstance(source_page, pywikibot.Category) or source_page.namespace() != 0:
                 continue
             key = source_page.title().casefold()
             if key in seen:
@@ -1305,6 +1346,12 @@ class CategoryContentSyncWorker(BaseWorker):
         try:
             stats["seen"] = len(source_members)
             article_count = len(source_members)
+            reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event)
+            try:
+                matches = reader.article_matches([page.title() for page in source_members])
+            finally:
+                reader.close()
+            seen_targets = set()
             for idx, source_page in enumerate(source_members, start=1):
                 if self._stop:
                     break
@@ -1316,15 +1363,18 @@ class CategoryContentSyncWorker(BaseWorker):
                     mode="articles",
                 )
                 source_title = source_page.title()
-                target_page_title = self._get_linked_page_title_retry(
-                    source_page, target_site, expected_ns=0
-                )
+                target_page_title = matches.get(source_title)
                 if not target_page_title:
                     stats["skipped"] += 1
                     self.progress.emit(
                         self._fmt("log.sync_worker.article_skip_no_linked", title=source_title)
                     )
                     continue
+
+                if target_page_title in seen_targets:
+                    stats["skipped"] += 1
+                    continue
+                seen_targets.add(target_page_title)
 
                 try:
                     target_page = pywikibot.Page(target_site, target_page_title)
@@ -1401,6 +1451,8 @@ class CategoryContentSyncWorker(BaseWorker):
                         already=stats["already"],
                     )
                 )
+        except TransferStopped:
+            pass
         except Exception as exc:
             stats["error"] += 1
             self.progress.emit(

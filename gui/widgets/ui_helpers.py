@@ -911,6 +911,54 @@ def _level_icon(level: str) -> str:
     }.get(level, 'ℹ️')
 
 
+def create_spin_control(spin, *, plus_tip="Increase", minus_tip="Decrease", width=34):
+    """The compact +/- stepper used for depth throughout the application."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QAbstractSpinBox, QSizePolicy, QVBoxLayout, QWidget
+    spin.setObjectName("depthSpin")
+    spin.setAlignment(Qt.AlignCenter)
+    spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+    spin.setFixedWidth(width)
+    plus, minus = QToolButton(), QToolButton()
+    for button, text, tooltip, callback in (
+        (plus, "+", plus_tip, spin.stepUp), (minus, "-", minus_tip, spin.stepDown),
+    ):
+        button.setObjectName("depthStepButton")
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setFixedSize(12, 12)
+        button.clicked.connect(callback)
+    steps = QVBoxLayout()
+    steps.setContentsMargins(0, 0, 0, 0)
+    steps.setSpacing(0)
+    steps.addWidget(plus)
+    steps.addWidget(minus)
+    wrap = QWidget()
+    wrap.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    layout = QHBoxLayout(wrap)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(2)
+    layout.addWidget(spin)
+    layout.addLayout(steps)
+    return wrap, plus, minus
+
+
+def style_transfer_languages(source, badge, theme):
+    """The source input and read-only current language used by category sync."""
+    palettes = {
+        'light': ('#18364e', '#ffffff', '#5f93be', '#e6ebf1', '#5d6b79', '#b3beca'),
+        'dark': ('#e5edf7', '#1d2430', '#6e7d90', '#313a47', '#c8d4e1', '#6d7b8d'),
+        'teal': ('#e8f5ff', '#0f2a3b', '#53a8c0', '#2b3d4f', '#d3e6f4', '#5f7f96'),
+    }
+    text, background, border, badge_background, badge_text, badge_border = palettes.get(theme, palettes['teal'])
+    source.setStyleSheet(f"QLineEdit {{ min-height: 27px; max-height: 27px; color: {text}; background: {background}; "
+                        f"border: 2px solid {border}; border-radius: 8px; padding: 2px 8px; font-weight: 700; }}")
+    badge.setAlignment(Qt.AlignCenter)
+    badge.setStyleSheet(f"QLabel {{ min-height: 27px; max-height: 27px; color: {badge_text}; "
+                       f"background: {badge_background}; border: 1px solid {badge_border}; "
+                       "border-radius: 9px; padding: 2px 8px; font-weight: 700; }")
+
+
 def log_message(widget: QTextEdit, msg: str, debug_func=None):
     """Единый формат логов для QTextEdit: компактно, структурно, с темой.
 

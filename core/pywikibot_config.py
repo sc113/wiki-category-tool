@@ -194,7 +194,14 @@ class PywikibotConfigManager:
             "password_file = 'user-password.py'",
         ]
         for code in sorted(usernames_map.keys()):
-            lines.append(f"usernames['{family}']['{code}'] = '{usernames_map[code]}'")
+            lines.append(f"usernames[{family!r}][{code!r}] = {usernames_map[code]!r}")
+        if family != 'wikidata':
+            lines.append(f"usernames['wikidata']['wikidata'] = {username!r}")
+        # Config is already imported in the desktop process. Updating its file
+        # alone does not change Site()/data_repository() identity until restart.
+        from pywikibot import config as pwb_config
+        pwb_config.usernames[family][lang] = username
+        use_wikidata_profile(username)
             
         debug(f"Write user-config.py → {uc_path}")
         with open(uc_path, 'w', encoding='utf-8') as f:
@@ -327,8 +334,8 @@ class PywikibotConfigManager:
                     for k in list(sites.keys()):
                         try:
                             if isinstance(k, tuple):
-                                f, l = k
-                                if f == fam and l == lang:
+                                site_family, site_lang = k
+                                if site_family == fam and site_lang == lang:
                                     sites.pop(k, None)
                         except Exception:
                             pass
@@ -371,3 +378,11 @@ def ensure_base_env() -> str:
 def apply_pywikibot_runtime_options() -> None:
     """Public helper to apply non-credential Pywikibot runtime options."""
     return _config_manager.apply_runtime_options()
+
+
+def use_wikidata_profile(username: str) -> None:
+    """Bind repositories created by any wiki to the active desktop profile."""
+    if not username:
+        raise ValueError('An active username is required')
+    from pywikibot import config as pwb_config
+    pwb_config.usernames['wikidata']['wikidata'] = username

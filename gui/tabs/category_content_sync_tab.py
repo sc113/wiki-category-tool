@@ -18,7 +18,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QAbstractSpinBox,
     QCheckBox,
     QFrame,
     QGroupBox,
@@ -34,13 +33,13 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
-    QToolButton,
     QVBoxLayout,
     QWidget,
     QHeaderView,
 )
 
 from ...core.localization import translate_key
+from ...core.category_transfer import CategoryPair
 from ...core.api_client import WikimediaAPIClient
 from ...core.pywikibot_config import apply_pwb_config
 from ...utils import (
@@ -56,6 +55,7 @@ from ...workers.category_content_sync_worker import (
 )
 from ..widgets.shared_panels import CategorySourcePanel
 from ..widgets.ui_helpers import (
+    create_spin_control,
     add_info_button,
     create_log_wrap,
     inc_progress,
@@ -80,6 +80,8 @@ class CategoryContentSyncTab(QWidget):
         self.current_user: Optional[str] = None
         self.current_lang: Optional[str] = None
         self.current_family: Optional[str] = None
+        self._transfer_pairs = ()
+        self._transfer_context = None
 
         self._preview_ready = False
         self._preview_mode = False
@@ -101,7 +103,7 @@ class CategoryContentSyncTab(QWidget):
         self._preview_cols_user_resized = False
         self._preview_cols_auto_applying = False
         # target, wikidata, source, total, transferred, status
-        self._preview_col_ratios = (0.30, 0.09, 0.23, 0.12, 0.08, 0.18)
+        self._preview_col_ratios = (0.28, 0.28, 0.09, 0.11, 0.08, 0.16)
         self._preview_header_mouse_down = False
 
         self.setup_ui()
@@ -397,48 +399,11 @@ class CategoryContentSyncTab(QWidget):
                 "0 = only categories from the list; 1 = + direct subcategories for each category; 2+ = deeper.",
             )
         )
-        try:
-            self.article_depth_spin.setFixedWidth(34)
-            self.article_depth_spin.setAlignment(Qt.AlignCenter)
-            self.article_depth_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        except Exception:
-            pass
-
-        self.depth_plus_btn = QToolButton()
-        self.depth_plus_btn.setObjectName("depthStepButton")
-        self.depth_plus_btn.setText("+")
-        self.depth_plus_btn.setToolTip(self._t("ui.sync.depth_plus", "Increase depth"))
-        self.depth_plus_btn.clicked.connect(self.article_depth_spin.stepUp)
-
-        self.depth_minus_btn = QToolButton()
-        self.depth_minus_btn.setObjectName("depthStepButton")
-        self.depth_minus_btn.setText("-")
-        self.depth_minus_btn.setToolTip(self._t("ui.sync.depth_minus", "Decrease depth"))
-        self.depth_minus_btn.clicked.connect(self.article_depth_spin.stepDown)
-        try:
-            self.depth_plus_btn.setFixedSize(12, 12)
-            self.depth_minus_btn.setFixedSize(12, 12)
-        except Exception:
-            pass
-
-        depth_step_layout = QVBoxLayout()
-        try:
-            depth_step_layout.setContentsMargins(0, 0, 0, 0)
-            depth_step_layout.setSpacing(0)
-        except Exception:
-            pass
-        depth_step_layout.addWidget(self.depth_plus_btn)
-        depth_step_layout.addWidget(self.depth_minus_btn)
-
-        depth_wrap = QWidget()
-        depth_wrap_layout = QHBoxLayout(depth_wrap)
-        try:
-            depth_wrap_layout.setContentsMargins(0, 0, 0, 0)
-            depth_wrap_layout.setSpacing(2)
-        except Exception:
-            pass
-        depth_wrap_layout.addWidget(self.article_depth_spin)
-        depth_wrap_layout.addLayout(depth_step_layout)
+        depth_wrap, self.depth_plus_btn, self.depth_minus_btn = create_spin_control(
+            self.article_depth_spin,
+            plus_tip=self._t("ui.sync.depth_plus", "Increase depth"),
+            minus_tip=self._t("ui.sync.depth_minus", "Decrease depth"),
+        )
         row_lang_top.addWidget(depth_wrap, 0, Qt.AlignLeft)
         row_lang_top.addStretch(1)
         add_info_button(self, row_lang_top, help_text, inline=True)
@@ -591,19 +556,28 @@ class CategoryContentSyncTab(QWidget):
                 source_lang = ""
         else:
             source_lang = ""
-        source_col = self._t("ui.sync.preview.col.source", "Linked category")
+        source_col = self._t("ui.sync.preview.col.source", "Source category")
         if source_lang:
             source_col = f"{source_col} ({source_lang})"
         self.preview_table.setHorizontalHeaderLabels(
             [
+                source_col,
                 self._t("ui.sync.preview.col.target", "Target category"),
                 self._t("ui.sync.preview.col.wikidata", "Wikidata"),
-                source_col,
                 self._t("ui.sync.preview.col.count", "Total in category"),
                 self._t("ui.sync.preview.col.transferred", "Transferred"),
                 self._t("ui.sync.preview.col.status", "Status"),
             ]
         )
+
+    def refresh_localized_texts(self):
+        self._update_preview_headers()
+        for row in range(self.preview_table.rowCount()):
+            item = self.preview_table.item(row, 5)
+            code = item.data(self._status_code_role()) if item else None
+            if code:
+                item.setText(self._status_text(code))
+        self._schedule_preview_autofit()
 
     def _invalidate_preview_state(self, *_args):
         if self._suspend_preview_invalidation:
@@ -804,13 +778,15 @@ class CategoryContentSyncTab(QWidget):
             return
         ratios = tuple(getattr(self, "_preview_col_ratios", ()) or ())
         if len(ratios) != 6:
-            ratios = (0.30, 0.09, 0.23, 0.12, 0.08, 0.18)
+            ratios = (0.28, 0.28, 0.09, 0.11, 0.08, 0.16)
         try:
             min_w = int(table.horizontalHeader().minimumSectionSize())
         except Exception:
             min_w = 24
         min_w = max(24, min_w)
-        min_ws = [min_w] * 6
+        metrics = table.horizontalHeader().fontMetrics()
+        min_ws = [max(min_w, metrics.horizontalAdvance(table.horizontalHeaderItem(i).text()) + 18)
+                  for i in range(6)]
         # Колонка «Статус» должна по умолчанию быть заметно шире, чтобы не резать текст.
         min_ws[5] = max(min_w, 132)
 
@@ -1294,10 +1270,10 @@ class CategoryContentSyncTab(QWidget):
                 item.setData(self._row_key_role(), key)
         except Exception:
             pass
-        self.preview_table.setItem(row, 0, item)
+        self.preview_table.setItem(row, 1, item)
 
     def _row_key_for_row(self, row: int) -> str:
-        item = self.preview_table.item(row, 0)
+        item = self.preview_table.item(row, 1)
         if item is None:
             return ""
         try:
@@ -1346,7 +1322,7 @@ class CategoryContentSyncTab(QWidget):
         categories: list[str] = []
         seen: set[str] = set()
         for row in range(self.preview_table.rowCount()):
-            item = self.preview_table.item(row, 0)
+            item = self.preview_table.item(row, 1)
             if item is None:
                 continue
             title = str(item.text() or "").strip()
@@ -1568,6 +1544,7 @@ class CategoryContentSyncTab(QWidget):
                     return f"{self.code}.{fam}.org"
 
             site_stub = _SiteStub(target_lang, family)
+            pairs_by_target = {pair.target_title.casefold(): pair for pair in self._transfer_pairs}
             for row, target_title in enumerate(target_categories):
                 row_key = str(target_title).casefold()
                 self._preview_row_index[row_key] = row
@@ -1584,9 +1561,10 @@ class CategoryContentSyncTab(QWidget):
                     row_key=row_key,
                 )
                 self.preview_table.setItem(
-                    row, 1, self._make_table_item("…", align=Qt.AlignHCenter | Qt.AlignVCenter)
+                    row, 2, self._make_table_item("…", align=Qt.AlignHCenter | Qt.AlignVCenter)
                 )
-                self.preview_table.setItem(row, 2, self._make_table_item("…"))
+                pair = pairs_by_target.get(row_key)
+                self.preview_table.setItem(row, 0, self._make_table_item(pair.source_title if pair else "…"))
                 self.preview_table.setItem(
                     row, 3, self._make_table_item("—", align=Qt.AlignHCenter | Qt.AlignVCenter)
                 )
@@ -1630,8 +1608,8 @@ class CategoryContentSyncTab(QWidget):
             self._preview_row_index[key] = row
             target_url = str(row_data.get("target_url") or "")
             self._set_target_item(row, target_title, url=target_url, row_key=key)
-            self.preview_table.setItem(row, 1, self._make_table_item("…", align=Qt.AlignHCenter | Qt.AlignVCenter))
-            self.preview_table.setItem(row, 2, self._make_table_item("…"))
+            self.preview_table.setItem(row, 2, self._make_table_item("…", align=Qt.AlignHCenter | Qt.AlignVCenter))
+            self.preview_table.setItem(row, 0, self._make_table_item("…"))
             self.preview_table.setItem(row, 3, self._make_table_item("—", align=Qt.AlignHCenter | Qt.AlignVCenter))
             self.preview_table.setItem(row, 4, self._make_table_item("0", align=Qt.AlignHCenter | Qt.AlignVCenter))
             self._set_row_status(row, "previewing")
@@ -1679,7 +1657,7 @@ class CategoryContentSyncTab(QWidget):
                 qid_item.setForeground(self._muted_color())
             except Exception:
                 pass
-        self.preview_table.setItem(row, 1, qid_item)
+        self.preview_table.setItem(row, 2, qid_item)
 
         source_text = source_title or self._t(
             "ui.sync.preview.source_not_found", "Not found")
@@ -1689,14 +1667,15 @@ class CategoryContentSyncTab(QWidget):
                 source_item.setForeground(self._muted_color())
             except Exception:
                 pass
-        self.preview_table.setItem(row, 2, source_item)
+        self.preview_table.setItem(row, 0, source_item)
 
         count_item = self._make_table_item(
             count_text,
             align=Qt.AlignHCenter | Qt.AlignVCenter,
         )
         self.preview_table.setItem(row, 3, count_item)
-        self._set_row_status(row, "preview_ready" if source_title else "skipped")
+        self._set_row_status(row, row_data.get("status") or ("preview_ready" if source_title else "skipped"))
+        self.preview_table.item(row, 5).setToolTip(str(row_data.get("error") or ""))
         self._update_clear_skipped_button_state()
 
     def _append_preview_rows_batch(self, rows_data: object):
@@ -2044,7 +2023,14 @@ class CategoryContentSyncTab(QWidget):
             str(target_lang or "").strip().lower(),
             str(family or "").strip().lower(),
             max(0, int(transfer_depth or 0)),
+            self._active_transfer_pairs(categories, source_lang, target_lang, family),
         )
+
+    def _active_transfer_pairs(self, categories, source_lang, target_lang, family):
+        if self._transfer_context != (source_lang, target_lang, family):
+            return ()
+        names = {name.casefold() for name in categories}
+        return tuple(pair for pair in self._transfer_pairs if pair.target_title.casefold() in names)
 
     def _get_cached_depth_expanded_categories(
         self,
@@ -2293,6 +2279,7 @@ class CategoryContentSyncTab(QWidget):
             bool(process_articles),
             bool(process_subcategories),
             max(0, int(transfer_depth or 0)),
+            self._active_transfer_pairs(categories, source_lang, target_lang, family),
         )
 
     def _current_signature(self):
@@ -2524,6 +2511,8 @@ class CategoryContentSyncTab(QWidget):
             process_articles=config["process_articles"],
             process_subcategories=config["process_subcategories"],
             article_depth=0,
+            category_pairs=self._active_transfer_pairs(config["categories"], config["source_lang"],
+                                                       config["target_lang"], config["family"]),
         )
         self.preview_worker.progress.connect(
             lambda message: log_message(self.sync_log, message, debug)
@@ -2611,6 +2600,8 @@ class CategoryContentSyncTab(QWidget):
             process_subcategories=config["process_subcategories"],
             article_depth=0,
             edit_summary=config["edit_summary"],
+            category_pairs=self._active_transfer_pairs(config["categories"], config["source_lang"],
+                                                       config["target_lang"], config["family"]),
         )
         self.sync_worker.progress.connect(
             lambda message: log_message(self.sync_log, message, debug)
@@ -2633,14 +2624,15 @@ class CategoryContentSyncTab(QWidget):
         self.preview_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
 
-        if stopped or was_cancel_requested:
+        if stopped or was_cancel_requested or (worker and getattr(worker, "failed", False)):
             self._preview_ready = False
             self._preview_signature = None
             self.start_btn.setEnabled(False)
             self._mark_rows_stopped_if_in_progress()
             log_message(
                 self.sync_log,
-                self._t("ui.sync.preview.stopped", "Preview stopped."),
+                (str(worker.failure_message) if worker and getattr(worker, "failed", False)
+                 else self._t("ui.sync.preview.stopped", "Preview stopped.")),
                 debug,
             )
             if rows_count <= 0:
@@ -2815,6 +2807,29 @@ class CategoryContentSyncTab(QWidget):
             self.update_namespace_combo(family, lang)
         except Exception:
             pass
+
+    def load_transfer_categories(self, categories: list[str], source_lang: str,
+                                 pairs: tuple[CategoryPair, ...] = ()):
+        """Review newly linked categories using the usual sync preview workflow."""
+        self._invalidate_preview_state()
+        self._set_preview_mode(False)
+        self.source_panel.cat_edit.clear()
+        self.source_panel.file_edit.clear()
+        self.source_panel.manual_list.setPlainText("\n".join(categories))
+        self.source_lang_edit.setText(source_lang)
+        self.articles_checkbox.setChecked(True)
+        self.subcategories_checkbox.setChecked(False)
+        self.article_depth_spin.setValue(0)
+        self._auto_depth_origin_map = {}
+        self._depth_expanded_categories = []
+        self._depth_expanded_base_signature = None
+        family = self.get_current_family() or "wikipedia"
+        target_lang = self.get_current_language() or "ru"
+        # Namespace aliases are normalized in exactly the same way as inputs.
+        self._transfer_pairs = tuple(CategoryPair(
+            pair.source_title, self._normalized_target_categories([pair.target_title], family, target_lang)[0], pair.qid)
+            for pair in pairs)
+        self._transfer_context = (source_lang, target_lang, family)
 
     def set_auth_data(self, username: str, lang: str, family: str):
         self.current_user = username
