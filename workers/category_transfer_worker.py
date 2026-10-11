@@ -367,6 +367,47 @@ class CategoryTextReadWorker(BaseWorker):
             self.reader.close()
 
 
+class CategoryArticlePresenceWorker(BaseWorker):
+    """On-demand read of existing membership; never edit an article."""
+
+    result_ready = Signal(object)
+
+    def __init__(self, *, articles, category, source_lang, target_lang, family, source_category='', delay=0.5):
+        super().__init__('', '', target_lang, family)
+        self.articles = tuple(dict.fromkeys(articles)) if articles is not None else None
+        self.category = category
+        self.source_category = source_category
+        self.source_lang = source_lang
+        self.reader = CategoryTransferReader(source_lang, target_lang, family, self._stop_event, delay)
+        self.reader.on_retry = self.progress.emit
+
+    def run(self):
+        try:
+            if self.articles is None:
+                source = self.reader.category_title(self.source_category, self.source_lang)
+                pages = self.reader.pages(self.source_lang, [source], props='info')
+                if not self.reader.valid_page(pages.get(source), 14):
+                    raise ValueError(message('source_missing', title=source))
+                matches = self.reader.article_matches(self.reader.members(source, 'page'))
+                self.articles = tuple(dict.fromkeys(matches.values()))
+            if not self.category:
+                self.result_ready.emit([(title, None) for title in self.articles])
+                return
+            title = self.reader.category_title(self.category, self.lang)
+            pages = self.reader.pages(self.lang, [title], props='info')
+            if not self.reader.valid_page(pages.get(title), 14):
+                raise ValueError(message('source_missing', title=title))
+            members = set(self.reader.members(title, 'page', lang=self.lang))
+            self.result_ready.emit([(title, title in members) for title in self.articles])
+        except TransferStopped:
+            pass
+        except Exception as error:
+            self._set_failure(error)
+            self.progress.emit(str(error))
+        finally:
+            self.reader.close()
+
+
 class CategoryInterwikiPreviewWorker(CategoryTransferPreviewWorker):
     def run(self):
         try:

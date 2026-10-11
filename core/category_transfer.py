@@ -56,6 +56,29 @@ class NumberedTitleProposal:
     status: str
 
 
+def category_action_plan(results, planned_titles):
+    """Describe the verified work; count skipped rows separately from writes."""
+    plan = dict.fromkeys(('create', 'link', 'labels', 'retry', 'items', 'complete', 'drafts', 'errors', 'conflicts'), 0)
+    planned = set(planned_titles)
+    for result in results:
+        status = result.get('status', '')
+        if result.get('source_title') in planned:
+            action = {'ready_create': 'create', 'ready_link': 'link', 'ready_item': 'link',
+                      'ready_labels': 'labels'}.get(status, 'retry')
+            plan[action] += 1
+            if action in {'create', 'link'} and not (result.get('source_qid') or result.get('target_qid')):
+                plan['items'] += 1
+        elif status in {'already_linked', 'created', 'linked', 'labels_updated'}:
+            plan['complete'] += 1
+        elif status in {'needs_translation', 'needs_content', 'editing'}:
+            plan['drafts'] += 1
+        elif status == 'different_items':
+            plan['conflicts'] += 1
+        elif status in {'error', 'unlinked', 'stopped'}:
+            plan['errors'] += 1
+    return plan
+
+
 _ROMAN_DIGITS = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"),
                  (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"))
 
@@ -410,13 +433,13 @@ class CategoryTransferReader:
         return bool(page and "missing" not in page and "invalid" not in page
                     and "redirect" not in page and page.get("ns") == namespace)
 
-    def members(self, category: str, kind: str) -> list[str]:
+    def members(self, category: str, kind: str, *, lang: str | None = None) -> list[str]:
         params = {"action": "query", "list": "categorymembers", "cmtitle": category,
                   "cmtype": kind, "cmnamespace": 14 if kind == "subcat" else 0,
                   "cmlimit": "max"}
         titles = {}
         while True:
-            data = self.request(self.source_lang, params)
+            data = self.request(lang or self.source_lang, params)
             for page in data.get("query", {}).get("categorymembers", []):
                 titles[page["title"]] = None
             if not data.get("continue"):

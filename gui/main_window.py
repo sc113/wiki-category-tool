@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen
 from PySide6.QtSvg import QSvgRenderer
 
-from ..constants import APP_VERSION
+from ..constants import APP_DISPLAY_VERSION
 from ..core.localization import load_translation_pairs, translate_key, set_runtime_ui_language
 from ..utils import debug, default_summary, default_create_summary, resource_path
 from .widgets.ui_helpers import add_info_button as ui_add_info_button
@@ -82,11 +82,11 @@ class MainWindow(QMainWindow):
         3: ('ui.main.tab.create.tag', 'ui.bulk_create', 'ui.main.tab.create.subtitle'),
         4: ('ui.main.tab.rename.tag', 'ui.main.tab.rename.title', 'ui.main.tab.rename.subtitle'),
         5: ('ui.main.tab.cleanup.tag', 'ui.main.tab.cleanup.title', 'ui.main.tab.cleanup.subtitle'),
-        6: ('ui.transfer.sync_tag', 'ui.transfer.sync_title', 'ui.transfer.sync_subtitle'),
+        6: ('ui.transfer.nav_sync', 'ui.transfer.sync_title', 'ui.transfer.sync_subtitle'),
         7: ('ui.main.tab.overview.tag', 'ui.overview', 'ui.main.tab.overview.subtitle'),
-        8: ('ui.transfer.recon_tag', 'ui.transfer.recon_title', 'ui.transfer.subtitle'),
-        9: ('ui.transfer.links_tag', 'ui.transfer.links_title', 'ui.transfer.links_subtitle'),
-        10: ('ui.transfer.interwiki_tag', 'ui.transfer.interwiki_title', 'ui.transfer.interwiki_subtitle'),
+        8: ('ui.transfer.nav_recon', 'ui.transfer.recon_title', 'ui.transfer.subtitle'),
+        9: ('ui.transfer.nav_links', 'ui.transfer.links_title', 'ui.transfer.links_subtitle'),
+        10: ('ui.transfer.nav_interwiki', 'ui.transfer.interwiki_title', 'ui.transfer.interwiki_subtitle'),
     }
     _NAV_ITEMS = [
         (1, 'ui.read', 'read'),
@@ -189,6 +189,12 @@ class MainWindow(QMainWindow):
             'rename_edits_total': 0,
             'cleanup_edits_total': 0,
             'sync_edits_total': 0,
+            'transfer_scan_runs': 0,
+            'transfer_scan_categories_total': 0,
+            'transfer_prepare_runs': 0,
+            'transfer_prepare_edits_total': 0,
+            'interwiki_runs': 0,
+            'interwiki_edits_total': 0,
         }
         self._operation_history: list[dict] = []
 
@@ -348,7 +354,7 @@ class MainWindow(QMainWindow):
         self._sidebar_layout = sidebar_layout
 
         footer_row = QHBoxLayout()
-        self.footer_version = QLabel(f'v{APP_VERSION}')
+        self.footer_version = QLabel(f'v{APP_DISPLAY_VERSION}')
         self.footer_version.setObjectName('footerText')
         self.footer_hint = None
         self.theme_toggle_btn = QToolButton(self.sidebar)
@@ -719,7 +725,7 @@ class MainWindow(QMainWindow):
         try:
             show_updates = bool(index == 7)
             self.header_update_btn.setVisible(show_updates)
-            show_prefix = bool(index in (1, 2, 3, 4, 5, 6))
+            show_prefix = bool(index in (1, 2, 3, 4, 5))
             if hasattr(self, 'header_prefix_host') and self.header_prefix_host is not None:
                 self.header_prefix_host.setVisible(show_prefix)
             if show_prefix:
@@ -1892,7 +1898,7 @@ class MainWindow(QMainWindow):
                 color: #8fb5ba;
                 font-size: 11px;
             }
-            QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QTreeWidget, QTableWidget, QListWidget {
+            QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTreeWidget, QTableWidget, QListWidget {
                 border-radius: 8px;
                 border: 1px solid rgba(111, 201, 208, 0.36);
                 background: rgba(2, 28, 43, 0.8);
@@ -1900,7 +1906,7 @@ class MainWindow(QMainWindow):
                 padding: 3px 8px;
                 selection-background-color: rgba(92, 171, 186, 0.65);
             }
-            QLineEdit, QComboBox, QSpinBox {
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
                 min-height: 27px;
                 max-height: 27px;
             }
@@ -2065,7 +2071,7 @@ class MainWindow(QMainWindow):
                 background: #4da5a2;
                 border-color: #95ddd4;
             }
-            QSpinBox {
+            QSpinBox, QDoubleSpinBox {
                 padding: 0 2px;
             }
             QSpinBox#depthSpin {
@@ -2749,7 +2755,7 @@ class MainWindow(QMainWindow):
                 color: #6f8798;
                 font-size: 11px;
             }
-            QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QTreeWidget, QTableWidget, QListWidget {
+            QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTreeWidget, QTableWidget, QListWidget {
                 border-radius: 8px;
                 border: 1px solid #bed2e2;
                 background: #ffffff;
@@ -2757,7 +2763,7 @@ class MainWindow(QMainWindow):
                 padding: 3px 8px;
                 selection-background-color: #b7d8f3;
             }
-            QLineEdit, QComboBox, QSpinBox {
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
                 min-height: 27px;
                 max-height: 27px;
             }
@@ -2926,7 +2932,7 @@ class MainWindow(QMainWindow):
                 background: #6ea5d4;
                 border-color: #4f86b6;
             }
-            QSpinBox {
+            QSpinBox, QDoubleSpinBox {
                 padding: 0 2px;
             }
             QSpinBox#depthSpin {
@@ -3248,7 +3254,6 @@ class MainWindow(QMainWindow):
             self.create_tab,
             self.rename_tab,
             self.redundant_categories_tab,
-            self.category_content_sync_tab,
         ):
             try:
                 handler = getattr(tab, 'set_prefix_controls_visible', None)
@@ -3553,6 +3558,16 @@ class MainWindow(QMainWindow):
                 self._operation_stats['edit_pages_total'] = int(
                     self._operation_stats.get('edit_pages_total', 0) + count_val
                 )
+            elif op_key in {'transfer_scan', 'transfer_prepare', 'interwiki'}:
+                runs_key = f'{op_key}_runs'
+                total_key = (f'{op_key}_categories_total' if op_key == 'transfer_scan'
+                             else f'{op_key}_edits_total')
+                self._operation_stats[runs_key] = int(self._operation_stats.get(runs_key, 0) + 1)
+                self._operation_stats[total_key] = int(self._operation_stats.get(total_key, 0) + count_val)
+                if op_key != 'transfer_scan':
+                    self._operation_stats['edit_pages_total'] = int(
+                        self._operation_stats.get('edit_pages_total', 0) + count_val
+                    )
             elif op_key == 'sync':
                 self._operation_stats['sync_runs'] = int(
                     self._operation_stats.get('sync_runs', 0) + 1
@@ -3823,6 +3838,7 @@ class MainWindow(QMainWindow):
             ('transfer_create', self.category_transfer_tab, 'create_worker'),
             ('transfer_preview', self.category_transfer_tab, 'preview_worker'),
             ('transfer_content', self.category_transfer_tab, 'content_worker'),
+            ('transfer_articles', self.category_transfer_tab, 'article_worker'),
             ('interwiki_preview', self.category_interwiki_tab, 'preview_worker'),
             ('interwiki_link', self.category_interwiki_tab, 'link_worker'),
             ('auth', self.auth_tab, '_login_worker')

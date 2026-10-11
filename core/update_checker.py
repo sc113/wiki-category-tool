@@ -5,6 +5,8 @@
 Проверяет наличие новых версий через GitHub API и уведомляет пользователя.
 """
 
+import re
+
 import requests
 from packaging import version
 from typing import Optional, Tuple
@@ -22,6 +24,15 @@ def _fmt(key: str, **kwargs) -> str:
         return text.format(**kwargs)
     except Exception:
         return text
+
+
+def parse_app_version(value: str) -> version.Version:
+    """Keep legacy 2.03/2.04 patch releases below the new 2.1 series."""
+    value = str(value or '').strip().lstrip('vV')
+    legacy = re.fullmatch(r'(\d+)\.0(\d+)', value)
+    if legacy:
+        value = f'{legacy[1]}.0.{int(legacy[2])}'
+    return version.parse(value)
 
 
 def check_for_updates(timeout: int = 5) -> Optional[Tuple[str, str]]:
@@ -69,8 +80,8 @@ def check_for_updates(timeout: int = 5) -> Optional[Tuple[str, str]]:
 
         # Сравниваем версии
         try:
-            current = version.parse(APP_VERSION)
-            latest = version.parse(latest_version)
+            current = parse_app_version(APP_VERSION)
+            latest = parse_app_version(latest_version)
 
             if latest > current:
                 debug(_fmt('log.update_checker.update_found', latest=latest_version, current=APP_VERSION))

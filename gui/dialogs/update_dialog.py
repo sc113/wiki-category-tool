@@ -8,10 +8,10 @@ from PySide6.QtWidgets import (
     QPushButton, QCheckBox
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
 import webbrowser
 
 from ...core.localization import translate_key
+from ...constants import display_app_version
 
 
 class UpdateDialog(QDialog):
@@ -43,11 +43,11 @@ class UpdateDialog(QDialog):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(8)
 
-        current_label = QLabel(self._fmt("ui.current_version_label", version=current_version))
+        current_label = QLabel(self._fmt("ui.current_version_label", version=display_app_version(current_version)))
         current_label.setStyleSheet("font-size: 10pt;")
         info_layout.addWidget(current_label)
 
-        new_label = QLabel(self._fmt("ui.new_version_label", version=new_version))
+        new_label = QLabel(self._fmt("ui.new_version_label", version=display_app_version(new_version)))
         new_label.setStyleSheet("font-size: 10pt;")
         info_layout.addWidget(new_label)
 

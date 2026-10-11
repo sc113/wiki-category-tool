@@ -12,14 +12,17 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QToolButton, QVBoxLayout, QWidget, QSizePolicy,
 )
 
-from ...core.category_transfer import CategoryCreationRow, CategoryPair, merge_commands, read_creation_tsv
+from ...core.category_transfer import CategoryCreationRow, CategoryPair, category_action_plan, merge_commands, read_creation_tsv
 from ...core.localization import translate_key
 from ...core.pywikibot_config import apply_pwb_config
 from ...utils import debug, resolve_project_language
 from ...workers.category_transfer_worker import CategoryInterwikiLinkWorker, CategoryInterwikiPreviewWorker
 from ..widgets.category_autofill import title_fill_dialog
+from ..widgets.table_history import TableHistory, table_action
+from ..widgets.category_plan import category_plan_widget
+from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace, refresh_category_toolbar
 from ..widgets.category_creation_table import TransferActionsLayout
-from ..widgets.ui_helpers import create_spin_control, log_message, style_transfer_languages
+from ..widgets.ui_helpers import category_table_style, create_spin_control, log_message, style_transfer_languages
 from .category_transfer_tab import CategoryTransferTab
 
 
@@ -67,6 +70,7 @@ class CategoryInterwikiTab(QWidget):
         self.options_btn.setArrowType(Qt.RightArrow)
         self.options_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         toolbar, files = self._toolbar(self.source_lang, self.target_label, self.options_btn)
+        self.toolbar = toolbar
         self.open_btn = self._button('choose_tsv', self.open_tsv, files)
         self.export_btn = self._button('export_plan', self.export_tsv, files)
         layout.addWidget(toolbar)
@@ -109,7 +113,8 @@ class CategoryInterwikiTab(QWidget):
         self.table.cellClicked.connect(self._open_wd)
         self.table.setMouseTracking(True)
         self.table.cellEntered.connect(self._link_cursor)
-        layout.addWidget(self.table, 1)
+        self.workspace = CategoryWorkspace(self.table)
+        layout.addWidget(self.workspace, 1)
         actions, row = self._action_group('create_tools')
         self.check_btn = self._button('check_links', self.preview, row)
         self.link_btn = self._button('link_pairs', self.start_linking, row)
@@ -119,9 +124,8 @@ class CategoryInterwikiTab(QWidget):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setProperty('_wct_skip_log_translation', True)
-        self.log.setFixedHeight(95)
-        self.log.hide()
-        layout.addWidget(self.log)
+        self.log_panel = CategoryLogPanel(self.log, self._t)
+        self.workspace.set_log_panel(self.log_panel)
         self.progress_label = QLabel(self._t('ready'))
         self.progress_label.setMaximumHeight(42)
         self.progress_label.setWordWrap(True)
@@ -129,11 +133,7 @@ class CategoryInterwikiTab(QWidget):
         self.progress_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout.addWidget(self.progress_label)
         footer = QHBoxLayout()
-        self.log_btn = QToolButton()
-        self.log_btn.setText(self._t('log'))
-        self.log_btn.setCheckable(True)
-        self.log_btn.toggled.connect(self.log.setVisible)
-        footer.addWidget(self.log_btn)
+        self.log_btn = self.log_panel.toggle
         self.bar = QProgressBar()
         self.bar.setRange(0, 1)
         footer.addWidget(self.bar, 1)
@@ -142,6 +142,19 @@ class CategoryInterwikiTab(QWidget):
         self.source_lang.textChanged.connect(self._context_changed)
         self._set_busy(False)
         self._apply_theme()
+        self.table_history = TableHistory(
+            self.table, editable_columns=(0, 1), allowed=self._history_allowed,
+            restored=self._restore_history, language=self._history_language,
+        )
+
+    def _history_allowed(self):
+        return not self._busy
+
+    def _history_language(self):
+        return getattr(self.parent_window, '_ui_lang', 'ru')
+
+    def _restore_history(self, _extra):
+        self._invalidate()
 
     def _t(self, key, **values):
         return translate_key('ui.transfer.' + key, getattr(self.parent_window, '_ui_lang', 'ru'), key).format(**values)
@@ -177,6 +190,8 @@ class CategoryInterwikiTab(QWidget):
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row, col, item)
         self.table.blockSignals(blocked)
+        if hasattr(self, 'table_history'):
+            self.table_history.reset()
 
     def _invalidate(self):
         self._prepared = ()
@@ -209,6 +224,8 @@ class CategoryInterwikiTab(QWidget):
         self.stop_btn.setEnabled(busy)
         self.target_label.setText(self._context()[1])
         self._summary()
+        if hasattr(self, 'table_history'):
+            self.table_history.refresh()
 
     def _summary(self):
         self.summary_label.setText(self._t('interwiki_summary', total=self.table.rowCount(),
@@ -224,6 +241,7 @@ class CategoryInterwikiTab(QWidget):
         self._invalidate()
         return True
 
+    @table_action('table_history')
     def add_row(self):
         if not self._busy:
             rows = self._rows() + (CategoryCreationRow('', '', ''),)
@@ -232,12 +250,14 @@ class CategoryInterwikiTab(QWidget):
             self.table.setCurrentCell(len(rows) - 1, 0)
             self.table.editItem(self.table.item(len(rows) - 1, 0))
 
+    @table_action('table_history')
     def delete_selected(self):
         if not self._busy:
             for row in sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True):
                 self.table.removeRow(row)
             self._invalidate()
 
+    @table_action('table_history')
     def paste_pairs(self):
         if self._busy:
             return
@@ -265,6 +285,7 @@ class CategoryInterwikiTab(QWidget):
             except Exception as error:
                 QMessageBox.warning(self, self._t('interwiki_title'), str(error))
 
+    @table_action('table_history')
     def fill_titles(self):
         if self._busy or not self.table.rowCount():
             return
@@ -288,6 +309,7 @@ class CategoryInterwikiTab(QWidget):
             return
         rows = self._rows()
         self._invalidate()
+        self.table_history.reset()
         self._preview_context = self._context()
         worker = CategoryInterwikiPreviewWorker(rows=rows, source_lang=source, target_lang=target, family=family,
                                                delay=self.delay_spin.value())
@@ -342,18 +364,33 @@ class CategoryInterwikiTab(QWidget):
             status = self._t('failed', error=worker.failure_message) if worker.failed else self._t('stopped')
         else:
             self._prepared = tuple(result['row'] for result in worker.results
-                                   if result['status'] in {'ready_link', 'ready_item', 'already_linked', 'different_items'})
+                                   if result['status'] in {'ready_link', 'ready_item'})
             self._linked_context = self._preview_context
             status = self._t('preview_ready')
         self._finish(worker, status)
+        self.table_history.reset()
 
     def _confirm_linking(self):
         dialog = QDialog(self)
+        dialog.setObjectName('confirmInterwikiLinkingDialog')
+        dialog.setMinimumWidth(480)
         dialog.setWindowTitle(self._t('interwiki_title'))
         layout = QVBoxLayout(dialog)
-        label = QLabel(self._t('confirm_linking', count=len(self._prepared)))
+        source, target, _family = self._context()
+        label = QLabel(self._t('plan_link_heading', count=len(self._prepared), source=source, target=target))
         label.setWordWrap(True)
+        font = label.font()
+        font.setBold(True)
+        label.setFont(font)
         layout.addWidget(label)
+        results = [dict(self.table.item(row, 4).data(Qt.UserRole) or {},
+                        source_title=self.table.item(row, 0).text()) for row in range(self.table.rowCount())]
+        plan = category_action_plan(results, (row.source_title for row in self._prepared))
+        layout.addWidget(category_plan_widget(plan, self._t, dialog))
+        if plan['items']:
+            notice = QLabel(self._t('confirm_items'))
+            notice.setWordWrap(True)
+            layout.addWidget(notice)
         buttons = QDialogButtonBox()
         buttons.addButton(self._t('link_pairs'), QDialogButtonBox.AcceptRole)
         buttons.addButton(self._t('cancel'), QDialogButtonBox.RejectRole)
@@ -371,6 +408,7 @@ class CategoryInterwikiTab(QWidget):
             return
         if not self._confirm_linking():
             return
+        self.table_history.reset()
         source, target, family = self._context()
         apply_pwb_config(target, family)
         worker = CategoryInterwikiLinkWorker(rows=self._prepared, username=user, password=password,
@@ -403,7 +441,11 @@ class CategoryInterwikiTab(QWidget):
         self._linked_context = self._preview_context
         status = (self._t('failed', error=worker.failure_message) if worker.failed else self._t('stopped')
                   if worker._stop else self._t('interwiki_done', **{'labels': 0, **worker.stats}))
+        recorder = getattr(self.parent_window, 'record_operation', None)
+        if recorder and worker.saved_edits:
+            recorder('interwiki', worker.saved_edits)
         self._finish(worker, status)
+        self.table_history.reset()
         if self._conflicts:
             self.show_conflicts()
 
@@ -499,6 +541,8 @@ class CategoryInterwikiTab(QWidget):
             self.stop()
         else:
             self._invalidate()
+            if hasattr(self, 'table_history'):
+                self.table_history.reset()
 
     def update_language(self, lang):
         if lang != self.current_lang:
@@ -543,12 +587,7 @@ class CategoryInterwikiTab(QWidget):
 
     def _apply_theme(self):
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
-        base, alternate, text, header = {'light': ('#ffffff', '#eff5f9', '#1d2a35', '#e5eef5'),
-                                        'dark': ('#20252c', '#272e36', '#e5e8ed', '#303945')}.get(theme, ('#092c3d', '#11394b', '#dceef5', '#164357'))
-        self.table.setStyleSheet(f'QTableWidget {{ background: {base}; alternate-background-color: {alternate}; color: {text}; '
-                                f'padding: 0px; border: 1px solid {header}; border-radius: 0px; }}'
-                                f'QHeaderView::section {{ background: {header}; color: {text}; padding: 5px; border: none; '
-                                f'border-right: 1px solid {base}; }}')
+        self.table.setStyleSheet(category_table_style(theme))
         style_transfer_languages(self.source_lang, self.target_label, theme)
         self._apply_links()
 
@@ -558,6 +597,8 @@ class CategoryInterwikiTab(QWidget):
         self.refresh_localized_texts()
 
     def refresh_localized_texts(self):
+        self.log_panel.refresh_localized_texts()
+        refresh_category_toolbar(self.toolbar, self._t)
         lang = getattr(self.parent_window, '_ui_lang', 'ru')
         if lang != self._last_ui_lang:
             self._last_ui_lang = lang

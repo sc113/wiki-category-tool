@@ -18,6 +18,8 @@ The application is designed for editors and wiki maintainers who work with TSV-b
 
 ![Overview dashboard showing session details, settings, statistics, and operation history](assets/screenshots/overview.png)
 
+The overview includes scanning, preparation, and interwiki linking. Scanning counts processed categories; preparation and linking count successful page and Wikidata edits.
+
 <table>
   <tr>
     <td width="50%">
@@ -146,6 +148,8 @@ Set the source language, root category and traversal depth, then load the catego
 
 Remove unwanted rows and scan the remaining list. Counts include direct mainspace articles with existing, non-redirect counterparts linked through Wikidata in the current language. Duplicates are excluded. Clear empty results removes successful zero-result rows. Retry errors scans only failed rows and preserves successful results. Requests are spaced by 0.5 seconds by default; on API throttling the program respects Retry-After and reduces the request rate.
 
+Click the Available count to inspect matched articles. For a linked category, the dialog also shows how many are already included and how many can be added. Current membership is checked only when opening this dialog; older scan-report TSV files remain supported.
+
 Export TSV → Creation list TSV exports scanned categories with available articles, without a header:
 
 ```text
@@ -165,6 +169,10 @@ In the third-column panel, First row to column copies the first row's text into 
 Check list identifies categories needing creation, existing pages needing linking and already completed categories. Missing translations and new category text have separate Needs translation and Needs wikitext statuses with highlighted cells. Next incomplete row navigates between them. Counters above the table separate ready rows, linked categories, incomplete rows and check errors. Options and the log are collapsed so the table fills most of the window; details for the selected row appear below it.
 
 Check the list again after filling in missing fields. After confirmation, missing pages are created and Wikidata sitelinks and missing labels are added. New items also get P31 = Wikimedia category (Q4167836). Existing wikitext and occupied sitelinks are preserved; conflicts are shown as errors.
+
+All transfer stages place languages and collapsible parameters at the top, table tools above the table, and actions and progress below it. The log opens on the right, supports width adjustment, and collapses to free table space. In synchronization, Edit category list returns to the inputs without discarding an unchanged preview.
+
+The confirmation shows an action plan separating creation and linking, links for existing categories, label-only updates, and skipped rows. Ctrl+Z undoes local edits, row deletion, and bulk filling in all working tables; Ctrl+Y redoes them. Cell editors keep their own text undo. A new check or write operation clears the affected table's history; Ctrl+Z does not undo edits on wiki sites.
 
 After stopping or a partial failure, check the list again and use Run preparation. One run creates missing categories and links existing ones, skipping completed rows. Both item IDs are visible. Generated Wikidata labels include the localized category namespace; Wikidata edit summaries are always English. When sitelinks already exist and only labels change, the row shows Labels updated and is counted separately from new links. Next: synchronization carries all successfully linked categories, including previously completed ones, the source language and source/target pairs with QIDs. The usual sync preview is required before edits. Transferred links are checked again; changed links require checking stage two again. Scanning and synchronization share the same lookup of existing articles through Wikidata.
 

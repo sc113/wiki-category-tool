@@ -15,12 +15,23 @@ from PySide6.QtWidgets import (
     QGridLayout, QSizePolicy
 )
 
-from ...constants import APP_VERSION
+from ...constants import APP_DISPLAY_VERSION
 from ...core.localization import translate_key
 
 
 class OverviewTab(QWidget):
     """Обзор приложения: разделы Overview/Settings/Statistics."""
+
+    OPERATIONS = (
+        ('replace', 'ui.replace', 'replace_edits_total'),
+        ('create', 'ui.create', 'create_edits_total'),
+        ('rename', 'ui.rename', 'rename_edits_total'),
+        ('cleanup', 'ui.redundant_categories', 'cleanup_edits_total'),
+        ('transfer_scan', 'ui.transfer.nav_recon', 'transfer_scan_categories_total'),
+        ('transfer_prepare', 'ui.transfer.nav_links', 'transfer_prepare_edits_total'),
+        ('sync', 'ui.transfer.nav_sync', 'sync_edits_total'),
+        ('interwiki', 'ui.transfer.nav_interwiki', 'interwiki_edits_total'),
+    )
 
     DEV_PROFILE_URL = 'https://ru.wikipedia.org/wiki/%D0%A3%D1%87%D0%B0%D1%81%D1%82%D0%BD%D0%B8%D0%BA:Solidest'
     DEV_GITHUB_URL = 'https://github.com/sc113/wiki-category-tool'
@@ -30,6 +41,8 @@ class OverviewTab(QWidget):
         self.parent_window = parent
         self._ui_lang = 'ru'
         self._bar_title_labels = {}
+        self._operation_values = {}
+        self._operation_bars = {}
 
         # Overview
         self.overview_group = None
@@ -60,23 +73,12 @@ class OverviewTab(QWidget):
         self.stats_group = None
         self.stats_title_label = None
         self.stats_reset_btn = None
-        self._run_title_labels = {}
         self.stat_read_title = None
         self.stat_read_value = None
         self.stat_edit_title = None
         self.stat_sync_transferred_title = None
         self.stat_sync_transferred_value = None
         self.stat_edit_value = None
-        self.bar_replace = None
-        self.bar_create = None
-        self.bar_rename = None
-        self.bar_cleanup = None
-        self.bar_sync = None
-        self.stat_replace_runs = None
-        self.stat_create_runs = None
-        self.stat_rename_runs = None
-        self.stat_cleanup_runs = None
-        self.stat_sync_runs = None
         self.history_title = None
         self.history_list = None
 
@@ -124,7 +126,7 @@ class OverviewTab(QWidget):
             pass
         cards_row.addWidget(self._build_meta_card(self._t('ui.session'), self._t('ui.inactive'), 'status'), 1)
         cards_row.addWidget(self._build_meta_card(self._t('ui.project_label_short'), 'wikipedia / ru', 'project'), 1)
-        cards_row.addWidget(self._build_meta_card(self._t('ui.version'), f'v{APP_VERSION}', 'version'), 1)
+        cards_row.addWidget(self._build_meta_card(self._t('ui.version'), f'v{APP_DISPLAY_VERSION}', 'version'), 1)
         cards_row.addWidget(self._build_meta_card(self._t('ui.theme'), 'twilight teal', 'theme'), 1)
         lay.addLayout(cards_row)
         return box
@@ -297,28 +299,14 @@ class OverviewTab(QWidget):
             totals_grid.setColumnStretch(col, 1)
         bars_l.addLayout(totals_grid)
 
-        runs_row = QHBoxLayout()
-        try:
-            runs_row.setContentsMargins(0, 0, 0, 0)
-            runs_row.setSpacing(6)
-        except Exception:
-            pass
-        cards = (
-            self._build_runs_card(self._t('ui.replace'), 'replace'),
-            self._build_runs_card(self._t('ui.create'), 'create'),
-            self._build_runs_card(self._t('ui.rename'), 'rename'),
-            self._build_runs_card(self._t('ui.redundant_short'), 'cleanup'),
-            self._build_runs_card(self._t('ui.sync_short'), 'sync'),
-        )
-        for card in cards:
-            runs_row.addWidget(card, 1)
-        bars_l.addLayout(runs_row)
-
-        self.bar_replace = self._make_bar_row(bars_l, 'replace', self._t('ui.replace'))
-        self.bar_create = self._make_bar_row(bars_l, 'create', self._t('ui.create'))
-        self.bar_rename = self._make_bar_row(bars_l, 'rename', self._t('ui.rename'))
-        self.bar_cleanup = self._make_bar_row(bars_l, 'cleanup', self._t('ui.redundant_categories'))
-        self.bar_sync = self._make_bar_row(bars_l, 'sync', self._t('ui.category_sync_label'))
+        operations_grid = QGridLayout()
+        operations_grid.setContentsMargins(0, 0, 0, 0)
+        operations_grid.setHorizontalSpacing(10)
+        operations_grid.setVerticalSpacing(6)
+        operations_grid.setColumnStretch(2, 1)
+        for row, (key, title, _) in enumerate(self.OPERATIONS):
+            self._make_bar_row(operations_grid, row, key, self._t(title))
+        bars_l.addLayout(operations_grid)
 
         # Правая часть: история
         history_panel = QFrame()
@@ -374,51 +362,16 @@ class OverviewTab(QWidget):
             self.stat_sync_transferred_value = v
         return card
 
-    def _build_runs_card(self, title: str, key: str) -> QFrame:
-        card = QFrame()
-        card.setObjectName('statsRunChip')
-        try:
-            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            card.setMinimumWidth(0)
-            card.setMinimumHeight(34)
-            card.setMaximumHeight(34)
-        except Exception:
-            pass
-        lay = QHBoxLayout(card)
-        try:
-            lay.setContentsMargins(9, 5, 9, 5)
-            lay.setSpacing(6)
-        except Exception:
-            pass
-        t = QLabel(title)
-        t.setObjectName('statsRunTitle')
-        v = QLabel('0')
-        v.setObjectName('statsRunValue')
-        try:
-            v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        except Exception:
-            pass
-        lay.addWidget(t, 1)
-        lay.addWidget(v, 0)
-        self._run_title_labels[key] = t
-        if key == 'replace':
-            self.stat_replace_runs = v
-        elif key == 'create':
-            self.stat_create_runs = v
-        elif key == 'rename':
-            self.stat_rename_runs = v
-        elif key == 'cleanup':
-            self.stat_cleanup_runs = v
-        elif key == 'sync':
-            self.stat_sync_runs = v
-        return card
-
-    def _make_bar_row(self, layout: QVBoxLayout, key: str, title: str) -> QProgressBar:
-        row = QHBoxLayout()
+    def _make_bar_row(self, layout: QGridLayout, row: int, key: str, title: str):
         label = QLabel(title)
         label.setObjectName('statsBarLabel')
-        row.addWidget(label)
+        layout.addWidget(label, row, 0)
         self._bar_title_labels[key] = label
+        value = QLabel('0')
+        value.setObjectName('statsRunValue')
+        value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        layout.addWidget(value, row, 1)
+        self._operation_values[key] = value
         bar = QProgressBar()
         bar.setObjectName('statsProgressBar')
         try:
@@ -427,9 +380,8 @@ class OverviewTab(QWidget):
             bar.setValue(0)
         except Exception:
             pass
-        row.addWidget(bar, 1)
-        layout.addLayout(row)
-        return bar
+        layout.addWidget(bar, row, 2)
+        self._operation_bars[key] = bar
 
     def _on_lang_changed(self):
         code = 'ru'
@@ -517,28 +469,14 @@ class OverviewTab(QWidget):
             self.stat_edit_title.setText(self._t('ui.total_edits_label'))
         if self.stat_sync_transferred_title is not None:
             self.stat_sync_transferred_title.setText(self._t('ui.transferred_sync_label'))
-        for key, lbl in self._run_title_labels.items():
-            if key == 'replace':
-                lbl.setText(self._t('ui.replace'))
-            elif key == 'create':
-                lbl.setText(self._t('ui.create'))
-            elif key == 'rename':
-                lbl.setText(self._t('ui.rename'))
-            elif key == 'cleanup':
-                lbl.setText(self._t('ui.redundant_short'))
-            elif key == 'sync':
-                lbl.setText(self._t('ui.sync_short'))
-        for key, lbl in self._bar_title_labels.items():
-            if key == 'replace':
-                lbl.setText(self._t('ui.replace'))
-            elif key == 'create':
-                lbl.setText(self._t('ui.create'))
-            elif key == 'rename':
-                lbl.setText(self._t('ui.rename'))
-            elif key == 'cleanup':
-                lbl.setText(self._t('ui.redundant_categories'))
-            elif key == 'sync':
-                lbl.setText(self._t('ui.category_sync_label'))
+        for key, title, _ in self.OPERATIONS:
+            label = self._bar_title_labels[key]
+            label.setText(self._t(title))
+            hint = self._t('ui.stats_scanned_categories' if key == 'transfer_scan'
+                           else 'ui.stats_successful_edits')
+            label.setToolTip(hint)
+            self._operation_values[key].setToolTip(hint)
+            self._operation_bars[key].setToolTip(hint)
 
     def update_ui_context(self, theme_mode: str | None, ui_lang: str | None):
         mode = str(theme_mode or '').lower()
@@ -561,45 +499,26 @@ class OverviewTab(QWidget):
         active = bool(user)
         self.ov_status_value.setText(self._t('ui.active') if active else self._t('ui.inactive'))
         self.ov_project_value.setText(f'{family or "wikipedia"} / {lang or "ru"}')
-        self.ov_version_value.setText(f'v{APP_VERSION}')
+        self.ov_version_value.setText(f'v{APP_DISPLAY_VERSION}')
 
     def update_stats(self, stats: dict, history: Iterable[dict] | None = None):
         read_total = int(stats.get('read_pages_total', 0) or 0)
         edit_total = int(stats.get('edit_pages_total', 0) or 0)
-        replace_runs = int(stats.get('replace_edits_total', stats.get('replace_runs', 0)) or 0)
-        create_runs = int(stats.get('create_edits_total', stats.get('create_runs', 0)) or 0)
-        rename_runs = int(stats.get('rename_edits_total', stats.get('rename_runs', 0)) or 0)
-        cleanup_runs = int(stats.get('cleanup_edits_total', stats.get('cleanup_runs', 0)) or 0)
-        sync_runs = int(stats.get('sync_edits_total', stats.get('sync_runs', 0)) or 0)
-        sync_transferred_total = int(stats.get('sync_transferred_total', sync_runs) or 0)
+        values = {key: max(0, int(stats.get(total_key, stats.get(f'{key}_runs', 0)) or 0))
+                  for key, _, total_key in self.OPERATIONS}
+        sync_transferred_total = int(stats.get('sync_transferred_total', values['sync']) or 0)
 
         self.stat_read_value.setText(str(read_total))
         self.stat_edit_value.setText(str(edit_total))
-        if self.stat_replace_runs is not None:
-            self.stat_replace_runs.setText(str(replace_runs))
-        if self.stat_create_runs is not None:
-            self.stat_create_runs.setText(str(create_runs))
-        if self.stat_rename_runs is not None:
-            self.stat_rename_runs.setText(str(rename_runs))
-        if self.stat_cleanup_runs is not None:
-            self.stat_cleanup_runs.setText(str(cleanup_runs))
-        if self.stat_sync_runs is not None:
-            self.stat_sync_runs.setText(str(sync_runs))
         if self.stat_sync_transferred_value is not None:
             self.stat_sync_transferred_value.setText(str(sync_transferred_total))
-        runs_max = max(1, replace_runs + create_runs + rename_runs + cleanup_runs + sync_runs)
-        for bar, value in (
-            (self.bar_replace, replace_runs),
-            (self.bar_create, create_runs),
-            (self.bar_rename, rename_runs),
-            (self.bar_cleanup, cleanup_runs),
-            (self.bar_sync, sync_runs),
-        ):
-            try:
-                bar.setMaximum(runs_max)
-                bar.setValue(max(0, value))
-            except Exception:
-                pass
+        # Scanning counts categories; editing operations count confirmed writes.
+        # A shared maximum keeps the bars readable without adding unlike units.
+        maximum = max(1, *values.values())
+        for key, value in values.items():
+            self._operation_values[key].setText(str(value))
+            self._operation_bars[key].setMaximum(maximum)
+            self._operation_bars[key].setValue(value)
         self.update_history(list(history or []))
 
     def update_history(self, history: list[dict]):
@@ -618,6 +537,9 @@ class OverviewTab(QWidget):
             'rename': 'ui.rename',
             'cleanup': 'ui.redundant_categories',
             'sync': 'ui.category_sync_label',
+            'transfer_scan': 'ui.transfer.nav_recon',
+            'transfer_prepare': 'ui.transfer.nav_links',
+            'interwiki': 'ui.transfer.nav_interwiki',
         }
         for item in last_items:
             cnt = int(item.get('count', 0) or 0)

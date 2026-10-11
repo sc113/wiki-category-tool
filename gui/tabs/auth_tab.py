@@ -25,10 +25,11 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QSignalBlocker
 from PySide6.QtGui import QDesktopServices
 
 from ...constants import (
-    APP_VERSION, RELEASES_URL, GITHUB_API_RELEASES, REQUEST_HEADERS
+    APP_VERSION, APP_DISPLAY_VERSION, display_app_version, RELEASES_URL, GITHUB_API_RELEASES, REQUEST_HEADERS
 )
 from ...core.api_client import REQUEST_SESSION, _rate_wait
 from ...core.localization import translate_key
+from ...core.update_checker import parse_app_version
 from ...core.pywikibot_config import (
     _dist_configs_dir, config_base_dir, apply_pwb_config, cookies_exist,
     _delete_all_cookies, reset_pywikibot_session
@@ -406,7 +407,7 @@ class AuthTab(QWidget):
                 QMessageBox.information(
                     self,
                     self._t('ui.check_updates'),
-                    self._fmt('ui.auth.updates.failed_check_open_page', version=APP_VERSION),
+                    self._fmt('ui.auth.updates.failed_check_open_page', version=APP_DISPLAY_VERSION),
                 )
                 QDesktopServices.openUrl(QUrl(RELEASES_URL))
                 return
@@ -419,7 +420,7 @@ class AuthTab(QWidget):
                 QMessageBox.information(
                     self,
                     self._t('ui.check_updates'),
-                    self._fmt('ui.auth.updates.no_published_open_page', version=APP_VERSION),
+                    self._fmt('ui.auth.updates.no_published_open_page', version=APP_DISPLAY_VERSION),
                 )
                 QDesktopServices.openUrl(QUrl(RELEASES_URL))
                 return
@@ -434,7 +435,7 @@ class AuthTab(QWidget):
                 QMessageBox.information(
                     self,
                     self._t('ui.check_updates'),
-                    self._fmt('ui.auth.updates.no_matching_releases', version=APP_VERSION),
+                    self._fmt('ui.auth.updates.no_matching_releases', version=APP_DISPLAY_VERSION),
                 )
                 return
             tag = (latest.get('tag_name') or '').strip()
@@ -450,33 +451,13 @@ class AuthTab(QWidget):
                     date_str = (published.split('T', 1)[0])
                 except Exception:
                     date_str = published
-            # Сравнение версий: только числовые части
-
-            def _num(ver: str):
-                m = re.search(r"(\d+(?:\.\d+)+|\d+)", ver or '')
-                return [int(x) for x in m.group(1).split('.')] if m else None
-
             local = (APP_VERSION or '').strip()
             remote = (tag or '').strip()
-
-            ln = _num(local)
-            rn = _num(remote)
-
-            def _cmp_lists(a, b):
-                la, lb_ = len(a), len(b)
-                n = max(la, lb_)
-                a = a + [0] * (n - la)
-                b = b + [0] * (n - lb_)
-                if a == b:
-                    return 0
-                return 1 if a > b else -1
-
-            cmp_res = None
-            # Сравниваем только числовые части версий
-            if ln and rn:
-                cmp_res = _cmp_lists(ln, rn)
-            elif local and remote:
-                # Фолбэк: строковое сравнение по равенству
+            try:
+                current_version = parse_app_version(local)
+                latest_version = parse_app_version(remote)
+                cmp_res = (current_version > latest_version) - (current_version < latest_version)
+            except ValueError:
                 cmp_res = 0 if local == remote else None
 
             if cmp_res is None:
@@ -486,8 +467,8 @@ class AuthTab(QWidget):
                     'ui.auth.updates.release_found_open_page',
                     name=name,
                     extra=extra,
-                    current=APP_VERSION,
-                    latest=(remote or name),
+                    current=APP_DISPLAY_VERSION,
+                    latest=display_app_version(remote or name),
                 )
                 res = QMessageBox.question(
                     self, self._t('ui.check_updates'), msg, QMessageBox.Yes | QMessageBox.No)
@@ -500,8 +481,8 @@ class AuthTab(QWidget):
                     'ui.auth.updates.new_version_open_page',
                     name=name,
                     extra=extra,
-                    current=APP_VERSION,
-                    latest=(remote or name),
+                    current=APP_DISPLAY_VERSION,
+                    latest=display_app_version(remote or name),
                 )
                 res = QMessageBox.question(
                     self, self._t('ui.check_updates'), msg, QMessageBox.Yes | QMessageBox.No)
@@ -511,15 +492,15 @@ class AuthTab(QWidget):
                 # local > remote
                 msg = self._fmt(
                     'ui.auth.updates.local_newer_than_remote',
-                    current=APP_VERSION,
-                    latest=(remote or name),
+                    current=APP_DISPLAY_VERSION,
+                    latest=display_app_version(remote or name),
                 )
                 QMessageBox.information(self, self._t('ui.check_updates'), msg)
             else:
                 msg = self._fmt(
                     'ui.auth.updates.current_is_latest',
-                    current=APP_VERSION,
-                    latest=(remote or name),
+                    current=APP_DISPLAY_VERSION,
+                    latest=display_app_version(remote or name),
                 )
                 QMessageBox.information(self, self._t('ui.check_updates'), msg)
         except Exception as e:
@@ -527,7 +508,7 @@ class AuthTab(QWidget):
             QMessageBox.information(
                 self,
                 self._t('ui.check_updates'),
-                self._fmt('ui.auth.updates.error_open_page', version=APP_VERSION),
+                self._fmt('ui.auth.updates.error_open_page', version=APP_DISPLAY_VERSION),
             )
             QDesktopServices.openUrl(QUrl(RELEASES_URL))
 

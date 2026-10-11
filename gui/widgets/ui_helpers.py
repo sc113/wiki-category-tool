@@ -943,6 +943,27 @@ def create_spin_control(spin, *, plus_tip="Increase", minus_tip="Decrease", widt
     return wrap, plus, minus
 
 
+def category_table_palette(theme):
+    """Use the established synchronization palette for every category table."""
+    palettes = {
+        'light': ('#ffffff', '#f4f8fc', '#1f2f3a', '#e7f0f7', '#1e4763', '#bcd1e2', '#c4d8e8', '#d7eaf9', '#102a43'),
+        'dark': ('#171b22', '#1e242d', '#e5e9ef', '#242c37', '#dfe6ef', '#3d4756', '#445062', '#314257', '#f3f7fb'),
+        'teal': ('#0a2533', '#0e3042', '#e6f3f6', '#144055', '#e8f7fa', 'rgba(115, 170, 182, 0.45)',
+                 'rgba(96, 179, 192, 0.35)', 'rgba(82, 148, 168, 0.55)', '#f2fcff'),
+    }
+    return palettes.get(theme, palettes['teal'])
+
+
+def category_table_style(theme):
+    base, alternate, text, header, header_text, border, grid, selected, selected_text = category_table_palette(theme)
+    return (f'QTableWidget {{ background: {base}; alternate-background-color: {alternate}; color: {text}; '
+            f'border: 1px solid {border}; border-radius: 8px; padding: 0px; gridline-color: {grid}; }}'
+            f'QHeaderView {{ border: none; padding: 0px; }}'
+            f'QHeaderView::section {{ background: {header}; color: {header_text}; padding: 4px 6px; '
+            f'border: none; border-right: 1px solid {border}; border-bottom: 1px solid {border}; }}'
+            f'QTableWidget::item:selected {{ background: {selected}; color: {selected_text}; }}')
+
+
 def style_transfer_languages(source, badge, theme):
     """The source input and read-only current language used by category sync."""
     palettes = {
