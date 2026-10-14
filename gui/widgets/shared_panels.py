@@ -7,19 +7,19 @@ import urllib.parse
 import webbrowser
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QToolButton, QTextEdit, QMessageBox, QSpinBox,
-    QGridLayout, QSizePolicy, QGroupBox, QSplitter, QAbstractSpinBox
+    QGridLayout, QSizePolicy, QGroupBox, QSplitter
 )
 
 from ...constants import PREFIX_TOOLTIP, REQUEST_HEADERS
-from ...core.api_client import WikimediaAPIClient, REQUEST_SESSION, _rate_wait
+from ...core.api_client import REQUEST_SESSION, _rate_wait
 from ...core.localization import translate_key
 from ...utils import debug
 from ...workers.category_fetch_worker import CategoryFetchWorker
-from .ui_helpers import add_info_button, pick_file, open_from_edit, log_message
+from .ui_helpers import add_info_button, pick_file, open_from_edit, log_message, reading_progress_text, set_reading_progress, create_spin_control
 
 
 _GROUP_STYLE = (
@@ -31,8 +31,219 @@ _FETCH_MODE_NON_CATEGORIES_ONLY = 'non_categories_only'
 _FETCH_MODE_BOTH = 'both'
 
 
+class FileInputRow(QWidget):
+    """The shared caption/path/browse/open row used by file-based tools."""
+
+    def __init__(self, owner, caption, path_edit, on_open=None, *, pattern='*.tsv', editor_menu=False):
+        super().__init__(owner)
+        self.owner = owner
+        self.path_edit = path_edit
+        self.pattern = pattern
+        self.on_open = on_open or (lambda: open_from_edit(owner, path_edit))
+        self.open_tooltip_key = ('ui.transfer.button_import_file_tip' if on_open
+                                 else 'ui.transfer.button_open_file_tip')
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        self.caption = QLabel(caption)
+        row.addWidget(self.caption)
+        path_edit.setMinimumWidth(0)
+        path_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        path_edit.setProperty('_wct_skip_text_translation', True)
+        row.addWidget(path_edit, 1)
+        self.browse_btn = QToolButton()
+        self.browse_btn.setText('…')
+        self.browse_btn.setAutoRaise(False)
+        self.browse_btn.setFixedSize(27, 27)
+        self.browse_btn.setCursor(Qt.PointingHandCursor)
+        self.browse_btn.clicked.connect(self.choose_file)
+        row.addWidget(self.browse_btn)
+        self.open_btn = QPushButton()
+        self.open_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        self.open_btn.clicked.connect(self.on_open)
+        row.addWidget(self.open_btn)
+        path_edit.returnPressed.connect(self.on_open)
+        if editor_menu:
+            path_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+            path_edit.customContextMenuRequested.connect(self._show_path_menu)
+        self.refresh_localized_texts()
+
+    def _t(self, key):
+        host = getattr(self.owner, 'parent_window', None) or self.owner.window()
+        return translate_key(key, getattr(host, '_ui_lang', 'ru'), key)
+
+    def choose_file(self):
+        pick_file(self.owner, self.path_edit, self.pattern)
+
+    def _show_path_menu(self, position):
+        menu = self.path_edit.createStandardContextMenu()
+        menu.addSeparator()
+        edit = menu.addAction(self._t('ui.transfer.open_tsv'))
+        edit.triggered.connect(lambda: open_from_edit(self.owner, self.path_edit))
+        menu.exec(self.path_edit.mapToGlobal(position))
+        menu.deleteLater()
+
+    def refresh_localized_texts(self):
+        self.browse_btn.setToolTip(self._t('ui.transfer.button_browse_file_tip'))
+        self.open_btn.setText(self._t('ui.open'))
+        self.open_btn.setToolTip(self._t(self.open_tooltip_key))
+
+
+class CategoryReadControls(QWidget):
+    """The existing category/depth/Read/Append/PetScan controls shared by pages."""
+
+    def __init__(self, *, translate, category_section_label, category_placeholder,
+                 on_read, on_append, on_petscan, help_text,
+                 modes=('categories_only', 'non_categories_only', 'both'), parent=None):
+        super().__init__(parent)
+        self._t = translate
+        self.help_text = help_text
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.cat_edit = QLineEdit()
+        self.cat_edit.setProperty('_wct_skip_text_translation', True)
+        self.cat_edit.setPlaceholderText(category_placeholder)
+
+        category_fetch_layout = QGridLayout()
+        try:
+            category_fetch_layout.setContentsMargins(0, 0, 0, 0)
+            category_fetch_layout.setHorizontalSpacing(8)
+            category_fetch_layout.setVerticalSpacing(6)
+            category_fetch_layout.setColumnStretch(0, 1)
+            category_fetch_layout.setColumnStretch(4, 1)
+        except Exception:
+            pass
+        self.fetch_mode_combo = QComboBox()
+        self.fetch_mode_combo.setObjectName('sourceFetchModeCombo')
+        for mode in modes:
+            self.fetch_mode_combo.addItem('', mode)
+        try:
+            self.fetch_mode_combo.setCurrentIndex(0)
+        except Exception:
+            pass
+        try:
+            self.fetch_mode_combo.setSizeAdjustPolicy(
+                QComboBox.AdjustToMinimumContentsLengthWithIcon
+            )
+            self.fetch_mode_combo.setMinimumContentsLength(1)
+            self.fetch_mode_combo.setMinimumWidth(132)
+            self.fetch_mode_combo.setMaximumWidth(16777215)
+            self.fetch_mode_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        except Exception:
+            pass
+
+        self.replace_list_btn = QPushButton(
+            self._t('ui.source.replace_list_short', 'Read')
+        )
+        self.replace_list_btn.setObjectName('sourceActionButton')
+        self.replace_list_btn.setToolTip(
+            self._t(
+                'ui.source.replace_list_tooltip',
+                'Replace the current list with fetched results.',
+            )
+        )
+        self.replace_list_btn.clicked.connect(on_read)
+
+        self.append_list_btn = QPushButton(
+            self._t('ui.source.append_list_short', 'Append')
+        )
+        self.append_list_btn.setObjectName('sourceActionButton')
+        self.append_list_btn.setToolTip(
+            self._t(
+                'ui.source.append_list_tooltip',
+                'Append fetched results to the end of the current list on a new line.',
+            )
+        )
+        self.append_list_btn.clicked.connect(on_append)
+
+        self.open_petscan_btn = QPushButton(
+            self._t('ui.source.open_petscan_short', 'PetScan')
+        )
+        self.open_petscan_btn.setObjectName('sourceActionButton')
+        self.open_petscan_btn.setToolTip(
+            self._t(
+                'ui.source.open_petscan_tooltip',
+                'Open PetScan with advanced settings for the selected category',
+            )
+        )
+        self.open_petscan_btn.clicked.connect(on_petscan)
+
+        depth_label = QLabel(self._t('ui.depth', 'Depth:'))
+        depth_label.setToolTip(
+            self._t(
+                'ui.source.depth_tooltip',
+                'Category recursion depth. For "Pages": 0 = root category only, 1 = include direct subcategories. For "Subcategories": 0 = direct subcategories only.',
+            )
+        )
+        self.depth_spin = QSpinBox()
+        self.depth_spin.setObjectName('depthSpin')
+        self.depth_spin.setMinimum(0)
+        self.depth_spin.setMaximum(99)
+        self.depth_spin.setValue(0)
+        self.depth_spin.setToolTip(
+            self._t(
+                'ui.category_recursion_depth_for_pages_and_subcategories',
+                'Category recursion depth for pages and subcategories',
+            )
+        )
+        depth_wrap, self.depth_plus_btn, self.depth_minus_btn = create_spin_control(
+            self.depth_spin, plus_tip=self._t('ui.sync.depth_plus', 'Increase depth'),
+            minus_tip=self._t('ui.sync.depth_minus', 'Decrease depth'))
+
+        self.section_label = QLabel(category_section_label)
+        section_font = self.section_label.font()
+        section_font.setBold(True)
+        self.section_label.setFont(section_font)
+        layout.addWidget(self.section_label)
+
+        row_two_layout = QHBoxLayout()
+        try:
+            row_two_layout.setContentsMargins(0, 0, 0, 0)
+            row_two_layout.setSpacing(8)
+        except Exception:
+            pass
+        row_two_layout.addWidget(self.cat_edit, 1)
+        row_two_layout.addWidget(depth_label, 0)
+        row_two_layout.addWidget(depth_wrap, 0)
+        self.help_btn = add_info_button(self, row_two_layout, self.help_text, inline=True)
+        category_fetch_layout.addLayout(row_two_layout, 0, 0, 1, 5)
+
+        buttons_layout = QHBoxLayout()
+        try:
+            buttons_layout.setContentsMargins(0, 0, 0, 0)
+            buttons_layout.setSpacing(4)
+        except Exception:
+            pass
+        self.replace_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.append_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.open_petscan_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        buttons_layout.addWidget(self.replace_list_btn, 1)
+        buttons_layout.addWidget(self.append_list_btn, 1)
+        buttons_layout.addWidget(self.open_petscan_btn, 1)
+        buttons_layout.addSpacing(6)
+        buttons_layout.addWidget(self.fetch_mode_combo, 1)
+        self.equalize_buttons()
+        labels = {'categories_only': 'ui.source.fetch_mode.categories_only',
+                  'non_categories_only': 'ui.source.fetch_mode.non_categories_only_alt',
+                  'both': 'ui.source.fetch_mode.both_alt'}
+        for index, mode in enumerate(modes):
+            self.fetch_mode_combo.setItemText(index, self._t(labels[mode], mode))
+        category_fetch_layout.addLayout(buttons_layout, 1, 0, 1, 5)
+        layout.addLayout(category_fetch_layout)
+
+
+    def equalize_buttons(self):
+        buttons = (self.replace_list_btn, self.append_list_btn, self.open_petscan_btn)
+        width = max(button.sizeHint().width() for button in buttons)
+        for button in buttons:
+            button.setMinimumWidth(width)
+
+
 class CategorySourcePanel(QGroupBox):
     """Универсальная левая панель источника страниц."""
+
+    fetch_started = Signal()
 
     def __init__(
         self,
@@ -48,11 +259,13 @@ class CategorySourcePanel(QGroupBox):
         file_section_label: str = '',
         file_caption: str = '',
         default_input_path: str = '',
+        file_open_handler=None,
     ):
         self.parent_window = parent_window or parent
         super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
+        self.file_open_handler = file_open_handler
         self._fetch_worker = None
         self._fetch_base_text = ''
         self._fetch_append_mode = False
@@ -145,6 +358,11 @@ class CategorySourcePanel(QGroupBox):
             pass
 
     def refresh_localized_texts(self) -> None:
+        self.file_row.refresh_localized_texts()
+        for button, key in ((self.replace_list_btn, 'ui.source.replace_list_tooltip'),
+                            (self.append_list_btn, 'ui.source.append_list_tooltip'),
+                            (self.open_petscan_btn, 'ui.source.open_petscan_tooltip')):
+            button.setToolTip(self._t(key, key))
         try:
             if self._fetch_active_button is not self.replace_list_btn:
                 self.replace_list_btn.setText(self._t('ui.source.replace_list_short', 'Read'))
@@ -220,169 +438,17 @@ class CategorySourcePanel(QGroupBox):
 
         layout.addSpacing(6)
 
-        self.cat_edit = QLineEdit()
-        self.cat_edit.setProperty('_wct_skip_text_translation', True)
-        self.cat_edit.setPlaceholderText(category_placeholder)
-
-        category_fetch_layout = QGridLayout()
-        try:
-            category_fetch_layout.setContentsMargins(0, 0, 0, 0)
-            category_fetch_layout.setHorizontalSpacing(8)
-            category_fetch_layout.setVerticalSpacing(6)
-            category_fetch_layout.setColumnStretch(0, 1)
-            category_fetch_layout.setColumnStretch(4, 1)
-        except Exception:
-            pass
-        self.fetch_mode_combo = QComboBox()
-        self.fetch_mode_combo.setObjectName('sourceFetchModeCombo')
-        self.fetch_mode_combo.addItem('', _FETCH_MODE_CATEGORIES_ONLY)
-        self.fetch_mode_combo.addItem('', _FETCH_MODE_NON_CATEGORIES_ONLY)
-        self.fetch_mode_combo.addItem('', _FETCH_MODE_BOTH)
-        try:
-            self.fetch_mode_combo.setCurrentIndex(0)
-        except Exception:
-            pass
-        try:
-            self.fetch_mode_combo.setSizeAdjustPolicy(
-                QComboBox.AdjustToMinimumContentsLengthWithIcon
-            )
-            self.fetch_mode_combo.setMinimumContentsLength(1)
-            self.fetch_mode_combo.setMinimumWidth(132)
-            self.fetch_mode_combo.setMaximumWidth(16777215)
-            self.fetch_mode_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        except Exception:
-            pass
-
-        self.replace_list_btn = QPushButton(
-            self._t('ui.source.replace_list_short', 'Read')
+        self.read_controls = CategoryReadControls(
+            translate=self._t, category_section_label=category_section_label,
+            category_placeholder=category_placeholder,
+            on_read=self.fetch_selected_mode_replace, on_append=self.fetch_selected_mode_append,
+            on_petscan=self.open_petscan_in_browser,
+            help_text=lambda: self._t('help.category.read_controls', ''), parent=self,
         )
-        self.replace_list_btn.setObjectName('sourceActionButton')
-        self.replace_list_btn.setToolTip(
-            self._t(
-                'ui.source.replace_list_tooltip',
-                'Replace the current list with fetched results.',
-            )
-        )
-        self.replace_list_btn.clicked.connect(self.fetch_selected_mode_replace)
-
-        self.append_list_btn = QPushButton(
-            self._t('ui.source.append_list_short', 'Append')
-        )
-        self.append_list_btn.setObjectName('sourceActionButton')
-        self.append_list_btn.setToolTip(
-            self._t(
-                'ui.source.append_list_tooltip',
-                'Append fetched results to the end of the current list on a new line.',
-            )
-        )
-        self.append_list_btn.clicked.connect(self.fetch_selected_mode_append)
-
-        self.open_petscan_btn = QPushButton(
-            self._t('ui.source.open_petscan_short', 'PetScan')
-        )
-        self.open_petscan_btn.setObjectName('sourceActionButton')
-        self.open_petscan_btn.setToolTip(
-            self._t(
-                'ui.source.open_petscan_tooltip',
-                'Open PetScan with advanced settings for the selected category',
-            )
-        )
-        self.open_petscan_btn.clicked.connect(self.open_petscan_in_browser)
-
-        depth_label = QLabel(self._t('ui.depth', 'Depth:'))
-        depth_label.setToolTip(
-            self._t(
-                'ui.source.depth_tooltip',
-                'Category recursion depth. For "Pages": 0 = root category only, 1 = include direct subcategories. For "Subcategories": 0 = direct subcategories only.',
-            )
-        )
-        self.depth_spin = QSpinBox()
-        self.depth_spin.setObjectName('depthSpin')
-        self.depth_spin.setMinimum(0)
-        self.depth_spin.setMaximum(99)
-        self.depth_spin.setValue(0)
-        self.depth_spin.setToolTip(
-            self._t(
-                'ui.category_recursion_depth_for_pages_and_subcategories',
-                'Category recursion depth for pages and subcategories',
-            )
-        )
-        try:
-            self.depth_spin.setFixedWidth(38)
-            self.depth_spin.setAlignment(Qt.AlignCenter)
-            self.depth_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        except Exception:
-            pass
-
-        self.depth_plus_btn = QToolButton()
-        self.depth_plus_btn.setObjectName('depthStepButton')
-        self.depth_plus_btn.setText('+')
-        self.depth_plus_btn.setToolTip(
-            self._t('ui.sync.depth_plus', 'Increase depth')
-        )
-        self.depth_plus_btn.clicked.connect(self.depth_spin.stepUp)
-        self.depth_minus_btn = QToolButton()
-        self.depth_minus_btn.setObjectName('depthStepButton')
-        self.depth_minus_btn.setText('-')
-        self.depth_minus_btn.setToolTip(
-            self._t('ui.sync.depth_minus', 'Decrease depth')
-        )
-        self.depth_minus_btn.clicked.connect(self.depth_spin.stepDown)
-        try:
-            self.depth_plus_btn.setFixedSize(14, 14)
-            self.depth_minus_btn.setFixedSize(14, 14)
-        except Exception:
-            pass
-
-        depth_step_layout = QVBoxLayout()
-        try:
-            depth_step_layout.setContentsMargins(0, 0, 0, 0)
-            depth_step_layout.setSpacing(0)
-        except Exception:
-            pass
-        depth_step_layout.addWidget(self.depth_plus_btn)
-        depth_step_layout.addWidget(self.depth_minus_btn)
-
-        depth_wrap = QWidget()
-        depth_wrap_layout = QHBoxLayout(depth_wrap)
-        try:
-            depth_wrap_layout.setContentsMargins(0, 0, 0, 0)
-            depth_wrap_layout.setSpacing(2)
-        except Exception:
-            pass
-        depth_wrap_layout.addWidget(self.depth_spin)
-        depth_wrap_layout.addLayout(depth_step_layout)
-
-        layout.addWidget(QLabel(category_section_label))
-
-        row_two_layout = QHBoxLayout()
-        try:
-            row_two_layout.setContentsMargins(0, 0, 0, 0)
-            row_two_layout.setSpacing(8)
-        except Exception:
-            pass
-        row_two_layout.addWidget(self.cat_edit, 1)
-        row_two_layout.addWidget(depth_label, 0)
-        row_two_layout.addWidget(depth_wrap, 0)
-        category_fetch_layout.addLayout(row_two_layout, 0, 0, 1, 5)
-
-        buttons_layout = QHBoxLayout()
-        try:
-            buttons_layout.setContentsMargins(0, 0, 0, 0)
-            buttons_layout.setSpacing(4)
-        except Exception:
-            pass
-        self.replace_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.append_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.open_petscan_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        buttons_layout.addWidget(self.replace_list_btn, 1)
-        buttons_layout.addWidget(self.append_list_btn, 1)
-        buttons_layout.addWidget(self.open_petscan_btn, 1)
-        buttons_layout.addSpacing(6)
-        buttons_layout.addWidget(self.fetch_mode_combo, 1)
-        self._sync_source_action_button_widths()
-        category_fetch_layout.addLayout(buttons_layout, 1, 0, 1, 5)
-        layout.addLayout(category_fetch_layout)
+        for name in ('cat_edit', 'depth_spin', 'depth_plus_btn', 'depth_minus_btn',
+                     'replace_list_btn', 'append_list_btn', 'open_petscan_btn', 'fetch_mode_combo'):
+            setattr(self, name, getattr(self.read_controls, name))
+        layout.addWidget(self.read_controls)
 
         layout.addSpacing(6)
         layout.addWidget(QLabel(manual_label))
@@ -398,32 +464,10 @@ class CategorySourcePanel(QGroupBox):
             pass
 
         layout.addWidget(QLabel(file_section_label))
-        file_layout = QHBoxLayout()
-        file_layout.addWidget(QLabel(file_caption))
-
         self.in_path = QLineEdit(default_input_path)
-        self.in_path.setProperty('_wct_skip_text_translation', True)
-        self.in_path.setMinimumWidth(0)
-        file_layout.addWidget(self.in_path, 1)
-
-        btn_browse_in = QToolButton()
-        btn_browse_in.setText('…')
-        btn_browse_in.setAutoRaise(False)
-        try:
-            btn_browse_in.setFixedSize(27, 27)
-            btn_browse_in.setCursor(Qt.PointingHandCursor)
-            btn_browse_in.setToolTip(self._t('ui.choose_file', 'Choose file'))
-        except Exception:
-            pass
-        btn_browse_in.clicked.connect(
-            lambda: pick_file(self, self.in_path, '*.txt'))
-        file_layout.addWidget(btn_browse_in)
-
-        btn_open_in = QPushButton(self._t('ui.open', 'Open'))
-        btn_open_in.clicked.connect(lambda: open_from_edit(self, self.in_path))
-        file_layout.addWidget(btn_open_in)
-
-        layout.addLayout(file_layout)
+        self.file_row = FileInputRow(self, file_caption, self.in_path, self.file_open_handler,
+                                    pattern='*.txt *.tsv' if self.file_open_handler else '*.txt')
+        layout.addWidget(self.file_row)
         self.file_edit = self.in_path
 
     def set_log_widget(self, log_widget: QTextEdit | None) -> None:
@@ -498,7 +542,8 @@ class CategorySourcePanel(QGroupBox):
             if line.strip()
         ]
 
-    def _build_petscan_url(self, family: str, lang: str, category: str, depth: int = 0) -> str:
+    @staticmethod
+    def _build_petscan_url(family: str, lang: str, category: str, depth: int = 0) -> str:
         from ...core.namespace_manager import strip_ns_prefix
 
         base = strip_ns_prefix(family, lang, category, 14)
@@ -741,52 +786,13 @@ class CategorySourcePanel(QGroupBox):
         self._fetch_last_read_total = 0
 
     def _format_fetch_progress_count(self, count: int, total: int = 0) -> str:
-        total = max(0, int(total or 0))
-        if total > 0:
-            template = self._t(
-                'ui.source.fetch_progress_bar_total',
-                'Read {count}/{total}',
-            )
-            try:
-                return template.format(count=int(count or 0), total=total)
-            except Exception:
-                pass
-
-        template = self._t('ui.source.fetch_progress_bar', 'Read {count}')
-        try:
-            return template.format(count=int(count or 0))
-        except Exception:
-            label = self._t('ui.source.fetch_progress_read_short', 'Read')
-            return f"{label} {int(count or 0)}"
+        return reading_progress_text(max(0, int(count or 0)), max(0, int(total or 0)), self._t)
 
     def _set_fetch_progress_count(self, count: int, total: int | None = None) -> None:
         bar = getattr(self, '_fetch_progress_bar_widget', None)
-        if bar is None:
-            return
-
-        count = max(0, int(count or 0))
-        if total is None:
-            total = int(self._fetch_last_read_total or 0)
-        total = max(0, int(total or 0))
-        text = self._format_fetch_progress_count(count, total)
-        try:
-            bar.setTextVisible(True)
-            if total > 0:
-                bar.setMaximum(max(1, count, total))
-            else:
-                bar.setMaximum(max(1, count + 1))
-            bar.setValue(count)
-            bar.setFormat(text)
-            bar.setProperty('progress_total', total or count)
-        except Exception:
-            pass
-
-        label = getattr(self, '_fetch_progress_label_widget', None)
-        if label is not None:
-            try:
-                label.setText(text)
-            except Exception:
-                pass
+        if bar is not None:
+            total = self._fetch_last_read_total if total is None else total
+            set_reading_progress(getattr(self, '_fetch_progress_label_widget', None), bar, count, total, self._t)
 
     def _begin_fetch_progress(self) -> None:
         self._fetch_last_read_count = 0
@@ -893,6 +899,7 @@ class CategorySourcePanel(QGroupBox):
             cat_full = category
 
         depth = self.depth_spin.value()
+        self.fetch_started.emit()
         self._activate_fetch_stop_button(trigger_button)
         self._set_fetch_controls_enabled(False)
         self._fetch_append_mode = bool(append)

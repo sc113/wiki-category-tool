@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import csv
+import io
 import re
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from datetime import timezone
 from email.utils import parsedate_to_datetime
@@ -14,6 +14,7 @@ from email.utils import parsedate_to_datetime
 import requests
 
 from .api_client import APIRequestError, WikimediaAPIClient
+from .category_tree import walk_subcategories
 from .localization import translate_runtime
 from ..constants import REQUEST_HEADERS
 from ..utils import debug
@@ -74,9 +75,25 @@ def category_action_plan(results, planned_titles):
             plan['drafts'] += 1
         elif status == 'different_items':
             plan['conflicts'] += 1
-        elif status in {'error', 'unlinked', 'stopped'}:
+        elif status in {'error', 'unlinked', 'stopped', 'missing_source', 'target_missing', 'redirect_target', 'invalid_target'}:
             plan['errors'] += 1
     return plan
+
+
+def category_outcome_counts(results):
+    """Separate new links, existing links and actual label edits in table summaries."""
+    counts = dict.fromkeys(('created', 'linked', 'labels', 'already'), 0)
+    for result in results:
+        status = result.get('status')
+        if status not in {'created', 'linked', 'labels_updated', 'already_linked'}:
+            continue
+        action = result.get('link_action') or ('linked' if status == 'created' else status)
+        counts['created'] += status == 'created'
+        counts['linked'] += status in {'created', 'linked'} and action == 'linked'
+        counts['already'] += action == 'already_linked'
+        counts['labels'] += action == 'labels_updated' or (
+            status in {'created', 'linked'} and bool(result.get('label_changes')))
+    return counts
 
 
 _ROMAN_DIGITS = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"),
@@ -120,8 +137,9 @@ def title_number_matches(title: str):
 
 
 def plan_numbered_titles(rows: tuple[CategoryCreationRow, ...], source_pattern: str,
-                        target_template: str, indices: set[int] | None = None) -> tuple[NumberedTitleProposal, ...]:
-    """Preview numeric/ordinal/Roman title conversions without overwriting input.
+                        target_template: str, indices: set[int] | None = None, *,
+                        only_empty: bool = True) -> tuple[NumberedTitleProposal, ...]:
+    """Preview numeric/ordinal/Roman conversions before changing the table.
 
     An empty source pattern discovers a single number automatically. An exact
     pattern restricts a mixed list to one series; ambiguous titles are skipped.
@@ -148,13 +166,14 @@ def plan_numbered_titles(rows: tuple[CategoryCreationRow, ...], source_pattern: 
         token = next(token for token in tokens if token in source_pattern)
         before, after = source_pattern.split(token)
         pattern = re.compile(re.escape(before) + r"([0-9]+(?i:st|nd|rd|th)?|[IVXLCDM]+)" + re.escape(after))
-    occupied = {row.target_title.strip().replace("_", " ") for row in rows if row.target_title.strip()}
+    occupied = {row.target_title.strip().replace("_", " ") for index, row in enumerate(rows)
+                if row.target_title.strip() and (only_empty or (indices is not None and index not in indices))}
     generated: dict[str, int] = {}
     proposals = []
     for index, row in enumerate(rows):
         if indices is not None and index not in indices:
             continue
-        if row.target_title.strip():
+        if only_empty and row.target_title.strip():
             proposals.append(NumberedTitleProposal(index, row.target_title, "number_kept"))
             continue
         title = row.source_title.strip().replace("_", " ")
@@ -175,6 +194,22 @@ def plan_numbered_titles(rows: tuple[CategoryCreationRow, ...], source_pattern: 
         key = translated.replace("_", " ")
         generated[key] = generated.get(key, 0) + 1
         proposals.append(NumberedTitleProposal(index, translated, "number_fill"))
+    if not only_empty:
+        eligible = {proposal.index: proposal for proposal in proposals if proposal.status == 'number_fill'}
+        conflicts = set()
+        while eligible:
+            occupied = {row.target_title.strip().replace('_', ' ') for index, row in enumerate(rows)
+                        if row.target_title.strip() and index not in eligible}
+            invalid = {index for index, proposal in eligible.items()
+                       if proposal.target_title.replace('_', ' ') in occupied
+                       or generated[proposal.target_title.replace('_', ' ')] > 1}
+            if not invalid:
+                break
+            conflicts.update(invalid)
+            for index in invalid:
+                eligible.pop(index)
+        return tuple(NumberedTitleProposal(proposal.index, proposal.target_title, 'number_conflict')
+                     if proposal.index in conflicts else proposal for proposal in proposals)
     return tuple(NumberedTitleProposal(proposal.index, proposal.target_title, "number_conflict")
                  if proposal.status == "number_fill" and (
                      proposal.target_title.replace("_", " ") in occupied
@@ -204,17 +239,78 @@ def merge_commands(conflicts: list[dict]) -> str:
                      if qid != root(qid))
 
 
+def parse_scan_list(text: str) -> tuple[str, ...]:
+    """One category per line; reject reports/creation tables instead of misreading them."""
+    titles = []
+    seen = set()
+    for line, fields in enumerate(csv.reader(io.StringIO(text.lstrip('\ufeff')), delimiter='\t'), 1):
+        if not fields or not any(field.strip() for field in fields):
+            continue
+        if len(fields) != 1:
+            raise ValueError(message('scan_list_invalid', line=line))
+        title = fields[0].strip().replace('_', ' ')
+        if not title or any(char in title for char in '[]{}|<>#\t\r\n'):
+            raise ValueError(message('invalid_title', title=title))
+        if title not in seen:
+            seen.add(title)
+            titles.append(title)
+    if not titles:
+        raise ValueError(message('scan_list_empty'))
+    return tuple(titles)
+
+
+def _scan_report_header(fields):
+    return (len(fields) == 7 and fields[0].strip().casefold() in {'source category', 'исходная категория'}
+            and fields[2].strip().casefold() == 'wikidata')
+
+
+def read_sync_tsv(path: str) -> tuple[tuple[str, ...], tuple[CategoryPair, ...]]:
+    """A plain target list, or source/target pairs exported by other stages."""
+    with open(path, encoding='utf-8-sig', newline='') as handle:
+        records = [(line, fields) for line, fields in enumerate(csv.reader(handle, delimiter='\t'), 1)
+                   if fields and any(field.strip() for field in fields)]
+    report = bool(records and _scan_report_header(records[0][1]))
+    if report:
+        records = records[1:]
+    paired = report or any(len(fields) > 1 for _, fields in records)
+    titles, pairs, seen = [], [], {}
+    for line, fields in records:
+        if not fields[0].strip() or (paired and len(fields) < 2):
+            raise ValueError(message('tsv_titles_required', line=line))
+        source = fields[0].strip()
+        target = fields[1].strip() if paired else source
+        if not target:
+            continue
+        key = target.casefold()
+        if key in seen:
+            if paired and seen[key] != source:
+                raise ValueError(message('tsv_duplicate', line=line))
+            continue
+        seen[key] = source
+        titles.append(target)
+        if paired:
+            qid = fields[2].strip() if report and len(fields) > 2 else ''
+            pairs.append(CategoryPair(source, target, qid if re.fullmatch(r'Q[1-9][0-9]*', qid) else ''))
+    if not titles:
+        raise ValueError(message('tsv_empty'))
+    return tuple(titles), tuple(pairs)
+
+
 def read_creation_tsv(path: str, *, allow_untranslated: bool = False) -> tuple[CategoryCreationRow, ...]:
     rows = []
     sources, targets = set(), set()
+    scan_report = False
     with open(path, encoding="utf-8-sig", newline="") as handle:
         for line, fields in enumerate(csv.reader(handle, delimiter="\t"), 1):
             if not fields or not any(field.strip() for field in fields):
                 continue
-            if len(fields) < 2 or not fields[0].strip() or (not allow_untranslated and not fields[1].strip()):
+            if not rows and _scan_report_header(fields):
+                scan_report = True
+                continue
+            if not fields[0].strip() or (not allow_untranslated and (len(fields) < 2 or not fields[1].strip())):
                 raise ValueError(message("tsv_titles_required", line=line))
-            source, target = (field.strip() for field in fields[:2])
-            content = "\n".join(fields[2:])
+            source, target = fields[0].strip(), fields[1].strip() if len(fields) > 1 else ''
+            content = '' if scan_report else "\n".join(fields[2:])
             # Final namespace-aware duplicate checks also run before any writes.
             if source in sources or (target and target in targets):
                 raise ValueError(message("tsv_duplicate", line=line))
@@ -255,11 +351,17 @@ class CategoryTransferReader:
         self._request_delay = self.delay
         self._cooldown_until = 0.0
         self.on_retry = lambda _message: None
+        self.on_activity = lambda _payload: None
+        self._preview_activity = None
+        self._preview_stage_count = 0
         self.api = WikimediaAPIClient()
         self._last_request = 0.0
         self._site_info: dict[str, dict] = {}
         self._item_links: dict[str, str] = {}
         self._article_links: dict[str, str] = {}
+        self._scan_metadata = {}
+        self._scan_articles = {}
+        self._scan_errors = {}
 
     def close(self):
         self.api.session.close()
@@ -301,6 +403,9 @@ class CategoryTransferReader:
         url = ("https://www.wikidata.org/w/api.php" if wikidata
                else self.api._build_api_url(self.family, lang))
         query = {"format": "json", "formatversion": 2, **params}
+        if self._preview_activity is not None:
+            self._preview_activity['request'] += 1
+            self.on_activity(dict(self._preview_activity))
         for attempt in range(1, 5):
             self.check_stop()
             wait = max(0.0, max(self._last_request + self._request_delay, self._cooldown_until) - time.monotonic())
@@ -400,6 +505,9 @@ class CategoryTransferReader:
 
     def pages(self, lang: str, titles: list[str], *, props: str = "info|pageprops|langlinks|categoryinfo") -> dict[str, dict]:
         result = {}
+        preview = self._preview_activity is not None and self._preview_activity['phase'] == 'check_pages'
+        if preview:
+            self._preview_total(len(titles))
         base_params = {"action": "query", "prop": props}
         if "revisions" in props:
             base_params.update(rvprop="content", rvslots="main")
@@ -426,6 +534,8 @@ class CategoryTransferReader:
                 actual = aliases.get(raw, raw)
                 if actual in result:
                     result[raw] = result[actual]
+            if preview:
+                self._preview_advance(len(batch))
         return result
 
     @staticmethod
@@ -446,9 +556,53 @@ class CategoryTransferReader:
                 return list(titles)
             params.update(data["continue"])
 
+    def read_subcategories(self, category, *, depth, count, processed, queued,
+                           include_counts, total=None):
+        """Read packets like the reading tab, including terminal category counts."""
+        if include_counts:
+            base = {"action": "query", "generator": "categorymembers", "gcmtitle": category,
+                    "gcmtype": "subcat", "gcmnamespace": 14, "gcmlimit": "max", "prop": "categoryinfo"}
+        else:
+            base = {"action": "query", "list": "categorymembers", "cmtitle": category,
+                    "cmtype": "subcat", "cmnamespace": 14, "cmlimit": "max"}
+        params = dict(base)
+        titles, counts = {}, {}
+        batch = 0
+        while True:
+            self.check_stop()
+            data = self.request(self.source_lang, params)
+            pages = data.get("query", {}).get("pages" if include_counts else "categorymembers", [])
+            if isinstance(pages, dict):
+                pages = pages.values()
+            previous = len(titles)
+            for page in pages:
+                title = page.get("title")
+                if not title:
+                    continue
+                key = title.casefold()
+                titles.setdefault(key, title)
+                subcats = (page.get("categoryinfo") or {}).get("subcats")
+                if type(subcats) is int and subcats >= 0:
+                    counts[key] = max(counts.get(key, 0), subcats)
+            batch += 1
+            self.on_activity(dict(phase="members", category=category, depth=depth, batch=batch,
+                                  batch_pages=0, batch_subcategories=len(titles) - previous,
+                                  pages=0, subcategories=count + len(titles), count=count + len(titles),
+                                  processed=processed, queued=queued, total=total))
+            if not data.get("continue"):
+                return list(titles.values()), counts
+            params = {**base, **data["continue"]}
+
     def item_links(self, qids: list[str]) -> dict[str, str]:
+        preview = self._preview_activity is not None and self._preview_activity['phase'] == 'check_sitelinks'
+        if not qids:
+            if preview:
+                self._preview_total(0)
+            return {}
         wiki_id = self.site_info(self.target_lang)["general"]["wikiid"]
         missing = list(dict.fromkeys(qid for qid in qids if qid not in self._item_links))
+        if preview:
+            self._preview_total(len(missing))
         for offset in range(0, len(missing), 50):
             batch = missing[offset:offset + 50]
             data = self.request("", {"action": "wbgetentities", "ids": "|".join(batch),
@@ -456,6 +610,8 @@ class CategoryTransferReader:
             for qid in batch:
                 item = data.get("entities", {}).get(qid, {})
                 self._item_links[qid] = item.get("sitelinks", {}).get(wiki_id, {}).get("title", "")
+            if preview:
+                self._preview_advance(len(batch))
         return {qid: self._item_links.get(qid, "") for qid in qids}
 
     def category_metadata(self, titles: list[str]) -> dict[str, dict]:
@@ -463,6 +619,15 @@ class CategoryTransferReader:
         qids = [page.get("pageprops", {}).get("wikibase_item", "")
                 for page in pages.values()]
         links = self.item_links([qid for qid in qids if qid])
+        candidates = self._category_candidates(titles, pages, links)
+        targets = [row["target_title"] for row in candidates.values() if row["target_title"]]
+        verified = self.pages(self.target_lang, list(dict.fromkeys(targets)), props="info") if targets else {}
+        for row in candidates.values():
+            target = verified.get(row["target_title"])
+            row["target_title"] = target["title"] if self.valid_page(target, 14) else ""
+        return candidates
+
+    def _category_candidates(self, titles, pages, links):
         candidates = {}
         for raw in titles:
             page = pages.get(raw)
@@ -476,18 +641,17 @@ class CategoryTransferReader:
             candidates[raw] = {"source_title": page["title"], "target_title": linked,
                                "wikidata_target": links.get(qid, ""),
                                "qid": qid, "total": None, "potential": None,
+                               "subcat_count": (page.get("categoryinfo") or {}).get("subcats"),
                                "status": "loaded", "target_articles": []}
-        targets = [row["target_title"] for row in candidates.values() if row["target_title"]]
-        verified = self.pages(self.target_lang, list(dict.fromkeys(targets)), props="info") if targets else {}
-        for row in candidates.values():
-            target = verified.get(row["target_title"])
-            row["target_title"] = target["title"] if self.valid_page(target, 14) else ""
         return candidates
 
     def category_items(self, lang: str, pages: dict[str, dict]) -> None:
         """Fill pageprops lagging behind a newly written Wikidata sitelink."""
         missing = {page["title"]: page for page in pages.values()
                    if self.valid_page(page, 14) and not page.get("pageprops", {}).get("wikibase_item")}
+        preview = self._preview_activity is not None and self._preview_activity['phase'] == 'check_items'
+        if preview:
+            self._preview_total(len(missing))
         if not missing:
             return
         wiki = self.site_info(lang)["general"]["wikiid"]
@@ -501,9 +665,41 @@ class CategoryTransferReader:
                 title = self.category_title(linked, lang) if linked else ""
                 if title in missing:
                     missing[title].setdefault("pageprops", {})["wikibase_item"] = entity["id"]
+            if preview:
+                self._preview_advance(len(titles))
+
+    def _preview_stage(self, phase, count, lang=''):
+        self.check_stop()
+        previous = self._preview_activity
+        if previous is not None:
+            self._preview_advance(previous['count'] - previous['processed'])
+        stage = previous['stage'] + 1 if previous is not None else 1
+        self._preview_activity = dict(phase=phase, count=count, lang=lang, request=0,
+                                      processed=0, stage=stage, stages=self._preview_stage_count)
+        self.on_activity(dict(self._preview_activity))
+
+    def _preview_total(self, count):
+        if self._preview_activity is not None:
+            self._preview_activity.update(count=count, processed=0)
+            self.on_activity(dict(self._preview_activity))
+
+    def _preview_advance(self, count):
+        if self._preview_activity is not None:
+            activity = self._preview_activity
+            activity['processed'] = min(activity['count'], activity['processed'] + count)
+            self.on_activity(dict(activity))
 
     def preview_creation(self, rows: tuple[CategoryCreationRow, ...], on_row, *, check_labels=False) -> list[dict]:
+        try:
+            return self._preview_creation(rows, on_row, check_labels=check_labels)
+        finally:
+            self._preview_activity = None
+
+    def _preview_creation(self, rows, on_row, *, check_labels=False):
         """Inventory existing pages and links before enabling writes or resuming."""
+        self._preview_stage_count = 9 if check_labels else 8
+        self._preview_stage('check_titles', len(rows))
+        self._check_distinct_wikis()
         normalized = []
         sources, targets = set(), set()
         for index, row in enumerate(rows):
@@ -515,9 +711,14 @@ class CategoryTransferReader:
             if target:
                 targets.add(target)
             normalized.append(CategoryCreationRow(source, target, row.content))
+            if (index + 1) % 50 == 0 or index + 1 == len(rows):
+                self._preview_advance(index + 1 - self._preview_activity['processed'])
+        self._preview_stage('check_pages', len(sources), self.source_lang)
         source_pages = self.pages(self.source_lang, list(sources), props="info|pageprops")
+        self._preview_stage('check_items', len(sources), self.source_lang)
         self.category_items(self.source_lang, source_pages)
         qids = [page.get("pageprops", {}).get("wikibase_item", "") for page in source_pages.values()]
+        self._preview_stage('check_sitelinks', len(sources))
         links = self.item_links([qid for qid in qids if qid])
         # A linked local title needs no manual translation, even when entering
         # this stage directly with a list of foreign categories.
@@ -532,18 +733,40 @@ class CategoryTransferReader:
                     raise ValueError(message("tsv_duplicate", line=index + 1))
                 targets.add(target)
                 normalized[index] = CategoryCreationRow(row.source_title, target, row.content)
+        self._preview_stage('check_pages', len(targets), self.target_lang)
         target_pages = self.pages(self.target_lang, list(targets), props="info|pageprops") if targets else {}
+        self._preview_stage('check_items', len(targets), self.target_lang)
         self.category_items(self.target_lang, target_pages)
+        reverse_qids = list(dict.fromkeys(target_pages.get(row.target_title, {}).get('pageprops', {}).get('wikibase_item')
+                                         for row in normalized
+                                         if not source_pages.get(row.source_title, {}).get('pageprops', {}).get('wikibase_item')
+                                         and target_pages.get(row.target_title, {}).get('pageprops', {}).get('wikibase_item')))
+        reverse_links = {}
+        self._preview_stage('check_sitelinks', len(reverse_qids), self.source_lang)
+        if reverse_qids:
+            source_wiki = self.site_info(self.source_lang)['general']['wikiid']
+            for offset in range(0, len(reverse_qids), 50):
+                batch = reverse_qids[offset:offset + 50]
+                data = self.request('', {'action': 'wbgetentities', 'ids': '|'.join(batch),
+                                         'props': 'sitelinks', 'sitefilter': source_wiki}, wikidata=True)
+                reverse_links.update({qid: entity.get('sitelinks', {}).get(source_wiki, {}).get('title', '')
+                                      for qid, entity in data.get('entities', {}).items()})
+                self._preview_advance(len(batch))
         entities = {}
         if check_labels:
+            self._preview_stage('check_labels', len(rows))
             item_ids = list(dict.fromkeys(page.get("pageprops", {}).get("wikibase_item")
                                          for page in (*source_pages.values(), *target_pages.values())
                                          if page.get("pageprops", {}).get("wikibase_item")))
+            self._preview_total(len(item_ids))
             for offset in range(0, len(item_ids), 50):
-                data = self.request("", {"action": "wbgetentities", "ids": "|".join(item_ids[offset:offset + 50]),
+                batch = item_ids[offset:offset + 50]
+                data = self.request("", {"action": "wbgetentities", "ids": "|".join(batch),
                                          "props": "labels", "languages": f"{self.source_lang}|{self.target_lang}"},
                                     wikidata=True)
                 entities.update(data.get("entities", {}))
+                self._preview_advance(len(batch))
+        self._preview_stage('check_results', len(rows))
         results = []
         for index, row in enumerate(normalized):
             self.check_stop()
@@ -560,6 +783,7 @@ class CategoryTransferReader:
                     result.update(status="needs_translation", detail=message("translation_required"))
                     results.append(result)
                     on_row(result)
+                    self._preview_result_progress(index + 1)
                     continue
                 if target and "redirect" in target:
                     raise ValueError(message("target_redirect", title=row.target_title))
@@ -571,10 +795,7 @@ class CategoryTransferReader:
                 if source_qid and target_qid and source_qid != target_qid:
                     raise ValueError(message("item_conflict", source=row.source_title, target=row.target_title))
                 if target_qid and not source_qid:
-                    source_wiki = self.site_info(self.source_lang)["general"]["wikiid"]
-                    data = self.request("", {"action": "wbgetentities", "ids": target_qid,
-                                             "props": "sitelinks", "sitefilter": source_wiki}, wikidata=True)
-                    source_link = data.get("entities", {}).get(target_qid, {}).get("sitelinks", {}).get(source_wiki, {}).get("title", "")
+                    source_link = reverse_links.get(target_qid, '')
                     if source_link and source_link != row.source_title:
                         raise ValueError(message("sitelink_conflict", title=row.source_title, linked=source_link))
                 if self.valid_page(target, 14):
@@ -598,10 +819,24 @@ class CategoryTransferReader:
                 result.update(status="error", error=str(error))
             results.append(result)
             on_row(result)
+            self._preview_result_progress(index + 1)
         return results
 
+    def _preview_result_progress(self, checked):
+        if checked % 50 == 0 or checked == self._preview_activity['count']:
+            self._preview_advance(checked - self._preview_activity['processed'])
+
     def preview_interwiki(self, rows: tuple[CategoryCreationRow, ...], on_row) -> list[dict]:
+        try:
+            return self._preview_interwiki(rows, on_row)
+        finally:
+            self._preview_activity = None
+
+    def _preview_interwiki(self, rows, on_row):
         """Read existing category pairs and retain both item IDs for conflicts."""
+        self._preview_stage_count = 7
+        self._preview_stage('check_titles', len(rows))
+        self._check_distinct_wikis()
         normalized, sources, targets = [], set(), set()
         for index, row in enumerate(rows):
             source = self.category_title(row.source_title, self.source_lang)
@@ -612,20 +847,30 @@ class CategoryTransferReader:
             if target:
                 targets.add(target)
             normalized.append(CategoryCreationRow(source, target, ""))
+            if (index + 1) % 50 == 0 or index + 1 == len(rows):
+                self._preview_advance(index + 1 - self._preview_activity['processed'])
+        self._preview_stage('check_pages', len(sources), self.source_lang)
         source_pages = self.pages(self.source_lang, list(sources), props="info|pageprops")
-        target_pages = self.pages(self.target_lang, list(targets), props="info|pageprops") if targets else {}
+        self._preview_stage('check_items', len(sources), self.source_lang)
         self.category_items(self.source_lang, source_pages)
+        self._preview_stage('check_pages', len(targets), self.target_lang)
+        target_pages = self.pages(self.target_lang, list(targets), props="info|pageprops") if targets else {}
+        self._preview_stage('check_items', len(targets), self.target_lang)
         self.category_items(self.target_lang, target_pages)
         qids = list(dict.fromkeys(page.get("pageprops", {}).get("wikibase_item")
                                 for page in (*source_pages.values(), *target_pages.values())
                                 if page.get("pageprops", {}).get("wikibase_item")))
+        self._preview_stage('check_sitelinks', len(qids))
         source_wiki = self.site_info(self.source_lang)["general"]["wikiid"]
         target_wiki = self.site_info(self.target_lang)["general"]["wikiid"]
         entities = {}
         for offset in range(0, len(qids), 50):
-            data = self.request("", {"action": "wbgetentities", "ids": "|".join(qids[offset:offset + 50]),
+            batch = qids[offset:offset + 50]
+            data = self.request("", {"action": "wbgetentities", "ids": "|".join(batch),
                                      "props": "sitelinks", "sitefilter": f"{source_wiki}|{target_wiki}"}, wikidata=True)
             entities.update(data.get("entities", {}))
+            self._preview_advance(len(batch))
+        self._preview_stage('check_results', len(rows))
         results = []
         for index, row in enumerate(normalized):
             self.check_stop()
@@ -635,11 +880,15 @@ class CategoryTransferReader:
             result = dict(index=index, row=row, source_qid=source_qid, target_qid=target_qid)
             try:
                 if not self.valid_page(source, 14):
-                    raise ValueError(message("source_missing", title=row.source_title))
-                if not row.target_title:
-                    result.update(status="needs_translation")
+                    result.update(status='missing_source', error=message('source_missing', title=row.source_title))
+                elif not row.target_title:
+                    result.update(status='target_missing', error=message('translation_required'))
+                elif target and 'redirect' in target:
+                    result.update(status='redirect_target', error=message('target_redirect', title=row.target_title))
+                elif target and ('invalid' in target or target.get('ns') not in (None, 14)):
+                    result.update(status='invalid_target', error=message('invalid_title', title=row.target_title))
                 elif not self.valid_page(target, 14):
-                    raise ValueError(message("existing_target_required", title=row.target_title))
+                    result.update(status='target_missing', error=message('existing_target_required', title=row.target_title))
                 elif source_qid and target_qid and source_qid != target_qid:
                     result.update(status="different_items")
                 elif source_qid and source_qid == target_qid:
@@ -658,7 +907,12 @@ class CategoryTransferReader:
                 result.update(status="error", error=str(error))
             results.append(result)
             on_row(result)
+            self._preview_result_progress(index + 1)
         return results
+
+    def _check_distinct_wikis(self):
+        if self.site_info(self.source_lang)['general']['wikiid'] == self.site_info(self.target_lang)['general']['wikiid']:
+            raise ValueError(message('same_wiki'))
 
     def check_pairs(self, pairs: tuple[CategoryPair, ...]) -> list[dict]:
         """Recheck handed-off links; a changed or missing link cannot fall back."""
@@ -671,37 +925,133 @@ class CategoryTransferReader:
 
     def discover(self, category: str, depth: int, skip_existing_level: int,
                  include_root: bool, on_row, on_progress) -> list[dict]:
+        self.on_activity(dict(phase="reading", category=category, count=0))
         root = self.category_title(category, self.source_lang)
         metadata = self.category_metadata([root])
         if root not in metadata:
             raise ValueError(message("source_missing", title=root))
-        queue = deque([(root, 0)])
-        seen = {root}
         rows = []
         if include_root:
             row = {**metadata[root], "depth": 0}
             rows.append(row)
             on_row(row)
-        while queue:
+        total = metadata[root].get("subcat_count") if depth == 0 else None
+        if type(total) is not int or total < 0:
+            total = None
+        self.on_activity(dict(phase="expected", category=root, count=0, total=total))
+
+        def fetch(title, level, count, processed, queued):
             self.check_stop()
-            title, level = queue.popleft()
+            return self.read_subcategories(title, depth=level, count=count, processed=processed,
+                                           queued=queued, include_counts=level < depth, total=total)
+
+        def accept(children, level):
+            accepted = []
+            base = len(rows) - int(include_root)
+            for offset in range(0, len(children), self._MAX_PAGE_BATCH):
+                self.check_stop()
+                batch = children[offset:offset + self._MAX_PAGE_BATCH]
+                activity = dict(phase="links", category=root, count=base + len(children), total=total,
+                                checked=offset, check_total=len(children))
+                self.on_activity(activity)
+                child_metadata = self.category_metadata(batch)
+                for child in batch:
+                    row = child_metadata.get(child)
+                    if row is None or (skip_existing_level and level >= skip_existing_level and row["target_title"]):
+                        continue
+                    row = {**row, "depth": level}
+                    rows.append(row)
+                    on_row(row)
+                    accepted.append(row["source_title"])
+                self.on_activity({**activity, "checked": offset + len(batch)})
+            return accepted
+
+        def entered(title, _level, _count, _processed, _queued):
             on_progress(title, len(rows))
-            if level >= depth:
-                continue
-            children = [child for child in self.members(title, "subcat") if child not in seen]
-            seen.update(children)
-            child_metadata = self.category_metadata(children) if children else {}
-            for child in children:
-                row = child_metadata.get(child)
-                if row is None:
-                    continue
-                row = {**row, "depth": level + 1}
-                if skip_existing_level and level + 1 >= skip_existing_level and row["target_title"]:
-                    continue
-                rows.append(row)
-                on_row(row)
-                queue.append((row["source_title"], level + 1))
+
+        def progress(processed, count):
+            self.on_activity(dict(phase="tree", category=root, count=count,
+                                  processed=processed, found=count, total=total))
+
+        walk_subcategories(category=root, max_depth=depth, fetch_children=fetch,
+                           stopped=self.stop_event.is_set, accept_children=accept,
+                           on_enter=entered, on_progress=progress)
+        self.check_stop()
         return rows
+
+    def read_article_pages(self, category):
+        """Read membership and article Q-items together, with continuation."""
+        base = {"action": "query", "generator": "categorymembers", "gcmtitle": category,
+                "gcmtype": "page", "gcmnamespace": 0, "gcmlimit": "max",
+                "prop": "info|pageprops", "ppprop": "wikibase_item"}
+        params, pages = dict(base), {}
+        while True:
+            self.check_stop()
+            data = self.request(self.source_lang, params)
+            packet = data.get('query', {}).get('pages', [])
+            if isinstance(packet, dict):
+                packet = packet.values()
+            for page in packet:
+                title = page.get('title')
+                if title:
+                    stored = pages.setdefault(title, {})
+                    stored.update({key: value for key, value in page.items() if key != 'pageprops'})
+                    stored.setdefault('pageprops', {}).update(page.get('pageprops', {}))
+            self.on_activity(dict(phase='scan_articles', title=category, articles=len(pages)))
+            if not data.get('continue'):
+                return pages
+            params = {**base, **data['continue']}
+
+    def prepare_scan_batch(self, rows):
+        """Share category, Wikidata and target-page lookups for a small batch."""
+        self._scan_metadata, self._scan_articles, self._scan_errors = {}, {}, {}
+        titles = [row['source_title'] for row in rows]
+        try:
+            self.check_stop()
+            self.on_activity(dict(phase='scan_categories', count=len(rows)))
+            categories = self.pages(self.source_lang, titles)
+            articles = {}
+            for index, title in enumerate(titles, 1):
+                self.check_stop()
+                try:
+                    if not self.valid_page(categories.get(title), 14):
+                        raise ValueError(message('source_missing', title=title))
+                    members = self.read_article_pages(title)
+                    self._scan_articles[title] = list(members)
+                    articles.update(members)
+                except TransferStopped:
+                    raise
+                except Exception as error:
+                    self._scan_errors[title] = error
+                self.on_activity(dict(phase='scan_members', title=title, checked=index, count=len(rows)))
+            qids = [page.get('pageprops', {}).get('wikibase_item', '')
+                    for pages, namespace in ((categories, 14), (articles, 0))
+                    for page in pages.values() if self.valid_page(page, namespace)]
+            self.on_activity(dict(phase='scan_links', count=len(rows)))
+            links = self.item_links([qid for qid in qids if qid])
+            candidates = self._category_candidates(titles, categories, links)
+            targets = {row['target_title'] for row in candidates.values() if row['target_title']}
+            for title, page in articles.items():
+                qid = page.get('pageprops', {}).get('wikibase_item', '') if self.valid_page(page, 0) else ''
+                self._article_links[title] = links.get(qid, '')
+                if self._article_links[title]:
+                    targets.add(self._article_links[title])
+            verified = self.pages(self.target_lang, sorted(targets), props='info') if targets else {}
+            for row in candidates.values():
+                target = verified.get(row['target_title'])
+                row['target_title'] = target['title'] if self.valid_page(target, 14) else ''
+            self._scan_metadata = candidates
+            for title, members in self._scan_articles.items():
+                found = []
+                for article in members:
+                    target = verified.get(self._article_links.get(article, ''))
+                    if self.valid_page(target, 0):
+                        found.append(target['title'])
+                self._scan_articles[title] = (len(members), list(dict.fromkeys(found)))
+        except TransferStopped:
+            raise
+        except Exception as error:
+            self._scan_errors.update({title: error for title in titles})
 
     def article_matches(self, articles: list[str]) -> dict[str, str]:
         """Existing mainspace counterparts, shared by discovery and sync."""
@@ -723,11 +1073,18 @@ class CategoryTransferReader:
 
     def scan(self, row: dict) -> dict:
         self.check_stop()
-        title = row["source_title"]
-        metadata = self.category_metadata([title])
-        if title not in metadata:
-            raise ValueError(message("source_missing", title=title))
-        articles = self.members(title, "page")
-        found = list(dict.fromkeys(self.article_matches(articles).values()))
-        return {**row, **metadata[row["source_title"]], "total": len(articles),
-                "potential": len(found), "target_articles": found, "status": "scanned"}
+        title = row['source_title']
+        if title not in self._scan_articles and title not in self._scan_errors:
+            self.prepare_scan_batch([row])
+        if error := self._scan_errors.pop(title, None):
+            self._scan_articles.pop(title, None)
+            self._scan_metadata.pop(title, None)
+            raise error
+        metadata = self._scan_metadata.pop(title, None)
+        if metadata is None:
+            raise ValueError(message('source_missing', title=title))
+        total, found = self._scan_articles.pop(title)
+        result = {**row, **metadata, 'total': total, 'potential': len(found),
+                  'target_articles': found, 'status': 'scanned'}
+        result.pop('error', None)
+        return result

@@ -12,7 +12,7 @@ import html
 import re
 import ctypes
 from datetime import datetime
-from PySide6.QtCore import Qt, QUrl, QTimer
+from PySide6.QtCore import Qt, QUrl, QTimer, QObject, QEvent
 from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QTextEdit, QToolButton, QHBoxLayout,
     QFileDialog, QMessageBox, QDialog, QVBoxLayout, QTextBrowser,
@@ -322,7 +322,7 @@ def show_help_dialog(parent_widget, text: str, title: str = ''):
             )
             view.setStyleSheet(
                 'QTextBrowser{padding:0;margin:0;background:transparent;border:0;}')
-            view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         except Exception:
             pass
@@ -346,6 +346,9 @@ def show_help_dialog(parent_widget, text: str, title: str = ''):
         lay.addWidget(btns)
 
         try:
+            dlg.ensurePolished()
+            view.ensurePolished()
+            btns.ensurePolished()
             base_width = 640
             margin_left = margin_right = 8
             margin_top = margin_bottom = 8
@@ -369,8 +372,7 @@ def show_help_dialog(parent_widget, text: str, title: str = ''):
             btn_h = btns.sizeHint().height()
             total_needed = margin_top + content_h + spacing + btn_h + margin_bottom
             height = min(max(120, total_needed), int(avail_h * 0.9))
-            visible_view_h = height - (margin_top + spacing + btn_h + margin_bottom)
-            view.setFixedHeight(max(60, visible_view_h))
+            view.setMinimumHeight(60)
             dlg.resize(base_width, height)
         except Exception:
             dlg.resize(640, 360)
@@ -423,7 +425,7 @@ def add_info_button(parent_widget, host_layout, text: str, inline: bool = False)
         pass
 
     btn.clicked.connect(
-        lambda _=None, t=text: show_help_dialog(parent_widget, t, _t(parent_widget, 'ui.help', 'Help'))
+        lambda _=None, t=text: show_help_dialog(parent_widget, t() if callable(t) else t, _t(parent_widget, 'ui.help', 'Help'))
     )
 
     if isinstance(host_layout, QHBoxLayout):
@@ -2367,6 +2369,29 @@ def _default_log_header_html(parent_widget) -> str:
     return f"<b>{html.escape(_t(parent_widget, 'ui.log', 'Log'))}</b>"
 
 
+class _LogClearOverlay(QObject):
+    """Anchor the clear button inside the viewport, away from scrollbars."""
+
+    def __init__(self, log, button):
+        viewport = log.viewport()
+        super().__init__(viewport)
+        self.button = button
+        button.setParent(viewport)
+        viewport.installEventFilter(self)
+        self._position(viewport)
+
+    def _position(self, viewport):
+        self.button.move(max(0, viewport.width() - self.button.width() - 4),
+                         max(0, viewport.height() - self.button.height() - 4))
+        self.button.raise_()
+        self.button.show()
+
+    def eventFilter(self, viewport, event):
+        if event.type() in (QEvent.Resize, QEvent.Show):
+            self._position(viewport)
+        return False
+
+
 def create_log_wrap(parent_widget, log_widget: QTextEdit, with_header: bool = False, header_text: str | None = None):
     """Создаёт обёртку для QTextEdit-лога с кнопкой очистки в правом нижнем углу.
 
@@ -2397,7 +2422,8 @@ def create_log_wrap(parent_widget, log_widget: QTextEdit, with_header: bool = Fa
 
     grid.addWidget(log_widget, row, 0)
     btn_clear = make_clear_button(parent_widget, lambda: log_widget.clear())
-    grid.addWidget(btn_clear, row, 0, Qt.AlignBottom | Qt.AlignRight)
+    wrap.clear_button = btn_clear
+    wrap._clear_overlay = _LogClearOverlay(log_widget, btn_clear)
     return wrap
 
 
@@ -2422,7 +2448,8 @@ def create_tree_log_wrap(parent_widget, tree_widget: QTreeWidget, with_header: b
 
     grid.addWidget(tree_widget, row, 0)
     btn_clear = make_clear_button(parent_widget, lambda: tree_widget.clear())
-    grid.addWidget(btn_clear, row, 0, Qt.AlignBottom | Qt.AlignRight)
+    wrap.clear_button = btn_clear
+    wrap._clear_overlay = _LogClearOverlay(tree_widget, btn_clear)
     return wrap
 
 
@@ -2559,6 +2586,24 @@ def _localized_progress_label(widget, fallback: str = 'Processed') -> str:
         return translate_key('ui.processed_short', _ui_lang(widget), fallback)
     except Exception:
         return fallback
+
+
+def reading_progress_text(count, total, translate):
+    key = 'ui.source.fetch_progress_bar_total' if total > 0 else 'ui.source.fetch_progress_bar'
+    fallback = 'Read {count}/{total}' if total > 0 else 'Read {count}'
+    return translate(key, fallback).format(count=count, total=total)
+
+
+def set_reading_progress(label, bar, count, total, translate, *, waiting=False):
+    count, total = max(0, int(count or 0)), max(0, int(total or 0))
+    text = reading_progress_text(count, total, translate)
+    bar.setTextVisible(True)
+    bar.setRange(0, 0 if waiting else max(1, count, total) if total else max(1, count + 1))
+    bar.setValue(count)
+    bar.setFormat(text)
+    bar.setProperty('progress_total', total or count)
+    if label is not None:
+        label.setText(text)
 
 
 def init_progress(label_widget, bar_widget, total: int, processed_label: str | None = None) -> None:

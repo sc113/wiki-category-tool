@@ -12,10 +12,10 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QComboBox, QPushButton, QToolButton, QTextEdit, QSizePolicy, QProgressBar,
+    QComboBox, QPushButton, QTextEdit, QSizePolicy, QProgressBar,
     QMessageBox
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 
 from ...constants import PREFIX_TOOLTIP
@@ -23,10 +23,9 @@ from ...core.localization import translate_key
 from ...utils import debug, default_create_summary, resolve_project_language
 from ...workers.create_worker import CreateWorker
 from ...core.pywikibot_config import apply_pwb_config
-from ..widgets.shared_panels import TsvPreviewPanel
+from ..widgets.shared_panels import FileInputRow, TsvPreviewPanel
 from ..widgets.ui_helpers import (
-    add_info_button, pick_file,
-    open_from_edit, log_message, set_start_stop_ratio,
+    add_info_button, log_message, set_start_stop_ratio,
     tsv_preview_from_path, init_progress, inc_progress,
     is_default_summary, count_non_empty_titles, count_unprefixed_titles
 )
@@ -97,29 +96,8 @@ class CreateTab(QWidget):
         self.tsv_path_create.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        h.addWidget(QLabel(self._t('ui.create_list_tsv')))
-        h.addWidget(self.tsv_path_create, 1)
-        # Кнопка «…» справа от поля
-        btn_browse_tsv_create = QToolButton()
-        btn_browse_tsv_create.setText('…')
-        btn_browse_tsv_create.setAutoRaise(False)
-        try:
-            btn_browse_tsv_create.setFixedSize(27, 27)
-            btn_browse_tsv_create.setCursor(Qt.PointingHandCursor)
-            btn_browse_tsv_create.setToolTip(self._t('ui.choose_file'))
-        except Exception:
-            pass
-        btn_browse_tsv_create.clicked.connect(
-            lambda: pick_file(self, self.tsv_path_create, '*.tsv'))
-        h.addWidget(btn_browse_tsv_create)
-
-        # Кнопка "Открыть"
-        btn_open_tsv_create = QPushButton(self._t('ui.open'))
-        btn_open_tsv_create.clicked.connect(
-            lambda: open_from_edit(self, self.tsv_path_create))
-        btn_open_tsv_create.setSizePolicy(
-            QSizePolicy.Fixed, QSizePolicy.Preferred)
-        h.addWidget(btn_open_tsv_create)
+        self.file_row = FileInputRow(self, self._t('ui.create_list_tsv'), self.tsv_path_create)
+        h.addWidget(self.file_row, 1)
 
         # Компактный выбор префикса (выпадающий список)
         self.prefix_label_create = QLabel(self._t('ui.prefixes'))
@@ -172,7 +150,7 @@ class CreateTab(QWidget):
         mono_font.setFixedPitch(True)
         self.create_log.setFont(mono_font)
 
-        from ..widgets.ui_helpers import create_log_wrap, make_clear_button
+        from ..widgets.ui_helpers import create_log_wrap
         create_wrap = create_log_wrap(self, self.create_log, with_header=True)
 
         def _clear_create_all():
@@ -191,16 +169,7 @@ class CreateTab(QWidget):
             except Exception:
                 pass
 
-        try:
-            btn_extra = make_clear_button(self, _clear_create_all)
-            from PySide6.QtWidgets import QGridLayout
-            grid = create_wrap.layout() if isinstance(
-                create_wrap.layout(), QGridLayout) else None
-            if grid:
-                grid.addWidget(btn_extra, grid.rowCount()-1, 0,
-                               Qt.AlignBottom | Qt.AlignRight)
-        except Exception:
-            pass
+        create_wrap.clear_button.clicked.connect(_clear_create_all)
 
         # Левая половина: предпросмотр (две синхронные области); правая половина: лог
         content_row = QHBoxLayout()

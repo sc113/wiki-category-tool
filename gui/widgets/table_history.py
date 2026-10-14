@@ -182,7 +182,29 @@ def table_action(history_name):
     def decorate(callback):
         @wraps(callback)
         def apply(self, *args, **kwargs):
-            with getattr(self, history_name).transaction():
+            history = getattr(self, history_name)
+            with history.transaction():
+                sorting = history.table.isSortingEnabled()
+                history.table.setSortingEnabled(False)
+                try:
+                    return callback(self, *args, **kwargs)
+                finally:
+                    history.table.setSortingEnabled(sorting)
+        return apply
+    return decorate
+
+
+def pause_sorting(table_name):
+    """Keep whole rows together during synchronous multi-cell updates."""
+    def decorate(callback):
+        @wraps(callback)
+        def apply(self, *args, **kwargs):
+            table = getattr(self, table_name)
+            sorting = table.isSortingEnabled()
+            table.setSortingEnabled(False)
+            try:
                 return callback(self, *args, **kwargs)
+            finally:
+                table.setSortingEnabled(sorting)
         return apply
     return decorate

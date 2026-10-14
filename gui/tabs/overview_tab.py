@@ -27,10 +27,10 @@ class OverviewTab(QWidget):
         ('create', 'ui.create', 'create_edits_total'),
         ('rename', 'ui.rename', 'rename_edits_total'),
         ('cleanup', 'ui.redundant_categories', 'cleanup_edits_total'),
+        ('interwiki', 'ui.transfer.nav_interwiki', 'interwiki_edits_total'),
         ('transfer_scan', 'ui.transfer.nav_recon', 'transfer_scan_categories_total'),
         ('transfer_prepare', 'ui.transfer.nav_links', 'transfer_prepare_edits_total'),
         ('sync', 'ui.transfer.nav_sync', 'sync_edits_total'),
-        ('interwiki', 'ui.transfer.nav_interwiki', 'interwiki_edits_total'),
     )
 
     DEV_PROFILE_URL = 'https://ru.wikipedia.org/wiki/%D0%A3%D1%87%D0%B0%D1%81%D1%82%D0%BD%D0%B8%D0%BA:Solidest'

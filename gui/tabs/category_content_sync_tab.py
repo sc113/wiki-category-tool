@@ -27,21 +27,20 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSizePolicy,
     QScrollArea,
     QSpinBox,
     QStackedWidget,
+    QTabBar,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
-    QToolButton,
     QVBoxLayout,
     QWidget,
     QHeaderView,
 )
 
 from ...core.localization import translate_key
-from ...core.category_transfer import CategoryPair
+from ...core.category_transfer import CategoryPair, read_sync_tsv
 from ...core.api_client import WikimediaAPIClient
 from ...core.pywikibot_config import apply_pwb_config
 from ...utils import (
@@ -57,8 +56,9 @@ from ...workers.category_content_sync_worker import (
 )
 from ..widgets.shared_panels import CategorySourcePanel
 from ..widgets.table_history import TableHistory, table_action
-from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace, category_actions, category_toolbar, refresh_category_toolbar
+from ..widgets.category_stage import CategoryLogPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, highlight_next_action, refresh_category_toolbar, remove_inner_frame, set_category_button_tooltip, refresh_category_button_tooltips
 from ..widgets.ui_helpers import (
+    category_table_palette,
     category_table_style,
     create_spin_control,
     add_info_button,
@@ -66,7 +66,6 @@ from ..widgets.ui_helpers import (
     init_progress,
     is_default_summary,
     log_message,
-    set_start_stop_ratio,
 )
 
 
@@ -106,7 +105,7 @@ class CategoryContentSyncTab(QWidget):
         self._current_progress_total: Optional[int] = None
         self._preview_cols_user_resized = False
         self._preview_cols_auto_applying = False
-        # target, wikidata, source, total, transferred, status
+        # source, target, wikidata, total, transferred, status
         self._preview_col_ratios = (0.28, 0.28, 0.09, 0.11, 0.08, 0.16)
         self._preview_header_mouse_down = False
 
@@ -146,13 +145,15 @@ class CategoryContentSyncTab(QWidget):
     def _stage_t(self, key):
         return translate_key('ui.transfer.' + key, self._ui_lang(), key)
 
-    def _toggle_options(self, checked):
-        self.settings_group.setVisible(checked)
-        self.options_btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
-
     def _show_category_inputs(self):
         if self._can_edit_preview():
             self._set_preview_mode(False)
+
+    def _select_view(self, index):
+        if self._can_edit_preview():
+            self._set_preview_mode(index == 1)
+        else:
+            self._set_preview_mode(self._preview_mode)
 
     def _default_summary_template(self) -> str:
         return default_sync_summary_template(self._project_lang())
@@ -172,14 +173,14 @@ class CategoryContentSyncTab(QWidget):
         help_text = self._t(
             "help.sync.main",
             (
-                "The left panel is used for target categories (where members are added).\nYou can provide one category, paste a list manually, or load a .txt file.\nTarget language is taken from the active login.\nSource language is set in the right settings block.\n\"Articles\" mode transfers linked articles via Wikidata; \"Subcategories\" mode transfers linked subcategories.\nTransfer depth: 0 = only categories from the list, 1 = + direct subcategories for each category, 2+ = deeper.\nBefore preview, the target category list is expanded by this depth.\nBefore running, click \"Preview\": mapping table will appear and then \"Start sync\" becomes enabled.\n\nEdit summary template variables:\n{target_action_en} - \"category\" or \"parent category\" depending on mode.\n{target_category} - target category (with prefix).\n{source_category} - source category (with prefix).\n{target_page} - page being edited.\n{source_page} - source page/subcategory from source wiki.\n{source_lang} - source language, {target_lang} - target language.\n{family} - project family (for example, wikipedia).\n{mode} - transfer mode: articles or subcategories."
+                "The left panel is used for target categories (where members are added).\nYou can provide one category, paste a list manually, or load a .txt file.\nTarget language is taken from the active login.\nSource language is set at the top.\n\"Articles\" mode transfers linked articles via Wikidata; \"Subcategories\" mode transfers linked subcategories.\nTransfer depth: 0 = only categories from the list, 1 = + direct subcategories for each category, 2+ = deeper.\nBefore preview, the target category list is expanded by this depth.\nBefore running, click \"Preview\": mapping table will appear and then \"Start sync\" becomes enabled.\n\nEdit summary template variables:\n{target_action_en} - \"category\" or \"parent category\" depending on mode.\n{target_category} - target category (with prefix).\n{source_category} - source category (with prefix).\n{target_page} - page being edited.\n{source_page} - source page/subcategory from source wiki.\n{source_lang} - source language, {target_lang} - target language.\n{family} - project family (for example, wikipedia).\n{mode} - transfer mode: articles or subcategories."
             ),
         )
 
         layout = QVBoxLayout(self)
         try:
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(8)
+            layout.setSpacing(6)
         except Exception:
             pass
 
@@ -204,7 +205,9 @@ class CategoryContentSyncTab(QWidget):
             file_section_label=self._t(
                 "ui.sync.file_section", "<b>Or load list from file</b>"
             ),
-            file_caption=self._t("ui.sync.file_caption", "File (.txt):"),
+            file_caption=self._t("ui.sync.file_caption", "Category list"),
+            default_input_path='categories.tsv',
+            file_open_handler=self._open_sync_category_file,
         )
         self.sync_ns_combo = self.source_panel.ns_combo
         self.cat_edit = self.source_panel.cat_edit
@@ -228,10 +231,10 @@ class CategoryContentSyncTab(QWidget):
         except Exception:
             pass
 
-        self.preview_group = QWidget()
+        self.preview_group = QGroupBox(self._t('ui.sync.preview_group', 'Mapping preview'))
         preview_group_layout = QVBoxLayout(self.preview_group)
         try:
-            preview_group_layout.setContentsMargins(0, 0, 0, 0)
+            preview_group_layout.setContentsMargins(8, 8, 8, 8)
             preview_group_layout.setSpacing(4)
         except Exception:
             pass
@@ -332,34 +335,7 @@ class CategoryContentSyncTab(QWidget):
 
         self.left_stack.addWidget(preview_container)
         self.left_stack.setCurrentIndex(0)
-        self.settings_group = QGroupBox(
-            self._t("ui.sync.settings_group", "Sync settings")
-        )
-        try:
-            self.settings_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        except Exception:
-            pass
-        settings_layout = QVBoxLayout(self.settings_group)
-        self.source_panel.layout().removeWidget(self.source_panel.prefix_row)
-        settings_layout.addWidget(self.source_panel.prefix_row)
-        try:
-            settings_layout.setContentsMargins(8, 8, 8, 8)
-            settings_layout.setSpacing(6)
-        except Exception:
-            pass
-
-        row_lang_top = QHBoxLayout()
-        try:
-            row_lang_top.setContentsMargins(0, 0, 0, 0)
-            row_lang_top.setSpacing(6)
-        except Exception:
-            pass
-        self.source_lang_label = QLabel(self._t("ui.sync.source_lang", "Source language:"))
-        try:
-            self.source_lang_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        except Exception:
-            pass
-        row_lang_top.addWidget(self.source_lang_label)
+        self.source_panel.set_prefix_controls_visible(False)
         self.source_lang_edit = QLineEdit("en")
         try:
             self.source_lang_edit.setObjectName("syncSourceLangEdit")
@@ -373,17 +349,6 @@ class CategoryContentSyncTab(QWidget):
             )
         except Exception:
             pass
-        row_lang_top.addWidget(self.source_lang_edit)
-        row_lang_top.addSpacing(4)
-
-        self.target_lang_label = QLabel(
-            self._t("ui.sync.target_lang", "Target language:")
-        )
-        try:
-            self.target_lang_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        except Exception:
-            pass
-        row_lang_top.addWidget(self.target_lang_label)
         self.target_lang_value = QLabel("")
         try:
             self.target_lang_value.setObjectName("targetLangCodeBadge")
@@ -400,16 +365,7 @@ class CategoryContentSyncTab(QWidget):
             )
         except Exception:
             pass
-        row_lang_top.addWidget(self.target_lang_value)
-
-        self.depth_label = QLabel(self._t("ui.sync.depth", "Transfer depth:"))
-        try:
-            self.depth_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        except Exception:
-            pass
-        row_lang_top.addSpacing(8)
-        row_lang_top.addWidget(self.depth_label)
-
+        self.depth_label = QLabel(self._stage_t("sync_transfer_depth"))
         self.article_depth_spin = QSpinBox()
         self.article_depth_spin.setObjectName("depthSpin")
         self.article_depth_spin.setMinimum(0)
@@ -426,82 +382,57 @@ class CategoryContentSyncTab(QWidget):
             plus_tip=self._t("ui.sync.depth_plus", "Increase depth"),
             minus_tip=self._t("ui.sync.depth_minus", "Decrease depth"),
         )
-        row_lang_top.addWidget(depth_wrap, 0, Qt.AlignLeft)
-        row_lang_top.addStretch(1)
-        add_info_button(self, row_lang_top, help_text, inline=True)
-        settings_layout.addLayout(row_lang_top)
+        depth_controls = QWidget()
+        depth_row = QHBoxLayout(depth_controls)
+        depth_row.setContentsMargins(0, 0, 0, 0)
+        depth_row.setSpacing(8)
+        depth_row.addWidget(depth_wrap)
+        self.settings_help_btn = add_info_button(self, depth_row, lambda: self._stage_t('sync_settings_help'), inline=True)
+        set_category_button_tooltip(self.settings_help_btn, 'sync_settings_help', self._stage_t)
+
         self._refresh_target_lang_label()
         self._apply_target_lang_badge_style()
 
-        row_modes = QHBoxLayout()
+        mode_controls = QWidget()
+        row_modes = QHBoxLayout(mode_controls)
         try:
             row_modes.setContentsMargins(0, 0, 0, 0)
-            row_modes.setSpacing(8)
+            row_modes.setSpacing(20)
         except Exception:
             pass
-        self.articles_checkbox = QCheckBox(self._t("ui.sync.articles", "Transfer articles"))
+        self.mode_label = QLabel(self._stage_t('members_caption'))
+        row_modes.addWidget(self.mode_label)
+        self.articles_checkbox = QCheckBox(self._stage_t('articles_option'))
         self.articles_checkbox.setChecked(True)
         row_modes.addWidget(self.articles_checkbox)
 
         self.subcategories_checkbox = QCheckBox(
-            self._t("ui.sync.subcategories", "Transfer subcategories")
+            self._stage_t('subcategories_option')
         )
         self.subcategories_checkbox.setChecked(False)
         row_modes.addWidget(self.subcategories_checkbox)
-        row_modes.addStretch(1)
-        settings_layout.addLayout(row_modes)
 
-        row_summary = QHBoxLayout()
-        try:
-            row_summary.setContentsMargins(0, 0, 0, 0)
-            row_summary.setSpacing(8)
-        except Exception:
-            pass
         self.summary_label = QLabel(self._t("ui.edit_summary", "Edit summary:"))
-        row_summary.addWidget(self.summary_label)
         self.summary_edit = QLineEdit(self._default_summary_template())
+        self.summary_edit.setCursorPosition(0)
         self.summary_edit.setPlaceholderText(
             self._t(
                 "ui.sync.summary_placeholder",
                 "Supported variables: {target_action_en}, {target_category}, {source_category}, {target_page}, {source_lang}, {target_lang}, {mode}",
             )
         )
-        row_summary.addWidget(self.summary_edit, 1)
-        settings_layout.addLayout(row_summary)
 
         self.sync_log = QTextEdit()
         self.sync_log.setReadOnly(True)
         self.log_panel = CategoryLogPanel(self.sync_log, self._stage_t)
 
-        self.progress_label = QLabel(
-            self._t("ui.processed_counter_initial", "Processed 0/0")
-        )
-        try:
-            self.progress_label.setVisible(False)
-        except Exception:
-            pass
-        self.progress_bar = QProgressBar()
-        try:
-            self.progress_bar.setMaximum(1)
-            self.progress_bar.setValue(0)
-            self.progress_bar.setTextVisible(True)
-            self.progress_bar.setFormat(
-                self._t("ui.processed_counter_initial", "Processed 0/0")
-            )
-        except Exception:
-            pass
-
-        progress_wrap = QWidget()
-        progress_layout = QHBoxLayout(progress_wrap)
-        try:
-            progress_layout.setContentsMargins(0, 0, 0, 0)
-            progress_layout.setSpacing(6)
-        except Exception:
-            pass
-        progress_layout.addWidget(self.progress_label)
-        progress_layout.addWidget(self.progress_bar)
+        self.footer = CategoryProgressFooter(self.stop_sync, lambda: getattr(self.parent_window, '_ui_lang', 'ru'), self)
+        self.progress_label = self.footer.label
+        self.progress_bar = self.footer.bar
+        self.stop_btn = self.footer.stop_btn
 
         self.preview_btn = QPushButton(self._t("ui.preview", "Preview"))
+        set_category_button_tooltip(self.preview_btn, 'preview_sync', self._stage_t)
         try:
             self.preview_btn.setMinimumWidth(164)
         except Exception:
@@ -509,65 +440,73 @@ class CategoryContentSyncTab(QWidget):
         self.preview_btn.clicked.connect(self.preview_or_toggle_settings)
 
         self.start_btn = QPushButton(self._t("ui.sync.start", "Start sync"))
+        set_category_button_tooltip(self.start_btn, 'start_sync', self._stage_t)
         self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self.start_sync)
 
-        self.stop_btn = QPushButton(self._t("ui.stop", "Stop"))
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.stop_sync)
-
-        set_start_stop_ratio(self.start_btn, self.stop_btn, 3)
         self._sync_action_buttons_compact()
 
-        self.options_btn = QToolButton()
-        self.options_btn.setText(self._stage_t("file_options"))
-        self.options_btn.setCheckable(True)
-        self.options_btn.setArrowType(Qt.RightArrow)
-        self.options_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.options_btn.toggled.connect(self._toggle_options)
-        for label in (self.source_lang_label, self.target_lang_label):
-            row_lang_top.removeWidget(label)
-            label.hide()
-        self.toolbar, _files = category_toolbar(self.source_lang_edit, self.target_lang_value, self.options_btn, self._stage_t)
+        self.toolbar, controls = category_toolbar(self.source_lang_edit, self.target_lang_value, None, self._stage_t)
+        self.settings = CategoryInlineParameters([[mode_controls], [self.depth_label, depth_controls]])
+        controls.addWidget(self.settings, 1)
         layout.addWidget(self.toolbar)
-        self.settings_group.hide()
-        layout.addWidget(self.settings_group)
-
-        self.table_tools, tools = category_actions(self._stage_t("table_tools"))
-        self.edit_input_btn = QPushButton(self._stage_t("edit_category_list"))
-        self.edit_input_btn.clicked.connect(self._show_category_inputs)
-        tools.addWidget(self.edit_input_btn)
+        left_content = QWidget()
+        left_layout = QVBoxLayout(left_content)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+        self.view_tabs = QTabBar()
+        self.view_tabs.setObjectName('categoryViewTabs')
+        self.view_tabs.setExpanding(False)
+        self.view_tabs.setDrawBase(False)
+        self.view_tabs.addTab(self._stage_t('category_list_view'))
+        self.view_tabs.addTab(self._t('ui.preview', 'Preview'))
+        self.view_tabs.setTabToolTip(1, self._stage_t('preview_view_tip'))
+        self.view_tabs.currentChanged.connect(self._select_view)
+        self._apply_preview_table_theme()
+        self.table_toolbar = CategoryTableToolbar(self.view_tabs)
+        self.table_toolbar.set_log_panel(self.log_panel)
+        self.table_tools, tools = category_actions(self._stage_t("table_tools"), framed=True)
         self.delete_preview_btn = QPushButton(self._stage_t("delete"))
+        set_category_button_tooltip(self.delete_preview_btn, 'delete', self._stage_t)
+        set_category_button_tooltip(self.clear_skipped_btn, 'clear_skipped', self._stage_t)
+        self.source_panel.file_row.open_tooltip_key = 'ui.transfer.button_open_sync_file_tip'
+        self.source_panel.file_row.refresh_localized_texts()
         self.delete_preview_btn.clicked.connect(self.delete_selected_preview_rows)
         tools.addWidget(self.delete_preview_btn)
         tools.addWidget(self.clear_skipped_btn)
         self.table_tools.hide()
-        layout.addWidget(self.table_tools)
         self.preview_table.itemSelectionChanged.connect(self._update_clear_skipped_button_state)
-        self.workspace = CategoryWorkspace(self.left_stack)
+        left_layout.addWidget(self.left_stack, 1)
+        remove_inner_frame(self.source_panel)
+        remove_inner_frame(self.preview_group)
+        self.workspace = CategoryWorkspace(left_content)
         self.workspace.set_log_panel(self.log_panel)
-        layout.addWidget(self.workspace, 1)
+        self.workspace_frame = CategoryWorkspaceFrame(self._t('ui.sync.target_group', 'Target categories'),
+                                                     self.table_toolbar, self.workspace)
+        layout.addWidget(self.workspace_frame, 1)
+        layout.addWidget(self.current_progress_bar)
+        layout.addWidget(self.table_tools)
 
-        self.actions_group, actions = category_actions(self._stage_t("create_tools"))
+        run_controls = QWidget()
+        actions = QHBoxLayout(run_controls)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(4)
         actions.addWidget(self.preview_btn)
-        actions.addWidget(self.start_btn)
+        actions.addWidget(self.summary_label)
+        actions.addWidget(self.summary_edit, 1)
+        self.actions_group = CategoryRunRow(run_controls, self.start_btn)
         layout.addWidget(self.actions_group)
-        self.footer = QWidget()
-        footer_layout = QVBoxLayout(self.footer)
-        footer_layout.setContentsMargins(0, 0, 0, 0)
-        footer_layout.setSpacing(6)
-        footer_layout.addWidget(self.current_progress_bar)
-        progress_layout.addWidget(self.stop_btn)
-        footer_layout.addWidget(progress_wrap)
         layout.addWidget(self.footer)
 
         self.source_panel.set_log_widget(self.sync_log)
+        self.source_panel.fetch_started.connect(lambda: self.log_panel.set_expanded(True))
         self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
         self.source_lang_edit.textChanged.connect(self._update_preview_headers)
         self._bind_preview_invalidation()
         self._update_clear_skipped_button_state()
         self._reset_current_category_progress()
         self._sync_preview_button_width()
+        self._update_preview_headers()
         self._set_preview_mode(False)
 
     def _bind_preview_invalidation(self):
@@ -614,13 +553,23 @@ class CategoryContentSyncTab(QWidget):
         )
 
     def refresh_localized_texts(self):
+        refresh_category_button_tooltips(self, self._stage_t)
+        self.source_panel.file_row.refresh_localized_texts()
         self._update_preview_headers()
-        self.options_btn.setText(self._stage_t('file_options'))
+        self.source_panel.file_row.caption.setText(self._t('ui.sync.file_caption', 'Category list'))
+        self.depth_label.setText(self._stage_t('sync_transfer_depth'))
+        self.mode_label.setText(self._stage_t('members_caption'))
+        self.articles_checkbox.setText(self._stage_t('articles_option'))
+        self.subcategories_checkbox.setText(self._stage_t('subcategories_option'))
         refresh_category_toolbar(self.toolbar, self._stage_t)
+        self.workspace_frame.setTitle(self._t('ui.sync.preview_group' if self._preview_mode else 'ui.sync.target_group', 'Categories'))
+        self.footer.refresh_localized_texts()
+        self.view_tabs.setTabText(0, self._stage_t('category_list_view'))
+        self.view_tabs.setTabText(1, self._t('ui.preview', 'Preview'))
+        self.view_tabs.setTabToolTip(1, self._stage_t('preview_view_tip'))
         self.log_panel.refresh_localized_texts()
         self.table_tools.setTitle(self._stage_t('table_tools'))
-        self.actions_group.setTitle(self._stage_t('create_tools'))
-        self.edit_input_btn.setText(self._stage_t('edit_category_list'))
+        self.actions_group.setAccessibleName(self._stage_t('create_tools'))
         self.delete_preview_btn.setText(self._stage_t('delete'))
         for row in range(self.preview_table.rowCount()):
             item = self.preview_table.item(row, 5)
@@ -655,8 +604,13 @@ class CategoryContentSyncTab(QWidget):
     def _set_preview_mode(self, active: bool):
         self._preview_mode = bool(active)
         self.left_stack.setCurrentIndex(1 if self._preview_mode else 0)
+        blocked = self.view_tabs.blockSignals(True)
+        self.view_tabs.setTabEnabled(1, self._preview_mode or self._preview_ready or self.preview_table.rowCount() > 0)
+        self.view_tabs.setCurrentIndex(1 if self._preview_mode else 0)
+        self.view_tabs.blockSignals(blocked)
         self.table_tools.setVisible(self._preview_mode)
         self.current_progress_bar.setVisible(self._preview_mode)
+        self.workspace_frame.setTitle(self._t('ui.sync.preview_group' if self._preview_mode else 'ui.sync.target_group', 'Categories'))
         self.preview_btn.setText(self._t('ui.preview', 'Preview'))
         if self._preview_mode:
             self._sync_preview_button_width()
@@ -681,13 +635,10 @@ class CategoryContentSyncTab(QWidget):
         try:
             fm = start_btn.fontMetrics()
             start_text = self._t("ui.sync.start", "Start sync")
-            stop_text = self._t("ui.stop", "Stop")
             start_w = max(102, int(fm.horizontalAdvance(str(start_text or ""))) + 14)
-            stop_w = max(82, int(fm.horizontalAdvance(str(stop_text or ""))) + 12)
             start_btn.setMaximumWidth(16777215)
-            stop_btn.setMaximumWidth(16777215)
             start_btn.setMinimumWidth(int(start_w))
-            stop_btn.setMinimumWidth(int(stop_w))
+            self.footer.refresh_localized_texts()
         except Exception:
             pass
 
@@ -726,6 +677,15 @@ class CategoryContentSyncTab(QWidget):
 
     def _apply_preview_table_theme(self):
         self.preview_table.setStyleSheet(category_table_style(self._theme_mode()))
+        if hasattr(self, 'view_tabs'):
+            base, _, text, header, _, border, _, selected, _ = category_table_palette(self._theme_mode())
+            self.view_tabs.setStyleSheet(
+                f'QTabBar#categoryViewTabs::tab {{ background: {header}; color: {text}; border: 1px solid {border}; '
+                'padding: 7px 14px; margin-right: 4px; border-top-left-radius: 6px; border-top-right-radius: 6px; }'
+                f'QTabBar#categoryViewTabs::tab:selected {{ background: {selected}; color: {text}; font-weight: bold; }}'
+                f'QTabBar#categoryViewTabs::tab:disabled {{ background: {base}; color: {border}; }}'
+                f'QTabBar#categoryViewTabs {{ border-bottom: 1px solid {border}; }}'
+            )
         self._refresh_preview_link_styles()
         self._apply_current_progress_style()
         self._apply_target_lang_badge_style()
@@ -1196,7 +1156,7 @@ class CategoryContentSyncTab(QWidget):
     ) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
         try:
-            item.setTextAlignment(int(align))
+            item.setTextAlignment(Qt.AlignmentFlag(align))
         except Exception:
             pass
         try:
@@ -1331,7 +1291,7 @@ class CategoryContentSyncTab(QWidget):
         )
         btn.setEnabled((not running) and has_skipped)
         self.delete_preview_btn.setEnabled((not running) and bool(self.preview_table.selectedIndexes()))
-        self.edit_input_btn.setEnabled(not running)
+        self.view_tabs.setEnabled(not running)
 
     @table_action("preview_history")
     def clear_skipped_rows(self):
@@ -1970,11 +1930,7 @@ class CategoryContentSyncTab(QWidget):
         return "wikipedia"
 
     def _load_categories_from_inputs(self) -> list[str]:
-        titles = []
-        try:
-            titles = self.source_panel.load_titles_from_inputs()
-        except Exception:
-            titles = []
+        titles = [line.strip() for line in self.source_panel.manual_list.toPlainText().splitlines() if line.strip()]
         if not titles:
             raw = (self.cat_edit.text() or "").strip()
             if raw:
@@ -1989,6 +1945,20 @@ class CategoryContentSyncTab(QWidget):
             seen.add(key)
             unique.append(title)
         return unique
+
+    def _open_sync_category_file(self):
+        try:
+            titles, pairs = read_sync_tsv(self.source_panel.in_path.text().strip())
+        except Exception as error:
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), str(error))
+            return
+        self.source_panel.cat_edit.clear()
+        self.source_panel.manual_list.setPlainText('\n'.join(titles))
+        family, target_lang = self.get_current_family(), self.get_current_language()
+        self._transfer_pairs = tuple(CategoryPair(
+            pair.source_title, self._normalized_target_categories([pair.target_title], family, target_lang)[0], pair.qid)
+            for pair in pairs)
+        self._transfer_context = (self.source_lang_edit.text().strip().lower(), target_lang, family) if pairs else None
 
     def _depth_base_signature(
         self,
@@ -2074,7 +2044,7 @@ class CategoryContentSyncTab(QWidget):
             in_path = (self.source_panel.in_path.text() or "").strip()
         except Exception:
             in_path = ""
-        if in_path:
+        if in_path and not self.source_panel.manual_list.toPlainText().strip():
             return
 
         new_text = "\n".join(categories or [])
@@ -2318,6 +2288,9 @@ class CategoryContentSyncTab(QWidget):
             btn.setEnabled(bool(allow))
         except Exception:
             pass
+        theme = getattr(self.parent_window, '_theme_mode', 'teal')
+        highlight_next_action(self.start_btn, allow, theme)
+        highlight_next_action(self.preview_btn, not allow, theme)
 
     def _collect_run_config(self) -> Optional[dict]:
         categories = self._load_categories_from_inputs()
@@ -2440,6 +2413,7 @@ class CategoryContentSyncTab(QWidget):
         if not self._confirm_depth_warning(config["transfer_depth"]):
             return
 
+        self.log_panel.set_expanded(True)
         expanded_categories = self._expand_categories_for_preview(
             categories=config["categories"],
             source_lang=config["source_lang"],
@@ -2558,6 +2532,7 @@ class CategoryContentSyncTab(QWidget):
             return
 
         config["categories"] = categories
+        self.log_panel.set_expanded(True)
         apply_pwb_config(config["target_lang"], config["family"])
 
         self._sync_cancel_requested = False
@@ -2803,7 +2778,7 @@ class CategoryContentSyncTab(QWidget):
         self._invalidate_preview_state()
         self._set_preview_mode(False)
         self.source_panel.cat_edit.clear()
-        self.source_panel.file_edit.clear()
+        self.source_panel.file_edit.setText('categories.tsv')
         self.source_panel.manual_list.setPlainText("\n".join(categories))
         self.source_lang_edit.setText(source_lang)
         self.articles_checkbox.setChecked(True)

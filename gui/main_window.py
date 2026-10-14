@@ -725,7 +725,7 @@ class MainWindow(QMainWindow):
         try:
             show_updates = bool(index == 7)
             self.header_update_btn.setVisible(show_updates)
-            show_prefix = bool(index in (1, 2, 3, 4, 5))
+            show_prefix = bool(index in (1, 2, 3, 4, 5, 6, 8))
             if hasattr(self, 'header_prefix_host') and self.header_prefix_host is not None:
                 self.header_prefix_host.setVisible(show_prefix)
             if show_prefix:
@@ -752,6 +752,7 @@ class MainWindow(QMainWindow):
             4: 'help.rename.main',
             5: 'help.cleanup.source',
             6: 'help.sync.main',
+            8: 'help.transfer.scan',
         }
         key = key_map.get(int(index), '')
         if not key:
@@ -1984,7 +1985,7 @@ class MainWindow(QMainWindow):
             QPushButton:pressed {
                 background: rgba(13, 67, 93, 0.96);
             }
-            QPushButton:disabled {
+            QPushButton:disabled, QToolButton:disabled {
                 color: rgba(215, 232, 236, 0.45);
                 border-color: rgba(92, 146, 154, 0.25);
                 background: rgba(20, 51, 67, 0.52);
@@ -2175,6 +2176,13 @@ class MainWindow(QMainWindow):
             }
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
                 width: 0;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: transparent;
+            }
+            QAbstractScrollArea::corner {
+                background: transparent;
             }
         """
         arrow_path = resource_path('assets/caret-down-light.svg').replace('\\', '/')
@@ -2845,7 +2853,7 @@ class MainWindow(QMainWindow):
             QPushButton:pressed {
                 background: #d3e5f5;
             }
-            QPushButton:disabled {
+            QPushButton:disabled, QToolButton:disabled {
                 color: #90a7b8;
                 border-color: #d3e0ea;
                 background: #f6f9fc;
@@ -3036,6 +3044,13 @@ class MainWindow(QMainWindow):
             }
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
                 width: 0;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: transparent;
+            }
+            QAbstractScrollArea::corner {
+                background: transparent;
             }
         """
         arrow_path = resource_path('assets/caret-down-dark.svg').replace('\\', '/')
@@ -3254,6 +3269,7 @@ class MainWindow(QMainWindow):
             self.create_tab,
             self.rename_tab,
             self.redundant_categories_tab,
+            self.category_content_sync_tab,
         ):
             try:
                 handler = getattr(tab, 'set_prefix_controls_visible', None)
@@ -3618,6 +3634,7 @@ class MainWindow(QMainWindow):
             (self.rename_tab, 'rename_ns_combo'),
             (self.redundant_categories_tab, 'redundant_ns_combo'),
             (self.category_content_sync_tab, 'sync_ns_combo'),
+            (self.category_transfer_tab, 'scan_ns_combo'),
         ]
         for tab, attr in mapping:
             try:
@@ -3848,6 +3865,10 @@ class MainWindow(QMainWindow):
             worker = getattr(tab, worker_attr, None)
             if worker and hasattr(worker, 'isRunning') and worker.isRunning():
                 running_workers.append((tab_name, worker))
+
+        for worker in tuple(getattr(self.category_transfer_tab, '_article_workers', ())):
+            if worker.isRunning() and all(existing is not worker for _, existing in running_workers):
+                running_workers.append(('transfer_articles', worker))
 
         if running_workers:
             res = QMessageBox.question(

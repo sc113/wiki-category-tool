@@ -174,7 +174,7 @@ class ReplaceTab(QWidget):
         mono_font.setFixedPitch(True)
         self.rep_log.setFont(mono_font)
 
-        from ..widgets.ui_helpers import create_log_wrap, make_clear_button
+        from ..widgets.ui_helpers import create_log_wrap
         rep_wrap = create_log_wrap(self, self.rep_log, with_header=True)
 
         def _clear_rep_all():
@@ -197,18 +197,7 @@ class ReplaceTab(QWidget):
             except Exception:
                 pass
 
-        # Дополнительно подвяжем кнопку очистки предпросмотра к швабре в лог-контейнере
-        # (лог уже чистится внутри create_log_wrap)
-        try:
-            btn_extra = make_clear_button(self, _clear_rep_all)
-            # Добавим вторую кнопку поверх основной в том же углу
-            from PySide6.QtWidgets import QGridLayout
-            grid = rep_wrap.layout() if isinstance(rep_wrap.layout(), QGridLayout) else None
-            if grid:
-                grid.addWidget(btn_extra, grid.rowCount()-1, 0,
-                               Qt.AlignBottom | Qt.AlignRight)
-        except Exception:
-            pass
+        rep_wrap.clear_button.clicked.connect(_clear_rep_all)
 
         # Левая половина: предпросмотр (две синхронные области); правая половина: лог
         content_row = QHBoxLayout()
@@ -284,6 +273,8 @@ class ReplaceTab(QWidget):
 
     def preview_replace(self):
         """Загружает TSV, показывает две колонки: первая — заголовок, остальные — склеенные через \\t"""
+        if self.rworker is not None:
+            return
         path = (self.rep_file_edit.text() or '').strip()
         if not path:
             QMessageBox.warning(self, self._t('ui.error'), self._t('ui.specify_tsv'))
@@ -305,6 +296,8 @@ class ReplaceTab(QWidget):
 
     def start_replace(self):
         """Запускает процесс замены содержимого страниц"""
+        if self.rworker is not None:
+            return
         debug(f'Start replace: file={self.rep_file_edit.text()}')
 
         if not self.rep_file_edit.text():
@@ -348,6 +341,7 @@ class ReplaceTab(QWidget):
 
         # Блокируем кнопки и очищаем лог
         self.replace_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
         self.replace_stop_btn.setEnabled(True)
         self.rep_log.clear()
         # Настраиваем прогресс-бар
@@ -382,10 +376,21 @@ class ReplaceTab(QWidget):
         w = getattr(self, 'rworker', None)
         if w and w.isRunning():
             w.request_stop()
+            self.replace_btn.setEnabled(False)
+            self.preview_btn.setEnabled(False)
+            self.replace_stop_btn.setEnabled(False)
+            message = self._t('ui.operation_stopping')
+            self.replace_bar.setFormat(message)
+            log_message(self.rep_log, message)
 
     def _on_replace_finished(self):
         """Обработчик завершения процесса замены"""
         worker = getattr(self, 'rworker', None)
+        if worker is None:
+            return
+        sender = self.sender()
+        if sender is not None and sender is not worker:
+            return
         stopped = bool(worker and getattr(worker, '_stop', False))
         stats = {}
         try:
@@ -437,6 +442,10 @@ class ReplaceTab(QWidget):
         self.replace_btn.setEnabled(True)
         self.replace_stop_btn.setEnabled(False)
         init_progress(self.replace_label, self.replace_bar, 0)
+        self.replace_bar.setFormat(message)
+        self.rworker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _inc_replace_prog(self):
         """Увеличение значения прогресс-бара перезаписи"""

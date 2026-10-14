@@ -25,6 +25,7 @@ from wiki_cat_tool.core.api_client import APIRequestError
 from wiki_cat_tool.core.category_transfer import (
     CategoryCreationRow, CategoryItemConflict, CategoryPair, CategoryTransferReader, TransferStopped,
     export_creation_tsv, merge_commands, plan_numbered_titles, read_creation_tsv,
+    parse_scan_list, read_sync_tsv,
 )
 from wiki_cat_tool.gui.tabs.category_interwiki_tab import CategoryInterwikiTab
 from wiki_cat_tool.gui.tabs.category_transfer_tab import CategoryTransferTab
@@ -65,6 +66,14 @@ class FixtureReader(CategoryTransferReader):
     def members(self, title, kind):
         return list(self.graph.get((title, kind), []))
 
+    def read_article_pages(self, title):
+        return {article: self.page_data['en'].get(article, page(article, ns=0, missing=True))
+                for article in self.members(title, 'page')}
+
+    def read_subcategories(self, title, **kwargs):
+        children = self.members(title, 'subcat')
+        return children, {child.casefold(): len(self.members(child, 'subcat')) for child in children}
+
     def request(self, lang, params, **kwargs):
         if "sites" in params:
             return {"entities": {qid: {"id": qid, "sitelinks": {params["sites"]: {"title": title}}}
@@ -86,6 +95,37 @@ class CategoryTransferReadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.reader.category_title("Template:Example", "en")
 
+    def test_scan_list_accepts_single_column_and_deduplicates_titles(self):
+        self.assertEqual(('Category:A', 'YouTube: 2024'),
+                         parse_scan_list('\ufeffCategory:A\n\nCategory:A\n"YouTube:_2024"\n'))
+        for text in ('', '\n  \n', 'Category:A\tКатегория:А\n', 'a\tb\tc\td\te\tf\tg\n', 'Category:A#Section\n'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_scan_list(text)
+
+    def test_manual_scan_titles_are_normalized_in_the_worker_with_the_original_alias(self):
+        worker = CategoryTransferReadWorker(source_lang='en', target_lang='ru', family='wikipedia',
+                                           categories=[dict(source_title='a', depth=0, manual_input=True)])
+        worker.reader.close()
+        worker.reader = self.reader
+        self.reader.page_data['en']['Category:A'] = page('Category:A')
+        worker.run()
+        self.assertEqual('Category:A', worker.results[0]['source_title'])
+        self.assertEqual('a', worker.results[0]['input_source_title'])
+        self.assertEqual('scanned', worker.results[0]['status'])
+        self.assertEqual(0, worker.results[0]['potential'])
+
+    def test_manual_scan_errors_keep_the_original_alias_for_retry(self):
+        worker = CategoryTransferReadWorker(source_lang='de', target_lang='ru', family='wikipedia',
+                                           categories=[dict(source_title='a', depth=0, manual_input=True)])
+        worker.reader.close()
+        worker.reader = Mock(source_lang='de')
+        worker.reader.category_title.return_value = 'Kategorie:A'
+        worker.reader.scan.side_effect = APIRequestError('offline')
+        worker.run()
+        self.assertEqual('Kategorie:A', worker.results[0]['source_title'])
+        self.assertEqual('a', worker.results[0]['input_source_title'])
+        self.assertEqual('error', worker.results[0]['status'])
+
     def test_discovery_is_breadth_first_and_avoids_cycles(self):
         for title in ("Category:Root", "Category:A", "Category:B", "Category:C"):
             self.reader.page_data["en"][title] = page(title)
@@ -97,6 +137,49 @@ class CategoryTransferReadTests(unittest.TestCase):
         rows = self.reader.discover("Root", 2, 0, False, lambda row: None, lambda *args: None)
         self.assertEqual(["Category:A", "Category:B", "Category:C"], [row["source_title"] for row in rows])
         self.assertEqual([1, 1, 2], [row["depth"] for row in rows])
+
+    def test_discovery_depth_matches_category_reading(self):
+        for title in ('Category:Root', 'Category:A', 'Category:B', 'Category:C'):
+            self.reader.page_data['en'][title] = page(title)
+        self.reader.graph.update({('Category:Root', 'subcat'): ['Category:A'],
+                                  ('Category:A', 'subcat'): ['Category:B'],
+                                  ('Category:B', 'subcat'): ['Category:C']})
+        for depth, expected in ((0, ['Category:A']), (1, ['Category:A', 'Category:B']),
+                                (2, ['Category:A', 'Category:B', 'Category:C'])):
+            rows = self.reader.discover('Root', depth, 0, False, lambda row: None, lambda *args: None)
+            self.assertEqual(expected, [row['source_title'] for row in rows])
+
+    def test_discovery_reports_waiting_and_metadata_before_rows(self):
+        events = []
+        self.reader.on_activity = lambda payload: events.append(payload)
+        self.reader.page_data['en'].update({'Category:Root': page('Category:Root', categoryinfo={'subcats': 51}),
+                                          **{f'Category:{i}': page(f'Category:{i}') for i in range(51)}})
+        self.reader.graph[('Category:Root', 'subcat')] = [f'Category:{i}' for i in range(51)]
+        self.reader.discover('Root', 0, 0, False, lambda row: events.append({'phase': 'row'}), lambda *args: None)
+        self.assertEqual('reading', events[0]['phase'])
+        self.assertEqual(51, next(event['total'] for event in events if event['phase'] == 'expected'))
+        self.assertLess(next(i for i, event in enumerate(events) if event['phase'] == 'links'),
+                        next(i for i, event in enumerate(events) if event['phase'] == 'row'))
+        self.assertEqual([0, 50, 50, 51], [event['checked'] for event in events if event['phase'] == 'links'])
+
+    def test_subcategory_packets_continue_without_duplicates_and_keep_terminal_counts(self):
+        reader = CategoryTransferReader('en', 'ru', 'wikipedia', threading.Event())
+        self.addCleanup(reader.close)
+        reader.request = Mock(side_effect=[
+            {'query': {'pages': [page('Category:A', categoryinfo={'subcats': 0})]},
+             'continue': {'gcmcontinue': 'next', 'continue': '-||'}},
+            {'query': {'pages': [page('Category:A', categoryinfo={'subcats': 0}),
+                                 page('Category:B', categoryinfo={'subcats': 2})]}},
+        ])
+        events = []
+        reader.on_activity = events.append
+        children, counts = reader.read_subcategories('Category:Root', depth=0, count=0,
+                                                     processed=0, queued=0, include_counts=True)
+        self.assertEqual(['Category:A', 'Category:B'], children)
+        self.assertEqual({'category:a': 0, 'category:b': 2}, counts)
+        self.assertEqual([1, 2], [event['count'] for event in events])
+        self.assertEqual([1, 1], [event['batch_subcategories'] for event in events])
+        self.assertEqual('next', reader.request.call_args_list[1].args[1]['gcmcontinue'])
 
     def test_skip_level_prunes_existing_category_and_its_branch(self):
         for title in ("Category:Root", "Category:A", "Category:B", "Category:C", "Category:D"):
@@ -110,6 +193,72 @@ class CategoryTransferReadTests(unittest.TestCase):
         })
         rows = self.reader.discover("Root", 3, 2, True, lambda row: None, lambda *args: None)
         self.assertEqual(["Category:Root", "Category:A", "Category:C"], [row["source_title"] for row in rows])
+
+    def test_small_category_batch_shares_metadata_and_destination_verification(self):
+        rows = []
+        for i in range(5):
+            category, article, target = f'Category:C{i}', f'A{i}', f'T{i}'
+            self.reader.page_data['en'][category] = page(category, qid=f'Q{i+10}')
+            self.reader.page_data['en'][article] = page(article, ns=0, qid=f'Q{i+100}')
+            self.reader.page_data['ru'][target] = page(target, ns=0)
+            self.reader.links[f'Q{i+100}'] = target
+            self.reader.graph[(category, 'page')] = [article]
+            rows.append(dict(source_title=category, depth=1))
+        self.reader.item_links = Mock(wraps=self.reader.item_links)
+        self.reader.prepare_scan_batch(rows)
+        results = [self.reader.scan(row) for row in rows]
+        self.assertEqual([1] * 5, [row['potential'] for row in results])
+        self.reader.item_links.assert_called_once()
+        self.assertEqual(2, len(self.reader.page_calls))
+        self.assertEqual(5, len(self.reader.page_calls[0][1]))
+        self.assertEqual(5, len(self.reader.page_calls[1][1]))
+
+    def test_article_generator_combines_qids_and_membership_with_continuation(self):
+        reader = CategoryTransferReader('en', 'ru', 'wikipedia', threading.Event())
+        self.addCleanup(reader.close)
+        reader.request = Mock(side_effect=[
+            {'query': {'pages': [page('A', ns=0, qid='Q1')]},
+             'continue': {'gcmcontinue': 'next', 'continue': '-||'}},
+            {'query': {'pages': [dict(title='A', ns=0), page('B', ns=0, qid='Q2', redirect=True)]}},
+        ])
+        result = reader.read_article_pages('Category:C')
+        self.assertEqual(['A', 'B'], list(result))
+        self.assertEqual('Q1', result['A']['pageprops']['wikibase_item'])
+        self.assertIn('redirect', result['B'])
+        params = reader.request.call_args_list[0].args[1]
+        self.assertEqual('categorymembers', params['generator'])
+        self.assertEqual('wikibase_item', params['ppprop'])
+        self.assertEqual(0, params['gcmnamespace'])
+        self.assertEqual('next', reader.request.call_args_list[1].args[1]['gcmcontinue'])
+
+    def test_failed_member_read_only_marks_that_category_in_the_batch(self):
+        for title in ('Category:A', 'Category:B'):
+            self.reader.page_data['en'][title] = page(title)
+        self.reader.read_article_pages = Mock(side_effect=[APIRequestError('offline'), {}])
+        self.reader.prepare_scan_batch([dict(source_title='Category:A'), dict(source_title='Category:B')])
+        with self.assertRaises(APIRequestError):
+            self.reader.scan(dict(source_title='Category:A', depth=0))
+        self.assertEqual(0, self.reader.scan(dict(source_title='Category:B', depth=0))['potential'])
+
+    def test_successful_retry_clears_the_previous_error(self):
+        self.reader.page_data['en']['Category:A'] = page('Category:A')
+        result = self.reader.scan(dict(source_title='Category:A', depth=0, status='error', error='offline'))
+        self.assertEqual('scanned', result['status'])
+        self.assertNotIn('error', result)
+
+    def test_stop_after_one_result_keeps_the_rest_unfinished(self):
+        rows = [dict(source_title=f'Category:{i}', depth=0) for i in range(5)]
+        for row in rows:
+            self.reader.page_data['en'][row['source_title']] = page(row['source_title'])
+        worker = CategoryTransferReadWorker(source_lang='en', target_lang='ru', family='wikipedia', categories=rows)
+        worker.reader.close()
+        worker.reader = self.reader
+        self.reader.stop_event = worker._stop_event
+        worker.row_ready.connect(lambda _row: worker.request_stop())
+        worker.run()
+        self.assertEqual(1, len(worker.results))
+        self.assertEqual(0, worker.error_count)
+        self.assertEqual('scanned', worker.results[0]['status'])
 
     def test_missing_category_is_not_a_successful_empty_scan(self):
         with self.assertRaises(ValueError):
@@ -261,6 +410,57 @@ class CategoryTransferReadTests(unittest.TestCase):
         self.assertEqual(2, reader.request.call_count)
         self.assertEqual("1|ru", reader.request.call_args[0][1]["llcontinue"])
 
+    def test_preview_progress_counts_completed_batches_before_table_results(self):
+        reader = CategoryTransferReader('en', 'ru', 'wikipedia', threading.Event())
+        self.addCleanup(reader.close)
+        reader._site_info = {lang: self.reader.site_info(lang) for lang in ('en', 'ru')}
+        rows = tuple(CategoryCreationRow(f'Category:{i}', f'Категория:Появились в {i} году в Англии', 'body')
+                     for i in range(538))
+        ids = {row.source_title: f'Q{i + 1}' for i, row in enumerate(rows)}
+        ids.update({row.target_title: f'Q{i + 1}' for i, row in enumerate(rows)})
+        def request(lang, params, **kwargs):
+            if params['action'] == 'query':
+                return {'query': {'pages': [page(title, qid=ids[title]) for title in params['titles'].split('|')]}}
+            return {'entities': {qid: {'id': qid, 'sitelinks': {'ruwiki': {'title': rows[int(qid[1:]) - 1].target_title}},
+                                       'labels': {'en': {'value': rows[int(qid[1:]) - 1].source_title},
+                                                  'ru': {'value': rows[int(qid[1:]) - 1].target_title}}}
+                                 for qid in params['ids'].split('|')}}
+        reader.request = Mock(side_effect=request)
+        activities, results = [], []
+        reader.on_activity = lambda payload: activities.append((payload, len(results)))
+        plan = reader.preview_creation(rows, results.append, check_labels=True)
+        source_progress = [payload for payload, count in activities
+                           if payload['phase'] == 'check_pages' and payload['lang'] == 'en' and 0 < payload['processed'] < 538]
+        self.assertTrue(source_progress)
+        self.assertEqual(50, source_progress[0]['processed'])
+        self.assertTrue(all(payload['count'] == 538 for payload in source_progress))
+        self.assertTrue(all(count == 0 for payload, count in activities if payload in source_progress))
+        positions = [(payload['stage'] - 1 + (payload['processed'] / payload['count'] if payload['count'] else 1))
+                     / payload['stages'] for payload, _ in activities]
+        self.assertEqual(sorted(positions), positions)
+        self.assertEqual(1, positions[-1])
+        self.assertEqual(538, activities[-1][0]['processed'])
+        self.assertEqual(538, len(plan))
+        self.assertTrue(all(result['status'] == 'already_linked' for result in plan))
+
+    def test_preview_batch_progress_waits_for_continuation_and_preserves_stop(self):
+        reader = CategoryTransferReader('en', 'ru', 'wikipedia', threading.Event())
+        self.addCleanup(reader.close)
+        reader._preview_stage_count = 9
+        events = []
+        reader.on_activity = events.append
+        reader._preview_stage('check_pages', 2, 'en')
+        reader.request = Mock(side_effect=[{'query': {'pages': [page('A')]}, 'continue': {'continue': '||'}},
+                                          {'query': {'pages': [page('B')]}}])
+        reader.pages('en', ['A', 'B'])
+        completed = [event for event in events if event['processed']]
+        self.assertEqual([2], [event['processed'] for event in completed])
+        reader.request = Mock(side_effect=TransferStopped())
+        reader._preview_stage('check_pages', 100, 'ru')
+        with self.assertRaises(TransferStopped):
+            reader.pages('ru', ['Категория:' + str(i) for i in range(100)])
+        self.assertEqual(0, events[-1]['processed'])
+
     def test_large_creation_preview_bounds_encoded_urls_and_preserves_all_rows(self):
         import requests
         reader = CategoryTransferReader("en", "ru", "wikipedia",
@@ -326,6 +526,27 @@ class CategoryTransferReadTests(unittest.TestCase):
         self.assertEqual(1, worker.error_count)
         self.assertEqual("error", worker.results[0]["status"])
         self.assertIsNone(worker.results[0]["potential"])
+
+    def test_discovery_applies_the_selected_prefix_in_the_source_language(self):
+        worker = CategoryTransferReadWorker(source_lang="de", target_lang="ru", family="wikipedia",
+                                           category="Beispiel", namespace_selection=14)
+        worker.reader.discover = Mock(return_value=[])
+        with patch("wiki_cat_tool.workers.category_transfer_worker.normalize_title_by_selection",
+                   return_value="Kategorie:Beispiel") as normalize:
+            worker.run()
+        normalize.assert_called_once_with("Beispiel", "wikipedia", "de", 14)
+        self.assertEqual("Kategorie:Beispiel", worker.reader.discover.call_args.args[0])
+
+    def test_scanning_existing_rows_keeps_their_verified_source_titles(self):
+        row = {"source_title": "Category:A", "depth": 1}
+        worker = CategoryTransferReadWorker(source_lang="en", target_lang="ru", family="wikipedia",
+                                           categories=[row], namespace_selection=10)
+        worker.reader.scan = Mock(return_value={**row, "status": "scanned", "potential": 2})
+        with patch("wiki_cat_tool.workers.category_transfer_worker.normalize_title_by_selection") as normalize:
+            worker.run()
+        normalize.assert_not_called()
+        worker.reader.scan.assert_called_once_with(row)
+        self.assertEqual("Category:A", worker.results[0]["source_title"])
 
     def test_http_429_honors_retry_after_and_reduces_following_request_rate(self):
         import requests
@@ -398,6 +619,21 @@ class CategoryTransferReadTests(unittest.TestCase):
 
 
 class NumberedTitleTests(unittest.TestCase):
+    def test_title_overwrite_is_optional_and_preserves_other_columns(self):
+        rows = (CategoryCreationRow('Category:20th-century art', 'Old title', 'body'),)
+        kept = plan_numbered_titles(rows, '', 'Категория:Искусство {римская} века')
+        replaced = plan_numbered_titles(rows, '', 'Категория:Искусство {римская} века', only_empty=False)
+        self.assertEqual('number_kept', kept[0].status)
+        self.assertEqual(('number_fill', 'Категория:Искусство XX века'),
+                         (replaced[0].status, replaced[0].target_title))
+        self.assertEqual('body', rows[0].content)
+
+    def test_overwrite_checks_titles_of_unmatched_and_conflicting_rows(self):
+        rows = (CategoryCreationRow('Category:A 20', 'Old A', ''),
+                CategoryCreationRow('Category:No number', 'Категория:20', ''))
+        plan = plan_numbered_titles(rows, '', 'Категория:{число}', only_empty=False)
+        self.assertEqual(['number_conflict', 'number_unmatched'], [p.status for p in plan])
+
     def test_series_keeps_filled_titles_and_ignores_other_categories(self):
         rows = (CategoryCreationRow("Category:1718 establishments in England", "", "body"),
                 CategoryCreationRow("Category:1754 establishments in England", "Категория:Готовое название", ""),
@@ -442,6 +678,36 @@ class NumberedTitleTests(unittest.TestCase):
 
 
 class CreationTsvTests(unittest.TestCase):
+    def test_source_only_list_can_be_prepared_without_treating_it_as_wikitext(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'categories.tsv'
+            path.write_text('Category:A\nCategory:B\n', encoding='utf-8-sig')
+            rows = read_creation_tsv(str(path), allow_untranslated=True)
+            self.assertEqual((CategoryCreationRow('Category:A', '', ''), CategoryCreationRow('Category:B', '', '')), rows)
+            with self.assertRaises(ValueError):
+                read_creation_tsv(str(path))
+
+    def test_sync_reads_target_column_and_report_items_without_importing_the_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'categories.tsv'
+            path.write_text('Исходная категория\tАналог на текущем языке\tWikidata\tГлубина\tВсего\tДоступно\tСтатус\n'
+                            'Category:A\tКатегория:А\tQ1\t1\t3\t2\tscanned\n'
+                            'Category:B\t\tQ2\t1\t3\t2\tscanned\n', encoding='utf-8-sig')
+            titles, pairs = read_sync_tsv(str(path))
+            self.assertEqual(('Категория:А',), titles)
+            self.assertEqual((CategoryPair('Category:A', 'Категория:А', 'Q1'),), pairs)
+            path.write_text('Category:B\tКатегория:Б\t"multiline\nwikitext"\n', encoding='utf-8-sig')
+            self.assertEqual((('Категория:Б',), (CategoryPair('Category:B', 'Категория:Б', ''),)), read_sync_tsv(str(path)))
+
+    def test_sync_rejects_ambiguous_pairs_and_files_without_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'categories.tsv'
+            for text in ('Category:A\tКатегория:А\nCategory:B\tКатегория:А\n', 'Category:A\t\n', ''):
+                with self.subTest(text=text):
+                    path.write_text(text, encoding='utf-8')
+                    with self.assertRaises(ValueError):
+                        read_sync_tsv(str(path))
+
     def test_unicode_bom_quotes_and_content_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "input.tsv"
@@ -505,6 +771,37 @@ class CategoryCreationTests(unittest.TestCase):
         self.assertTrue(self.target.save.call_args.kwargs["createonly"])
         self.assertEqual(1, self.worker.stats["created"])
         self.assertEqual(["Категория:Б"], self.worker.linked_categories)
+
+    def test_link_only_never_creates_a_missing_page_or_edits_its_item(self):
+        self.worker.create_missing = False
+        self.worker._resolve_item = Mock()
+        self.worker._link_categories = Mock()
+        self.run_worker()
+        self.target.save.assert_not_called()
+        self.worker._resolve_item.assert_not_called()
+        self.worker._link_categories.assert_not_called()
+        self.assertEqual(1, self.worker.stats['failed'])
+        self.assertEqual(0, self.worker.stats['created'])
+
+    def test_two_languages_resolving_to_the_same_project_never_start_writes(self):
+        self.source_site.dbName.return_value = 'commonswiki'
+        self.target_site.dbName.return_value = 'commonswiki'
+        self.worker._link_categories = Mock()
+        self.run_worker()
+        self.assertTrue(self.worker.failed)
+        self.target.save.assert_not_called()
+        self.worker._link_categories.assert_not_called()
+
+    def test_link_only_links_existing_pages_without_touching_their_text(self):
+        self.worker.create_missing = False
+        self.target._exists = True
+        self.target.text = 'existing text'
+        self.worker._resolve_item = Mock(return_value=None)
+        self.worker._link_categories = Mock(return_value=('Q1', 'linked'))
+        self.run_worker()
+        self.target.save.assert_not_called()
+        self.assertEqual('existing text', self.target.text)
+        self.assertEqual(1, self.worker.stats['linked'])
 
     def test_existing_category_is_not_overwritten_and_can_be_linked(self):
         self.target._exists = True
@@ -608,7 +905,60 @@ class CategoryCreationTests(unittest.TestCase):
         self.assertEqual([self.row.target_title], self.worker.linked_categories)
         self.target.save.assert_not_called()
         self.assertEqual({"labels": {"ru": "Категория:Б"}, "sitelinks": {}}, item.editEntity.call_args.args[0])
-        self.assertEqual("Update Wikimedia category labels", item.editEntity.call_args.kwargs["summary"])
+        self.assertEqual("Update Wikimedia category labels (ru)", item.editEntity.call_args.kwargs["summary"])
+
+    def test_link_only_summary_does_not_claim_label_changes(self):
+        self.target._exists = True
+        item = Mock(sitelinks={'enwiki': Mock()}, labels={'en': 'Category:A', 'ru': 'Категория:Б'})
+        item.getID.return_value = 'Q42'
+        self.worker._resolve_item = Mock(return_value=item)
+        results, logs = [], []
+        self.worker.category_result.connect(results.append)
+        self.worker.progress.connect(logs.append)
+        self.run_worker()
+        self.assertEqual('Link Wikimedia categories', item.editEntity.call_args.kwargs['summary'])
+        self.assertEqual({}, item.editEntity.call_args.args[0]['labels'])
+        self.assertEqual({}, results[0]['label_changes'])
+        self.assertEqual((1, 0), (self.worker.stats['linked'], self.worker.stats['labels']))
+        self.assertNotIn('метк', ''.join(logs).lower())
+
+    def test_recreating_a_page_with_existing_sitelinks_does_not_count_a_new_link(self):
+        item = Mock(sitelinks={'enwiki': Mock(), 'ruwiki': Mock()},
+                    labels={'en': 'Category:A', 'ru': 'Категория:Б'})
+        item.getID.return_value = 'Q42'
+        self.worker._resolve_item = Mock(return_value=item)
+        results = []
+        self.worker.category_result.connect(results.append)
+        self.run_worker()
+        self.target.save.assert_called_once()
+        item.editEntity.assert_not_called()
+        self.assertEqual((1, 0, 1), (self.worker.stats['created'], self.worker.stats['linked'], self.worker.stats['already']))
+        self.assertEqual('created', results[0]['status'])
+        self.assertEqual('already_linked', results[0]['link_action'])
+
+    def test_combined_link_and_label_edit_identifies_added_and_updated_languages(self):
+        self.target._exists = True
+        item = Mock(sitelinks={'enwiki': Mock()}, labels={'en': 'A'})
+        item.getID.return_value = 'Q42'
+        self.worker._resolve_item = Mock(return_value=item)
+        results, logs = [], []
+        self.worker.category_result.connect(results.append)
+        self.worker.progress.connect(logs.append)
+        self.run_worker()
+        self.assertEqual('Link Wikimedia categories; Add Wikimedia category labels (ru); '
+                         'Update Wikimedia category labels (en)', item.editEntity.call_args.kwargs['summary'])
+        self.assertEqual({'added': ['ru'], 'updated': ['en']}, results[0]['label_changes'])
+        self.assertEqual((1, 1), (self.worker.stats['linked'], self.worker.stats['labels']))
+        self.assertIn('Метки добавлены: ru.', logs[0])
+        self.assertIn('Метки изменены: en.', logs[0])
+
+    def test_label_addition_only_is_named_as_addition(self):
+        item = Mock(sitelinks={'enwiki': Mock(), 'ruwiki': Mock()}, labels={'en': 'Category:A'})
+        self.worker._resolve_item = Mock(return_value=item)
+        _, action = self.worker._link_categories(self.source, self.target, self.repo)
+        self.assertEqual('labels_updated', action)
+        self.assertEqual('Add Wikimedia category labels (ru)', item.editEntity.call_args.kwargs['summary'])
+        self.assertEqual({'added': ['ru']}, self.worker._label_changes)
 
     def test_one_preparation_run_creates_links_and_skips_completed_pairs(self):
         rows = tuple(CategoryCreationRow(f"Category:{name}", f"Категория:{name}", "body") for name in ("A", "B", "C"))
@@ -756,16 +1106,15 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.assertEqual(("de", "uk", "wikipedia"), self.tab._creation_context())
         self.assertEqual("editing", self.tab.creation_table.item(0, 5).data(Qt.UserRole))
 
-    def test_preview_uses_creation_page_language_and_request_pause(self):
+    def test_preview_uses_creation_page_language_and_automatic_request_timing(self):
         rows = (CategoryCreationRow("Kategorie:A", "Категория:А", "body"),)
         self.tab._fill_creation_table(rows)
         self.tab._table_dirty = True
         self.tab.links_source_lang.setText("de")
-        self.tab.links_delay_spin.setValue(1.2)
         with patch("wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTransferPreviewWorker") as worker_type:
             self.tab.preview_creation()
         self.assertEqual("de", worker_type.call_args.kwargs["source_lang"])
-        self.assertEqual(1.2, worker_type.call_args.kwargs["delay"])
+        self.assertNotIn('delay', worker_type.call_args.kwargs)
         self.assertEqual(rows, worker_type.call_args.kwargs["rows"])
         self.tab._set_busy(False)
 
@@ -791,10 +1140,12 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.tab._fill_creation_table(rows)
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "broken.tsv"
-            path.write_text("no tabs here", encoding="utf-8")
+            path.write_text("\tКатегория:Нет источника\ttext", encoding="utf-8")
             with patch("wiki_cat_tool.gui.tabs.category_transfer_tab.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
                  patch.object(self.tab, "_warn") as warning:
                 self.tab.choose_tsv()
+                self.assertEqual(rows, self.tab._table_creation_rows())
+                self.tab.preview_btn.click()
             warning.assert_called_once()
         self.assertEqual(rows, self.tab._table_creation_rows())
 
@@ -847,6 +1198,7 @@ class CategoryTransferUiTests(unittest.TestCase):
         table.setCurrentCell(0, 2)
         self.tab._creation_rows = rows
         self.tab._preview_context = self.tab._creation_context()
+        self.tab.source_content_empty.setChecked(True)
         value = "{{Template}}\n[[Категория:Родительская]]"
         def apply_text():
             dialog = self.app.activeModalWidget()
@@ -874,6 +1226,7 @@ class CategoryTransferUiTests(unittest.TestCase):
         QTest.mouseRelease(table.viewport(), Qt.LeftButton, pos=target)
         self.assertEqual(["{{Template}}"] * 3 + ["", "keep"], [row.content for row in self.tab._table_creation_rows()])
         table.setCurrentCell(0, 2)
+        self.tab.source_content_empty.setChecked(True)
         QTest.mouseDClick(table.viewport(), Qt.LeftButton, pos=table._handle_rect().center())
         self.assertEqual(["{{Template}}"] * 4 + ["keep"], [row.content for row in self.tab._table_creation_rows()])
         self.assertEqual([row.source_title for row in rows], [row.source_title for row in self.tab._table_creation_rows()])
@@ -904,7 +1257,7 @@ class CategoryTransferUiTests(unittest.TestCase):
         QTimer.singleShot(0, cancel_dialog)
         with patch("wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTransferCreateWorker") as worker:
             self.tab.start_creation()
-        self.assertEqual({"Выполнить подготовку", "Отмена"}, set(labels))
+        self.assertEqual({"Запустить создание", "Отмена"}, set(labels))
         worker.assert_not_called()
         self.assertIn("категория в проекте Викимедиа", self.tab._t("confirm_items"))
         self.parent._ui_lang = "en"
@@ -925,6 +1278,7 @@ class CategoryTransferUiTests(unittest.TestCase):
     def test_preview_keeps_only_unfinished_rows_in_creation_plan(self):
         rows = [CategoryCreationRow("Category:" + name, "Категория:" + name, "body")
                 for name in ("New", "Unlinked", "Done", "Conflict")]
+        self.tab._fill_creation_table(rows)
         self.tab.preview_worker = Mock(failed=False, _stop=False, results=[
             {"row": rows[0], "status": "ready_create"}, {"row": rows[1], "status": "ready_link"},
             {"row": rows[2], "status": "already_linked"}, {"row": rows[3], "status": "error"},
@@ -934,7 +1288,7 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.assertEqual(tuple(rows[:2]), self.tab._creation_rows)
         self.assertEqual([rows[2].target_title], self.tab._linked_categories)
         self.assertTrue(self.tab.create_btn.isEnabled())
-        self.assertEqual("Выполнить подготовку", self.tab.create_btn.text())
+        self.assertEqual("Запустить создание", self.tab.create_btn.text())
 
     def test_label_update_enters_preparation_and_remains_available_for_sync(self):
         row = CategoryCreationRow("Category:A", "Категория:А", "")
@@ -947,6 +1301,7 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.tab._set_busy(True)
         self.tab._creation_result({"source_title": row.source_title, "target_title": row.target_title,
                                    "qid": "Q1", "source_qid": "Q1", "target_qid": "Q1", "status": "labels_updated"})
+        self.tab._write_rows = (row,)
         self.tab.create_worker = Mock(failed=False, _stop=False, linked_categories=[row.target_title],
                                      stats={"created": 0, "exists": 1, "linked": 0, "labels": 1, "already": 0, "failed": 0})
         with patch.object(self.tab, "_offer_sync", return_value=False):
@@ -972,7 +1327,8 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.assertFalse(self.tab.create_btn.isEnabled())
         self.assertTrue(self.tab.sync_btn.isEnabled())
         self.assertIn("заполнить: 2", self.tab.creation_summary.text())
-        self.assertIn("ошибок: 0", self.tab.creation_summary.text())
+        self.assertNotIn('Ошибки:', self.tab.creation_summary.text())
+        self.assertIn('ошибок: 0', self.tab.creation_summary.toolTip())
 
     def test_incomplete_navigation_continues_after_editing_invalidates_the_preview(self):
         rows = (CategoryCreationRow("Category:A", "", ""),
@@ -1033,6 +1389,7 @@ class CategoryTransferUiTests(unittest.TestCase):
         success = CategoryCreationRow("Category:A", "Категория:А", "body")
         failed = CategoryCreationRow("Category:B", "Категория:Б", "body")
         self.tab._creation_rows = (success, failed)
+        self.tab._write_rows = (success, failed)
         self.tab._preview_context = self.tab._context()
         self.tab._linked_context = self.tab._context()
         self.tab._existing_linked_categories = ["Категория:Ранее"]
@@ -1064,7 +1421,7 @@ class CategoryTransferUiTests(unittest.TestCase):
         sync.source_panel.cat_edit.setText("Old root")
         sync.load_transfer_categories(["Категория:А", "Категория:Б"], "de")
         self.assertEqual("Категория:А\nКатегория:Б", sync.source_panel.manual_list.toPlainText())
-        self.assertEqual("", sync.source_panel.file_edit.text())
+        self.assertEqual("categories.tsv", sync.source_panel.file_edit.text())
         self.assertEqual("", sync.source_panel.cat_edit.text())
         self.assertEqual("de", sync.source_lang_edit.text())
         self.assertEqual(0, sync.article_depth_spin.value())
@@ -1275,9 +1632,10 @@ class InterwikiReadTests(unittest.TestCase):
                                  (result['status'], result['source_qid'], result['target_qid']))
 
     def test_missing_redirect_or_noncategory_targets_are_not_created(self):
-        for properties in ({'missing': True}, {'redirect': True}, {'ns': 0}):
+        for properties, status in (({'missing': True}, 'target_missing'), ({'redirect': True}, 'redirect_target'),
+                                   ({'ns': 0}, 'invalid_target')):
             with self.subTest(properties=properties):
-                self.assertEqual('error', self.preview(**properties)['status'])
+                self.assertEqual(status, self.preview(**properties)['status'])
 
     def test_occupied_sitelink_and_missing_entity_block_linking(self):
         for entity in ({'sitelinks': {'ruwiki': {'title': 'Категория:Другая'}}}, {'missing': True}):
@@ -1390,7 +1748,7 @@ class InterwikiWriteTests(unittest.TestCase):
         self.worker._item_for = Mock()
         self.run_worker()
         self.worker._item_for.assert_not_called()
-        self.assertEqual('error', self.results[0]['status'])
+        self.assertEqual('target_missing', self.results[0]['status'])
 
 
 class SourceTextTests(unittest.TestCase):
@@ -1519,6 +1877,7 @@ class InterwikiUiTests(unittest.TestCase):
         self.assertEqual(rows[0].content, transfer.creation_table.item(1, 2).text())
         self.assertEqual((), transfer._creation_rows)
         transfer.creation_table.item(1, 2).setText('')
+        transfer.source_content_empty.setChecked(True)
         with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as worker:
             transfer.load_source_content()
         self.assertEqual(((1, 'Category:2002 art'),), worker.call_args.kwargs['rows'])

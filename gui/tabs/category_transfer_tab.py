@@ -8,14 +8,15 @@ import re
 from PySide6.QtCore import Qt, QUrl, QEvent
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence, QShortcut, QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
-    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QProgressBar,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGroupBox,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QStyledItemDelegate, QPlainTextEdit,
-    QTextEdit, QVBoxLayout, QWidget, QToolButton, QSizePolicy, QMenu, QLayout,
+    QTextEdit, QVBoxLayout, QWidget, QToolButton, QSizePolicy, QLayout,
 )
 
 from ...core.category_transfer import (
-    CategoryCreationRow, CategoryPair, category_action_plan, export_creation_tsv, read_creation_tsv,
+    CategoryCreationRow, CategoryPair, category_action_plan, category_outcome_counts, export_creation_tsv, read_creation_tsv,
+    parse_scan_list,
 )
 from ...core.localization import translate_key
 from ...core.pywikibot_config import apply_pwb_config
@@ -24,10 +25,11 @@ from ...workers.category_transfer_worker import (
     CategoryArticlePresenceWorker, CategoryTextReadWorker, CategoryTransferCreateWorker,
     CategoryTransferPreviewWorker, CategoryTransferReadWorker,
 )
-from ..widgets.ui_helpers import category_table_palette, category_table_style, create_spin_control, log_message, style_transfer_languages
-from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace, category_actions, category_toolbar, refresh_category_toolbar
+from ..widgets.ui_helpers import category_table_palette, category_table_style, create_spin_control, add_info_button, inc_progress, init_progress, log_message, set_reading_progress, style_transfer_languages
+from ..widgets.shared_panels import FileInputRow
+from ..widgets.category_stage import CategoryLogPanel, CategoryParametersPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, highlight_next_action, refresh_category_toolbar, set_category_button_tooltip, refresh_category_button_tooltips
 from ..widgets.category_autofill import title_fill_dialog
-from ..widgets.table_history import TableHistory, table_action
+from ..widgets.table_history import TableHistory, table_action, pause_sorting
 from ..widgets.category_plan import category_plan_widget
 from ..widgets.category_articles import CategoryArticlesDialog
 from ..widgets.category_creation_table import CategoryCandidatesTable, CategoryCreationTable, TransferActionsLayout, TransferAutofillTabs
@@ -82,9 +84,14 @@ class CategoryTransferTab(QWidget):
         self.create_worker = None
         self.preview_worker = None
         self.article_worker = None
+        self._article_workers = set()
         self._busy = False
         self._read_mode = ""
+        self._append_read = False
+        self._scan_load_transaction = None
         self._creation_rows = ()
+        self._link_only_rows = ()
+        self._write_rows = ()
         self._preview_rows = ()
         self._existing_linked_categories = []
         self._creation_row_results = {}
@@ -140,70 +147,68 @@ class CategoryTransferTab(QWidget):
         return (self.links_source_lang.text().strip().lower(), *self._context()[1:])
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        stage_layout = QVBoxLayout(self)
+        stage_layout.setContentsMargins(0, 0, 0, 0)
+        stage_layout.setSpacing(6)
+        scan_content = QWidget()
+        layout = QVBoxLayout(scan_content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         self.source_lang = QLineEdit("en")
         self.target_label = QLabel()
-        self.scan_options_btn = self._options_button()
-        scan_toolbar, scan_files = self._toolbar(self.source_lang, self.target_label, self.scan_options_btn)
-        self.open_scan_btn = self._button("choose_tsv", self.import_report, scan_files)
-        self.export_scan_btn = QToolButton()
+        self.scan_ns_combo = QComboBox(self)
+        self.scan_ns_combo.addItem(translate_key('ui.auto', self._last_ui_lang, 'Auto'), 'auto')
+        self.scan_ns_combo.hide()
+        scan_toolbar, scan_controls = self._toolbar(self.source_lang, self.target_label, None)
+        self.scan_report_path = QLineEdit('categories.tsv')
+        self.scan_file_row = FileInputRow(self, self._t('ready_categories_file'), self.scan_report_path,
+                                         self.open_scan_file, editor_menu=True)
+        self.scan_file_row.setToolTip(self._t('scan_inputs_tip'))
+        self.scan_file_row.open_tooltip_key = 'ui.transfer.scan_inputs_tip'
+        self.scan_file_row.refresh_localized_texts()
+        self.scan_file_row.pattern = '*.txt *.tsv'
+        self.open_scan_btn = self.scan_file_row.open_btn
+        self.export_scan_btn = QPushButton()
         self.export_scan_btn.setText(self._t("export_plan"))
-        self.export_scan_btn.setPopupMode(QToolButton.InstantPopup)
-        export_menu = QMenu(self.export_scan_btn)
-        self.report_btn = QAction(self._t("export_report"), export_menu)
-        self.report_btn.setProperty("transfer_text_key", "export_report")
-        self.report_btn.triggered.connect(self.export_report)
-        self.tsv_btn = QAction(self._t("prepare_tsv"), export_menu)
-        self.tsv_btn.setProperty("transfer_text_key", "prepare_tsv")
-        self.tsv_btn.triggered.connect(self.prepare_tsv)
-        export_menu.addAction(self.report_btn)
-        export_menu.addAction(self.tsv_btn)
-        self.export_scan_btn.setMenu(export_menu)
-        scan_files.addWidget(self.export_scan_btn)
-        layout.addWidget(scan_toolbar)
-        root_row = QHBoxLayout()
-        root_row.setSpacing(12)
-        root_row.addWidget(QLabel(self._t("root")))
+        set_category_button_tooltip(self.export_scan_btn, 'export_scan', self._t)
+        self.export_scan_btn.clicked.connect(self.export_report)
+        stage_layout.addWidget(scan_toolbar)
+        self.scan_root_controls = QWidget()
+        root_row = QHBoxLayout(self.scan_root_controls)
+        root_row.setContentsMargins(0, 0, 0, 0)
+        root_row.setSpacing(6)
+        self.read_category_caption = self._setting_caption('read_category_caption')
+        root_row.addWidget(self.read_category_caption)
         self.root_edit = QLineEdit()
+        self.root_edit.setProperty('_wct_skip_text_translation', True)
         self.root_edit.setMinimumWidth(0)
-        self.root_edit.setPlaceholderText(self._t("root_placeholder"))
+        self.root_edit.setPlaceholderText(self._t('root_placeholder'))
+        self.root_edit.setToolTip(self._t('source_root_tip'))
         root_row.addWidget(self.root_edit, 1)
-        self.settings = QGroupBox(self._t("settings"))
-        settings_layout = QFormLayout(self.settings)
-        settings_layout.setHorizontalSpacing(18)
-        settings_layout.setVerticalSpacing(10)
+        root_row.addWidget(self._setting_caption('depth'))
         self.depth_spin = QSpinBox()
         self.depth_spin.setRange(0, 99)
-        self.depth_spin.setValue(4)
+        self.depth_spin.setValue(0)
         depth_wrap, self.depth_plus_btn, self.depth_minus_btn = create_spin_control(
-            self.depth_spin, plus_tip=self._t("increase"), minus_tip=self._t("decrease"))
-        depth_row = QHBoxLayout()
-        depth_row.setSpacing(18)
-        depth_row.addWidget(depth_wrap)
+            self.depth_spin, plus_tip=self._t('increase'), minus_tip=self._t('decrease'))
+        root_row.addWidget(depth_wrap)
+        self.scan_read_help_btn = add_info_button(self, root_row, lambda: self._t('scan_read_help'), inline=True)
+        set_category_button_tooltip(self.scan_read_help_btn, 'scan_read_help', self._t)
         self.include_root = QCheckBox(self._t("include_root"))
-        depth_row.addWidget(self.include_root)
-        depth_row.addStretch(1)
-        settings_layout.addRow(self._t("depth"), depth_row)
+        self.depth_spin.setToolTip(self._t("scan_depth_tip"))
         self.skip_spin = QSpinBox()
         self.skip_spin.setRange(0, 99)
         self.skip_spin.setValue(0)
         self.skip_spin.setToolTip(self._t("skip_tip"))
         skip_wrap, _, _ = create_spin_control(self.skip_spin, plus_tip=self._t("increase"), minus_tip=self._t("decrease"))
-        settings_layout.addRow(self._t("skip_level"), skip_wrap)
-        self.delay_spin = QDoubleSpinBox()
-        self.delay_spin.setDecimals(2)
-        self.delay_spin.setRange(0.35, 10.0)
-        self.delay_spin.setSingleStep(0.1)
-        self.delay_spin.setValue(0.5)
-        delay_wrap, _, _ = create_spin_control(self.delay_spin, width=60,
-                                              plus_tip=self._t("increase"), minus_tip=self._t("decrease"))
-        settings_layout.addRow(self._t("delay"), delay_wrap)
-        self.settings.hide()
-        self.scan_options_btn.toggled.connect(lambda checked: self._toggle_panel(self.settings, self.scan_options_btn, checked))
-        layout.addWidget(self.settings)
-        layout.addLayout(root_row)
+        self.settings = CategoryInlineParameters([
+            [self.include_root],
+            [self._setting_caption('skip_level'), skip_wrap],
+            [self._scan_settings_help_button()],
+        ])
+        scan_controls.addWidget(self.settings, 1)
+        stage_layout.addWidget(self.scan_root_controls)
+        stage_layout.addWidget(self.scan_file_row)
 
         results_page = QWidget()
         result_layout = QVBoxLayout(results_page)
@@ -222,78 +227,72 @@ class CategoryTransferTab(QWidget):
         self.table.setMouseTracking(True)
         self.table.cellEntered.connect(self._link_cursor)
         result_layout.addWidget(self.table, 1)
-        list_tools, actions = self._action_group("table_tools")
+        self.scan_table_tools, actions = self._action_group("table_tools")
+        self.add_scan_list_btn = self._button('enter_scan_list', self.enter_scan_list, actions)
         self.delete_btn = self._button("delete", self.delete_selected, actions)
         self.clear_btn = self._button("clear_empty", self.clear_empty, actions)
-        layout.addWidget(list_tools)
-        self.scan_workspace = CategoryWorkspace(results_page)
-        layout.addWidget(self.scan_workspace, 1)
+        self.clear_all_scan_btn = self._button("clear_all", self.clear_scan, actions)
+        self.reset_scan_btn = self._button("reset_scan", self.reset_scan, actions)
+        self.reset_scan_btn.setToolTip(self._t("reset_scan_tip"))
+        self.scan_guidance = QLabel()
+        self.scan_guidance.setObjectName('categoryListSummary')
+        self.scan_guidance.setWordWrap(True)
+        self.scan_header = QWidget()
+        scan_header_row = QHBoxLayout(self.scan_header)
+        scan_header_row.setContentsMargins(0, 0, 0, 0)
+        scan_header_row.setSpacing(10)
+        self.load_btn = self._button('read', lambda: self.load_categories(), scan_header_row)
+        scan_header_row.addWidget(self.scan_guidance, 1)
+        self.scan_table_toolbar = CategoryTableToolbar(self.scan_header)
+        layout.addWidget(results_page, 1)
+        self.scan_workspace = CategoryWorkspace(scan_content)
+        self.scan_frame = CategoryWorkspaceFrame(self._t('scan_list'), self.scan_table_toolbar, self.scan_workspace)
+        self.scan_frame.setProperty('transfer_text_key', 'scan_list')
+        stage_layout.addWidget(self.scan_frame, 1)
+        stage_layout.addWidget(self.scan_table_tools)
         scan_tools, run_actions = self._action_group("create_tools")
-        self.load_btn = self._button("load", self.load_categories, run_actions)
         self.scan_btn = self._button("scan", self.scan_categories, run_actions)
         self.retry_btn = self._button("retry_errors", self.retry_errors, run_actions)
-        self.next_btn = self._button("next_links", self.open_links, run_actions)
-        layout.addWidget(scan_tools)
+        self.next_btn = self._button("next_links", self.open_links, None)
+        stage_layout.addWidget(CategoryRunRow(scan_tools, self.next_btn, export_action=self.export_scan_btn))
 
         creation_page = self.creation_stage = CategoryLinksStage(self)
-        creation_layout = QVBoxLayout(creation_page)
+        creation_stage_layout = QVBoxLayout(creation_page)
+        creation_stage_layout.setContentsMargins(0, 0, 0, 0)
+        creation_stage_layout.setSpacing(6)
+        creation_content = QWidget()
+        creation_layout = QVBoxLayout(creation_content)
         creation_layout.setContentsMargins(0, 0, 0, 0)
         self.links_source_lang = QLineEdit("en")
         self.links_target_label = QLabel()
-        self.options_btn = self._options_button()
-        creation_toolbar, context_row = self._toolbar(self.links_source_lang, self.links_target_label, self.options_btn)
+        creation_toolbar, _context_row = self._toolbar(self.links_source_lang, self.links_target_label, None)
         self._toolbars = (scan_toolbar, creation_toolbar)
-        self.browse_btn = self._button("choose_tsv", self.choose_tsv, context_row)
-        self.export_creation_btn = self._button("export_plan", self.export_plan, context_row)
-        creation_layout.addWidget(creation_toolbar)
-        self.creation_hint = QLabel(self._t("creation_hint"))
-        self.creation_hint.setWordWrap(True)
-        creation_layout.addWidget(self.creation_hint)
-        self.file_options = QGroupBox(self._t("file_options"))
-        self.file_options.setProperty("transfer_text_key", "file_options")
-        options_layout = QVBoxLayout(self.file_options)
-        options_layout.setContentsMargins(10, 8, 10, 8)
-        instructions = QLabel(self._t("tsv_help"))
-        instructions.setWordWrap(True)
-        options_layout.addWidget(instructions)
-        file_row = QHBoxLayout()
-        self.tsv_path = QLineEdit()
-        file_row.addWidget(self.tsv_path, 1)
-        self.open_btn = self._button("open_tsv", self.open_tsv, file_row)
-        self.preview_btn = self._button("import_tsv", self.import_tsv, file_row)
-        options_layout.addLayout(file_row)
-        summary_row = QHBoxLayout()
-        summary_row.addWidget(QLabel(self._t("summary")))
+        creation_stage_layout.addWidget(creation_toolbar)
+        self.tsv_path = QLineEdit('categories.tsv')
+        self.file_controls = FileInputRow(self, self._t('preparation_file'), self.tsv_path,
+                                         self.import_tsv, editor_menu=True)
+        self.file_controls.setToolTip(self._t('import_file_tip'))
+        self.file_controls.open_tooltip_key = 'ui.transfer.import_file_tip'
+        self.file_controls.refresh_localized_texts()
+        self.browse_btn = self.file_controls.browse_btn
+        self.preview_btn = self.file_controls.open_btn
+        creation_stage_layout.addWidget(self.file_controls)
         self.summary_edit = QLineEdit(default_create_summary(self._context()[1]))
+        self.summary_edit.setCursorPosition(0)
         self._summary_lang = self._context()[1]
         self.summary_edit.setMinimumWidth(0)
-        summary_row.addWidget(self.summary_edit, 1)
-        options_layout.addLayout(summary_row)
-        self.links_delay_spin = QDoubleSpinBox()
-        self.links_delay_spin.setDecimals(2)
-        self.links_delay_spin.setRange(0.35, 10.0)
-        self.links_delay_spin.setSingleStep(0.1)
-        self.links_delay_spin.setValue(0.5)
-        links_delay_wrap, _, _ = create_spin_control(self.links_delay_spin, width=60,
-                                                    plus_tip=self._t("increase"), minus_tip=self._t("decrease"))
-        links_delay_row = QHBoxLayout()
-        links_delay_row.addWidget(QLabel(self._t("delay")))
-        links_delay_row.addWidget(links_delay_wrap)
-        links_delay_row.addStretch(1)
-        options_layout.addLayout(links_delay_row)
-        self.file_options.hide()
-        self.options_btn.toggled.connect(self._toggle_options)
-        creation_layout.insertWidget(1, self.file_options)
-        edit_tools, edit_actions = self._action_group("table_tools")
-        self.remove_creation_btn = self._button("delete", self.delete_creation_selected, edit_actions)
-        self.incomplete_btn = self._button("next_incomplete", self.select_next_incomplete, edit_actions)
+        self.creation_table_tools, edit_actions = self._action_group("table_tools")
         self.autofill_btn = QToolButton()
         self.autofill_btn.setText(self._t("autofill"))
         self.autofill_btn.setCheckable(True)
         self.autofill_btn.setArrowType(Qt.RightArrow)
         self.autofill_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        set_category_button_tooltip(self.autofill_btn, 'autofill', self._t)
         edit_actions.addWidget(self.autofill_btn)
-        creation_layout.addWidget(edit_tools)
+        self.incomplete_btn = self._button("next_incomplete", self.select_next_incomplete, edit_actions)
+        self.remove_creation_btn = self._button("delete", self.delete_creation_selected, edit_actions)
+        self.clear_all_creation_btn = self._button("clear_all", self.clear_creation, edit_actions)
+        self.export_creation_btn = self._button("export_plan", self.export_plan, None)
         self.autofill_box = QFrame()
         self.autofill_box.setObjectName("transferAutofillPanel")
         self.autofill_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
@@ -301,41 +300,51 @@ class CategoryTransferTab(QWidget):
         autofill_layout.setContentsMargins(0, 0, 0, 0)
         autofill_layout.setSizeConstraint(QLayout.SetMinimumSize)
         self.autofill_tabs = TransferAutofillTabs()
+        self.autofill_tabs.tabBar().setDrawBase(False)
         autofill_layout.addWidget(self.autofill_tabs)
         titles_page, content_page = QWidget(), QWidget()
         titles_layout = QVBoxLayout(titles_page)
         content_layout = QVBoxLayout(content_page)
         self.autofill_tabs.addTab(titles_page, self._t("titles_column"))
         self.autofill_tabs.addTab(content_page, self._t("content_column"))
-        title_row = QHBoxLayout()
         self.title_template_edit = QLineEdit()
         self.title_template_edit.setPlaceholderText(self._t("number_target_example"))
-        title_row.addWidget(self.title_template_edit, 1)
+        titles_layout.addWidget(self.title_template_edit)
+        title_row = QHBoxLayout()
         self.number_titles_btn = self._button("preview_titles", self.fill_numbered_titles, title_row)
-        titles_layout.addLayout(title_row)
         self.autofill_title_help = QLabel(self._t("autofill_title_help"))
         self.autofill_title_help.setWordWrap(True)
-        titles_layout.addWidget(self.autofill_title_help)
+        title_row.addWidget(self.autofill_title_help, 1)
+        titles_layout.addLayout(title_row)
         content_actions = TransferActionsLayout()
-        content_actions.setSpacing(8)
+        content_actions.setSpacing(4)
         self.fill_content_btn = self._button("fill_content", self.fill_content, content_actions)
         self.copy_first_btn = self._button("copy_first_content", self.copy_first_content, content_actions)
         self.load_text_btn = self._button("load_source_content", self.load_source_content, content_actions)
         self.copy_first_btn.setToolTip(self._t("copy_first_tip"))
         self.load_text_btn.setToolTip(self._t("source_content_tip"))
         content_layout.addLayout(content_actions)
+        self.autofill_content_help = QLabel(self._t('autofill_content_help'))
+        self.autofill_content_help.setWordWrap(True)
+        self.autofill_content_help.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content_layout.addWidget(self.autofill_content_help)
         self.source_content_empty = QCheckBox(self._t("source_content_empty"))
-        self.source_content_empty.setChecked(True)
-        self.source_content_empty.setToolTip(self._t("source_content_tip"))
-        content_layout.addWidget(self.source_content_empty)
-        self.autofill_box.hide()
-        self.autofill_btn.toggled.connect(lambda checked: self._toggle_panel(self.autofill_box, self.autofill_btn, checked))
-        creation_layout.addWidget(self.autofill_box)
+        self.source_content_empty.setChecked(False)
+        self.source_content_empty.setToolTip(self._t("autofill_empty_tip"))
+        self.autofill_tabs.setCornerWidget(self.source_content_empty, Qt.TopRightCorner)
+        self.autofill_scroll = CategoryParametersPanel(self.autofill_box, self.autofill_btn,
+                                                      minimum_visible_height=90)
+        self.autofill_scroll.setObjectName('categoryAutofillScroll')
+        self.autofill_scroll.setStyleSheet('QScrollArea#categoryAutofillScroll { background: transparent; border: none; }')
+        self.autofill_scroll.viewport().setObjectName('categoryAutofillViewport')
+        self.autofill_scroll.viewport().setStyleSheet('QWidget#categoryAutofillViewport { background: transparent; }')
         self.creation_summary = QLabel()
+        self.creation_summary.setObjectName('categoryListSummary')
         self.creation_summary.setWordWrap(True)
-        creation_layout.addWidget(self.creation_summary)
+        self.creation_table_toolbar = CategoryTableToolbar(self.creation_summary)
         self.creation_table = self._table(["source_category", "new_category", "content", "source_wd", "current_wd", "status"], CategoryCreationTable)
         self.creation_table.setObjectName("transferCreationTable")
+        self.creation_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self.creation_table.horizontalHeader().setStretchLastSection(False)
         for col in range(3):
             self.creation_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.Interactive)
@@ -352,23 +361,41 @@ class CategoryTransferTab(QWidget):
         self.creation_table.cellClicked.connect(self._open_creation_wd)
         self.creation_table.setMouseTracking(True)
         self.creation_table.cellEntered.connect(self._creation_link_cursor)
-        self.creation_workspace = CategoryWorkspace(self.creation_table)
-        creation_layout.addWidget(self.creation_workspace, 1)
+        creation_group = QWidget()
+        creation_group.setToolTip(self._t('creation_hint'))
+        table_layout = QVBoxLayout(creation_group)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.addWidget(self.creation_table)
+        creation_layout.addWidget(creation_group, 1)
+        self.creation_workspace = CategoryWorkspace(creation_content)
+        self.creation_frame = CategoryWorkspaceFrame(self._t('preparation_list'), self.creation_table_toolbar,
+                                                    self.creation_workspace)
+        self.creation_frame.setProperty('transfer_text_key', 'preparation_list')
+        creation_stage_layout.addWidget(self.creation_frame, 1)
         self.creation_detail = QLabel(self._t("row_detail_hint"))
         self.creation_detail.setWordWrap(True)
         self.creation_detail.setTextFormat(Qt.PlainText)
         self.creation_detail.setMaximumHeight(44)
-        creation_layout.addWidget(self.creation_detail)
-        create_tools, create_actions = self._action_group("create_tools")
+        self.creation_detail.hide()
+        creation_stage_layout.addWidget(self.creation_detail)
+        creation_stage_layout.addWidget(self.creation_table_tools)
+        creation_stage_layout.addWidget(self.autofill_scroll)
+        create_tools = QWidget()
+        create_actions = QHBoxLayout(create_tools)
+        create_actions.setContentsMargins(0, 0, 0, 0)
+        create_actions.setSpacing(4)
         self.check_links_btn = self._button("check_links", self.preview_creation, create_actions)
         self.create_btn = self._button("create", self.start_creation, create_actions)
-        self.sync_btn = self._button("next_sync", self.open_sync, create_actions)
-        creation_layout.addWidget(create_tools)
+        self.link_only_btn = self._button("link_only", self.start_linking_only, create_actions)
+        create_actions.addWidget(self._setting_caption('summary'))
+        create_actions.addWidget(self.summary_edit, 1)
+        self.sync_btn = self._button("next_sync", self.open_sync, None)
+        creation_stage_layout.addWidget(CategoryRunRow(create_tools, self.sync_btn, export_action=self.export_creation_btn))
 
-        self.footer = QWidget()
-        self.footer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        footer_layout = QVBoxLayout(self.footer)
-        footer_layout.setContentsMargins(0, 0, 0, 0)
+        self.footer = CategoryProgressFooter(self.stop, self._history_language, self)
+        self.progress_label = self.footer.label
+        self.bar = self.footer.bar
+        self.stop_btn = self.footer.stop_btn
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setProperty("_wct_skip_log_translation", True)
@@ -376,19 +403,8 @@ class CategoryTransferTab(QWidget):
         self.log_toggle = self.log_panel.toggle
         self.log_wrap = self.log_panel.wrap
         self.scan_workspace.set_log_panel(self.log_panel)
-        self.progress_label = QLabel(self._t("ready"))
-        self.progress_label.setMaximumHeight(42)
-        self.progress_label.setTextFormat(Qt.PlainText)
-        self.progress_label.setWordWrap(True)
-        self.progress_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        footer_layout.addWidget(self.progress_label)
-        progress_row = QHBoxLayout()
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1)
-        progress_row.addWidget(self.bar, 1)
-        self.stop_btn = self._button("stop", self.stop, progress_row)
-        footer_layout.addLayout(progress_row)
-        layout.addWidget(self.footer)
+        self.scan_table_toolbar.set_log_panel(self.log_panel)
+        stage_layout.addWidget(self.footer)
         self._delete_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.table)
         self._delete_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._delete_shortcut.activated.connect(self.delete_selected)
@@ -398,13 +414,12 @@ class CategoryTransferTab(QWidget):
         self.table.horizontalHeader().sortIndicatorChanged.connect(self._reindex)
         self.source_lang.textChanged.connect(self._source_changed)
         self.links_source_lang.textChanged.connect(self._links_source_changed)
+        self.root_edit.textChanged.connect(lambda: self._set_busy(self._busy))
+        self.table.itemSelectionChanged.connect(lambda: self.delete_btn.setEnabled(not self._busy and bool(self.table.selectedIndexes())))
+        self.creation_table.itemSelectionChanged.connect(lambda: self.remove_creation_btn.setEnabled(not self._busy and bool(self.creation_table.selectedIndexes())))
         self._refresh_target()
         self._set_busy(False)
         self._apply_table_theme()
-
-    def _toggle_options(self, checked):
-        self.file_options.setVisible(checked)
-        self.options_btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
     def _toggle_log(self, checked):
         self.log_toggle.setChecked(checked)
@@ -440,33 +455,26 @@ class CategoryTransferTab(QWidget):
         table.setWordWrap(False)
         return table
 
-    def _options_button(self):
-        button = QToolButton()
-        button.setText(self._t("file_options"))
-        button.setCheckable(True)
-        button.setArrowType(Qt.RightArrow)
-        button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        return button
-
     def _toolbar(self, source_edit, target_label, options_button):
         return category_toolbar(source_edit, target_label, options_button, self._t)
 
-    def _action_group(self, title_key):
-        frame, row = category_actions(self._t(title_key))
-        frame.setProperty("transfer_text_key", title_key)
-        frame.setToolTip(self._t(title_key))
-        return frame, row
+    def _setting_caption(self, key):
+        caption = QLabel(self._t(key))
+        caption.setProperty('transfer_text_key', key)
+        return caption
 
-    @staticmethod
-    def _toggle_panel(panel, button, checked):
-        panel.setVisible(checked)
-        button.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+    def _action_group(self, title_key):
+        frame, row = category_actions(self._t(title_key), framed=title_key == 'table_tools')
+        frame.setProperty("transfer_text_key", title_key)
+        return frame, row
 
     def _button(self, key, callback, layout):
         button = QPushButton(self._t(key))
         button.setProperty("transfer_text_key", key)
+        set_category_button_tooltip(button, key, self._t)
         button.clicked.connect(callback)
-        layout.addWidget(button)
+        if layout is not None:
+            layout.addWidget(button)
         return button
 
     def _refresh_target(self):
@@ -474,29 +482,68 @@ class CategoryTransferTab(QWidget):
         self.links_target_label.setText(self.target_label.text())
 
     def _set_busy(self, busy):
+        was_busy = self._busy
         self._busy = busy
-        for widget in (self.settings, self.source_lang, self.root_edit, self.load_btn, self.scan_options_btn,
-                       self.open_scan_btn, self.export_scan_btn, self.delete_btn, self.clear_btn, self.report_btn,
-                       self.tsv_btn, self.browse_btn, self.open_btn, self.tsv_path,
+        if busy and not was_busy:
+            self.log_panel.set_expanded(True)
+        for widget in (self.settings, self.scan_root_controls, self.source_lang, self.root_edit, self.load_btn,
+                       self.scan_file_row, self.export_scan_btn, self.delete_btn, self.clear_btn, self.clear_all_scan_btn, self.clear_all_creation_btn, self.reset_scan_btn,
+                       self.file_controls,
                        self.preview_btn, self.summary_edit, self.links_source_lang,
-                       self.links_delay_spin,
-                       self.remove_creation_btn, self.export_creation_btn, self.check_links_btn, self.options_btn,
+                       self.remove_creation_btn, self.export_creation_btn, self.check_links_btn,
                        self.autofill_box, self.autofill_btn):
             widget.setEnabled(not busy)
         self.table.setSortingEnabled(not busy)
-        self.scan_btn.setEnabled(not busy and self.table.rowCount() > 0)
+        self.creation_table.setSortingEnabled(not busy)
+        pending = [row for row in self._rows() if row.get('status') != 'scanned']
+        self.scan_btn.setEnabled(not busy and bool(pending))
+        self.scan_btn.setText(self._t('continue_scan' if pending and len(pending) < self.table.rowCount() else 'scan'))
+        self.reset_scan_btn.setEnabled(not busy and any(row.get('status') != 'loaded'
+                                       or row.get('total') is not None or row.get('potential') is not None
+                                       for row in self._rows()))
         self.next_btn.setEnabled(not busy and self.table.rowCount() > 0)
         self.retry_btn.setEnabled(not busy and any(row.get("status") == "error" for row in self._rows()))
         self.incomplete_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.number_titles_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.fill_content_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.creation_table.setEnabled(not busy)
-        self.create_btn.setEnabled(not busy and bool(self._creation_rows)
+        self.create_btn.setEnabled(not busy and self.creation_table.rowCount() > 0 and bool(self._creation_rows)
                                    and self._preview_context == self._creation_context())
         self.create_btn.setText(self._t("create"))
+        self.link_only_btn.setEnabled(not busy and bool(self._link_only_rows)
+                                      and self._preview_context == self._creation_context())
         self.sync_btn.setEnabled(not busy and bool(self._linked_categories)
                                  and self._linked_context == self._creation_context())
         self.stop_btn.setEnabled(busy)
+        has_scan_rows = self.table.rowCount() > 0
+        has_creation_rows = self.creation_table.rowCount() > 0
+        self.load_btn.setEnabled(not busy and bool(self.root_edit.text().strip()))
+        self.delete_btn.setEnabled(not busy and bool(self.table.selectedIndexes()))
+        self.clear_btn.setEnabled(not busy and any(row.get('status') == 'scanned' and row.get('potential') == 0 for row in self._rows()))
+        self.clear_all_scan_btn.setEnabled(not busy and has_scan_rows)
+        self.clear_all_creation_btn.setEnabled(not busy and has_creation_rows)
+        self.export_scan_btn.setEnabled(not busy and has_scan_rows)
+        self.add_scan_list_btn.setEnabled(not busy)
+        self.remove_creation_btn.setEnabled(not busy and bool(self.creation_table.selectedIndexes()))
+        self.autofill_btn.setEnabled(not busy and has_creation_rows)
+        self.export_creation_btn.setEnabled(not busy and has_creation_rows)
+        self.check_links_btn.setEnabled(not busy and has_creation_rows)
+        scanned = has_scan_rows and all(row.get('status') == 'scanned' for row in self._rows())
+        hint = 'scan_start_hint' if not has_scan_rows else 'scan_review_hint' if scanned else 'scan_resume_hint' if len(pending) < self.table.rowCount() else 'scan_run_hint'
+        if busy and self.read_worker is not None:
+            hint = 'loading' if self._read_mode == 'load' else 'scanning'
+        self.scan_guidance.setText(self._t(hint, checked=self.table.rowCount() - len(pending),
+                                            total=self.table.rowCount(), remaining=len(pending)))
+        theme = getattr(self.parent_window, '_theme_mode', 'teal')
+        needs_fill = any((self.creation_table.item(row, 5).data(Qt.UserRole) or '') in {'needs_translation', 'needs_content'}
+                         for row in range(self.creation_table.rowCount()))
+        for button, active in ((self.load_btn, not has_scan_rows), (self.open_scan_btn, not has_scan_rows),
+                               (self.scan_btn, has_scan_rows and not scanned), (self.next_btn, scanned),
+                               (self.preview_btn, not has_creation_rows),
+                               (self.incomplete_btn, needs_fill), (self.autofill_btn, needs_fill),
+                               (self.check_links_btn, has_creation_rows and not needs_fill and not self.create_btn.isEnabled() and not self.sync_btn.isEnabled()),
+                               (self.create_btn, self.create_btn.isEnabled()), (self.sync_btn, self.sync_btn.isEnabled())):
+            highlight_next_action(button, not busy and active, theme)
         self._reindex()
         for name in ("scan_history", "creation_history"):
             history = getattr(self, name, None)
@@ -523,6 +570,8 @@ class CategoryTransferTab(QWidget):
         compact = " ".join(compact.split())
         self.progress_label.setText(compact if len(compact) <= 180 else compact[:177] + "…")
         self.progress_label.setToolTip(str(text)[:1500])
+        self.bar.setFormat(self.progress_label.text())
+        self.bar.setToolTip(self.progress_label.toolTip())
 
     def _retry_notice(self, text):
         self._set_progress(text)
@@ -536,7 +585,7 @@ class CategoryTransferTab(QWidget):
     def _rows(self):
         return [self.table.item(row, 0).data(Qt.UserRole) for row in range(self.table.rowCount())]
 
-    def load_categories(self):
+    def load_categories(self, *, append=False):
         if self._busy:
             return
         context = self._validate_context()
@@ -545,16 +594,28 @@ class CategoryTransferTab(QWidget):
         if not self.root_edit.text().strip():
             self._warn("specify_root")
             return
-        self.table.setRowCount(0)
+        self._append_read = bool(append)
+        if not append:
+            self.table.setRowCount(0)
+            self._reindex()
         self._start_read(CategoryTransferReadWorker(
             source_lang=context[0], target_lang=context[1], family=context[2],
-            delay=self.delay_spin.value(), category=self.root_edit.text(),
+            category=self.root_edit.text(),
             depth=self.depth_spin.value(), skip_existing_level=self.skip_spin.value(),
             include_root=self.include_root.isChecked(),
+            namespace_selection=self.scan_ns_combo.currentData() or 'auto',
         ), "load", 0)
 
+    def _scan_settings_help_button(self):
+        group = QWidget()
+        row = QHBoxLayout(group)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.scan_settings_help_btn = add_info_button(self, row, lambda: self._t('scan_settings_help'), inline=True)
+        set_category_button_tooltip(self.scan_settings_help_btn, 'scan_settings_help', self._t)
+        return group
+
     def scan_categories(self):
-        self._scan_rows(self._rows())
+        self._scan_rows([row for row in self._rows() if row.get('status') != 'scanned'])
 
     def retry_errors(self):
         self._scan_rows([row for row in self._rows() if row.get("status") == "error"])
@@ -568,17 +629,29 @@ class CategoryTransferTab(QWidget):
         self._set_busy(False)
         self._start_read(CategoryTransferReadWorker(
             source_lang=context[0], target_lang=context[1], family=context[2],
-            delay=self.delay_spin.value(), categories=rows,
+            categories=rows,
         ), "scan", len(rows))
 
     def _start_read(self, worker, mode, total):
-        self.scan_history.reset()
+        self._scan_load_transaction = None
+        if mode == 'load' and getattr(self, '_append_read', False):
+            self._scan_load_transaction = self.scan_history.transaction()
+            self._scan_load_transaction.__enter__()
+        else:
+            self.scan_history.reset()
         self.read_worker = worker
         self._read_mode = mode
         self._set_busy(True)
-        self.bar.setRange(0, total)
-        self.bar.setValue(0)
+        init_progress(self.progress_label, self.bar, total)
         self._set_progress(self._t("loading" if mode == "load" else "scanning"))
+        self._read_count = self._read_total = 0
+        if mode == 'load':
+            self.bar.setRange(0, 0)
+            self._write_log(translate_key('ui.source.fetch_started_background', self._history_language()).format(
+                category=self.root_edit.text().strip(), depth=self.depth_spin.value(),
+                mode=translate_key('ui.source.fetch_mode.categories_only', self._history_language())))
+        else:
+            self._write_log(self._t('scanning'))
         debug(f"[Category transfer] Start {mode}: {self._context()}, rows={total}, depth={self.depth_spin.value()}")
         worker.row_ready.connect(self._apply_row)
         worker.read_progress.connect(self._read_progress)
@@ -589,9 +662,22 @@ class CategoryTransferTab(QWidget):
         worker.start()
 
     def _apply_row(self, data):
+        if (getattr(self, '_append_read', False) and getattr(self, '_read_mode', '') == 'load'
+                and data['source_title'] in self._rows_by_title):
+            return
         sorting = self.table.isSortingEnabled()
         self.table.setSortingEnabled(False)
-        row = self._rows_by_title.get(data["source_title"])
+        original = data.get('input_source_title', data['source_title'])
+        row = self._rows_by_title.get(original)
+        canonical_row = self._rows_by_title.get(data['source_title'])
+        if row is not None and canonical_row is not None and row != canonical_row:
+            self.table.removeRow(row)
+            self._reindex()
+            row = self._rows_by_title.get(data['source_title'])
+        if row is None:
+            row = self._rows_by_title.get(data['source_title'])
+        if original != data['source_title']:
+            self._rows_by_title.pop(original, None)
         if row is None:
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -616,16 +702,30 @@ class CategoryTransferTab(QWidget):
                 item.setToolTip(data["error"])
             self.table.setItem(row, col, item)
         self.table.setSortingEnabled(sorting)
-        if sorting:
-            self._reindex()
+        self._reindex()
 
     def _read_progress(self, payload):
-        self.progress_label.setToolTip(payload["title"])
-        if self._read_mode == "load":
-            self._set_progress(self._t("found", count=payload["count"]))
+        if self._read_mode != 'load':
+            keys = {'scan_categories': 'scan_batch_categories', 'scan_members': 'scan_batch_members',
+                    'scan_links': 'scan_batch_links', 'scan_articles': 'scan_article_packet'}
+            key = keys.get(payload.get('phase'))
+            if key:
+                self._set_progress(self._t(key, **payload))
+            elif payload.get('title'):
+                self._set_progress(self._t('scan_row_progress', title=payload['title']))
+            return
+        self._read_count = max(self._read_count, int(payload.get('count') or 0))
+        self._read_total = max(self._read_total, int(payload.get('total') or 0))
+        lang = self._history_language()
+        set_reading_progress(self.progress_label, self.bar, self._read_count, self._read_total,
+                             lambda key, fallback: translate_key(key, lang, fallback),
+                             waiting=not self._read_count and not self._read_total)
+        if payload.get('phase') == 'links':
+            self._set_progress(self._t('checking_links_progress', **payload))
+        self.bar.setToolTip(payload.get('category', payload.get('title', '')))
 
     def _advance(self):
-        self.bar.setValue(self.bar.value() + 1)
+        inc_progress(self.progress_label, self.bar)
 
     def _read_finished(self):
         worker = self.read_worker
@@ -648,8 +748,13 @@ class CategoryTransferTab(QWidget):
         if not worker.failed and not worker._stop:
             self.bar.setValue(self.bar.maximum())
         self._set_busy(False)
+        if self._scan_load_transaction is not None:
+            self._scan_load_transaction.__exit__(None, None, None)
+            self._scan_load_transaction = None
+        else:
+            self.scan_history.reset()
+        self._append_read = False
         self._reset_changed_context()
-        self.scan_history.reset()
         worker.deleteLater()
 
     @table_action("scan_history")
@@ -675,6 +780,48 @@ class CategoryTransferTab(QWidget):
         self.scan_btn.setEnabled(self.table.rowCount() > 0)
         self._set_busy(False)
 
+    @table_action("scan_history")
+    def clear_scan(self):
+        if self._busy:
+            return
+        self.table.setRowCount(0)
+        self._reindex()
+        self.bar.setRange(0, 1)
+        self.bar.setValue(0)
+        self._set_progress(self._t('ready'))
+        self._set_busy(False)
+
+    @table_action('scan_history')
+    def reset_scan(self):
+        if self._busy:
+            return
+        rows = self._rows()
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
+        try:
+            for row in rows:
+                data = {key: value for key, value in row.items()
+                        if key not in {'error', 'target_articles', 'total', 'potential'}}
+                self._apply_row({**data, 'status': 'loaded', 'total': None, 'potential': None})
+        finally:
+            self.table.setSortingEnabled(sorting)
+        self.bar.setRange(0, 1)
+        self.bar.setValue(0)
+        self._set_progress(self._t('scan_reset_done'))
+        self._set_busy(False)
+
+    @table_action("creation_history")
+    def clear_creation(self):
+        if self._busy:
+            return
+        self.creation_table.setRowCount(0)
+        self._invalidate_creation(clear_table=False)
+        self.bar.setRange(0, 1)
+        self.bar.setValue(0)
+        self._set_progress(self._t('ready'))
+        self._set_busy(False)
+        self._show_creation_detail()
+
     def copy_selected(self):
         rows = sorted({index.row() for index in self.table.selectedIndexes()})
         text = "\n".join("\t".join(self.table.item(row, col).text()
@@ -684,7 +831,7 @@ class CategoryTransferTab(QWidget):
     def export_report(self):
         if self._busy:
             return
-        path, _ = QFileDialog.getSaveFileName(self, self._t("export_report"), "category-transfer-results.tsv", "TSV (*.tsv)")
+        path, _ = QFileDialog.getSaveFileName(self, self._t("export_plan"), "categories.tsv", "TSV (*.tsv)")
         if not path:
             return
         try:
@@ -697,12 +844,14 @@ class CategoryTransferTab(QWidget):
         except Exception as error:
             self._warn("failed", error=error)
 
-    def import_report(self):
+    def import_report(self, path=None):
         if self._busy:
             return
-        path, _ = QFileDialog.getOpenFileName(self, self._t("open_report"), "", "TSV (*.tsv)")
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, self._t("open_report"), "", "TSV (*.tsv)")
         if not path:
             return
+        self.scan_report_path.setText(path)
         rows = []
         try:
             with open(path, encoding="utf-8-sig", newline="") as handle:
@@ -720,7 +869,8 @@ class CategoryTransferTab(QWidget):
                 if fields[2] and not re.fullmatch(r"Q[1-9][0-9]*", fields[2]):
                     raise ValueError(self._t("report_invalid", line=line))
                 rows.append(dict(source_title=fields[0].strip(), target_title=fields[1].strip(), qid=fields[2],
-                                 depth=depth, total=total, potential=potential, status=fields[6]))
+                                 depth=depth, total=total, potential=potential, status=fields[6],
+                                 manual_input=fields[6] == 'loaded'))
             if not rows:
                 raise ValueError(self._t("tsv_empty"))
         except Exception as error:
@@ -743,7 +893,7 @@ class CategoryTransferTab(QWidget):
         if not candidates:
             self._warn("no_candidates")
             return
-        path, _ = QFileDialog.getSaveFileName(self, self._t("prepare_tsv"), "category-transfer-create.tsv", "TSV (*.tsv)")
+        path, _ = QFileDialog.getSaveFileName(self, self._t("prepare_tsv"), "categories.tsv", "TSV (*.tsv)")
         if not path:
             return
         try:
@@ -756,10 +906,49 @@ class CategoryTransferTab(QWidget):
     def choose_tsv(self):
         if self._busy:
             return
-        path, _ = QFileDialog.getOpenFileName(self, self._t("choose_tsv"), "", "TSV (*.tsv)")
-        if path:
-            self.tsv_path.setText(path)
-            self.import_tsv()
+        self.file_controls.choose_file()
+
+    def open_scan_file(self):
+        if self._busy:
+            return
+        try:
+            with open(self.scan_report_path.text().strip(), encoding='utf-8-sig') as handle:
+                text = handle.read()
+            fields = next((row for row in csv.reader(text.splitlines(), delimiter='\t')
+                           if row and any(cell.strip() for cell in row)), [])
+            if len(fields) == 7:
+                self.import_report(self.scan_report_path.text().strip())
+                return
+            titles = parse_scan_list(text)
+        except Exception as error:
+            self._warn('failed', error=error)
+            return
+        self.scan_history.reset()
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        self._rows_by_title.clear()
+        self._append_scan_titles(titles)
+        self.scan_history.reset()
+
+    def _append_scan_titles(self, titles):
+        for title in titles:
+            if title not in self._rows_by_title:
+                self._apply_row(dict(source_title=title, depth=0, status='loaded', manual_input=True))
+        self._set_busy(False)
+
+    @table_action('scan_history')
+    def enter_scan_list(self):
+        if self._busy:
+            return
+        text, accepted = QInputDialog.getMultiLineText(self, self._t('category_list_file'), self._t('scan_list_prompt'))
+        if not accepted:
+            return
+        try:
+            titles = parse_scan_list(text)
+        except Exception as error:
+            self._warn('failed', error=error)
+            return
+        self._append_scan_titles(titles)
 
     def import_tsv(self):
         if self._busy:
@@ -777,8 +966,10 @@ class CategoryTransferTab(QWidget):
         if self.tsv_path.text().strip():
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.tsv_path.text().strip()))
 
+    @pause_sorting('creation_table')
     def _invalidate_creation(self, *_args, clear_table=True):
         self._creation_rows = ()
+        self._link_only_rows = ()
         self._preview_rows = ()
         self._existing_linked_categories = []
         self._preview_context = None
@@ -806,6 +997,7 @@ class CategoryTransferTab(QWidget):
             finally:
                 self.creation_table.blockSignals(False)
         self.create_btn.setEnabled(False)
+        self.link_only_btn.setEnabled(False)
         self._refresh_creation_summary()
         history = getattr(self, "creation_history", None)
         if history:
@@ -829,6 +1021,7 @@ class CategoryTransferTab(QWidget):
         self._table_dirty = True
         self._open_links_page()
 
+    @pause_sorting('creation_table')
     def _fill_creation_table(self, rows, status="editing"):
         self.creation_table.blockSignals(True)
         try:
@@ -847,28 +1040,40 @@ class CategoryTransferTab(QWidget):
         self._refresh_creation_summary()
         if hasattr(self, "creation_history"):
             self.creation_history.reset()
+        self._set_busy(self._busy)
 
     def _refresh_creation_summary(self):
-        counts = {"ready": 0, "drafts": 0, "linked": 0, "errors": 0, "unchecked": 0}
+        counts = {"ready": 0, "drafts": 0, "errors": 0, "unchecked": 0}
+        outcomes = []
         for row in range(self.creation_table.rowCount()):
             item = self.creation_table.item(row, 5)
             code = item.data(Qt.UserRole) if item else "editing"
+            outcomes.append(dict(status=code, label_changes=item.data(Qt.UserRole + 2) if item else None,
+                                 link_action=item.data(Qt.UserRole + 3) if item else None))
             if code in {"ready_create", "ready_link", "ready_labels"}:
                 counts["ready"] += 1
             elif code in {"needs_translation", "needs_content"}:
                 counts["drafts"] += 1
             elif code in {"already_linked", "created", "linked", "labels_updated"}:
-                counts["linked"] += 1
+                pass
             elif code in {"error", "unlinked"}:
                 counts["errors"] += 1
             else:
                 counts["unchecked"] += 1
-        self.creation_summary.setText(self._t("list_summary", total=self.creation_table.rowCount(), **counts))
+        counts.update(category_outcome_counts(outcomes))
+        parts = [self._t('list_count', count=self.creation_table.rowCount())]
+        parts.extend(self._t('count_' + key, count=value) for key, value in counts.items() if value)
+        self.creation_summary.setText('   ·   '.join(parts))
+        if not self.creation_table.rowCount():
+            self.creation_summary.setText(self._t('prepare_start_hint'))
+        self.creation_summary.setToolTip(self._t('list_summary', total=self.creation_table.rowCount(), **counts))
 
     def _show_creation_detail(self):
         row = self.creation_table.currentRow()
         item = self.creation_table.item(row, 5) if row >= 0 else None
-        self.creation_detail.setText((item.toolTip() or item.text()) if item else self._t("row_detail_hint"))
+        detail = (item.toolTip() or item.text()) if item else ''
+        self.creation_detail.setText(detail)
+        self.creation_detail.setVisible(bool(detail))
 
     def _set_creation_qids(self, row, source_qid, target_qid):
         for col, qid in ((3, source_qid), (4, target_qid)):
@@ -948,7 +1153,8 @@ class CategoryTransferTab(QWidget):
             self._write_log(self._t("content_filled", count=len(changed)))
 
     def _fill_content_range(self, start, end, value, only_empty):
-        self._fill_content_rows(range(max(0, start), min(end + 1, self.creation_table.rowCount())), value, only_empty)
+        self._fill_content_rows(range(max(0, start), min(end + 1, self.creation_table.rowCount())), value,
+                                self.source_content_empty.isChecked())
 
     def fill_content(self):
         if self._busy or not self.creation_table.rowCount():
@@ -970,9 +1176,6 @@ class CategoryTransferTab(QWidget):
         selected_only.setEnabled(bool(selected))
         selected_only.setChecked(len(selected) > 1)
         layout.addWidget(selected_only)
-        only_empty = QCheckBox(self._t("content_only_empty"))
-        only_empty.setChecked(True)
-        layout.addWidget(only_empty)
         buttons = QDialogButtonBox()
         apply_button = buttons.addButton(self._t("fill_apply"), QDialogButtonBox.AcceptRole)
         buttons.addButton(self._t("cancel"), QDialogButtonBox.RejectRole)
@@ -983,7 +1186,7 @@ class CategoryTransferTab(QWidget):
         layout.addWidget(buttons)
         if dialog.exec() == QDialog.Accepted:
             indices = selected if selected_only.isChecked() else range(self.creation_table.rowCount())
-            self._fill_content_rows(indices, editor.toPlainText(), only_empty.isChecked())
+            self._fill_content_rows(indices, editor.toPlainText(), self.source_content_empty.isChecked())
 
     def copy_first_content(self):
         if self._busy or not self.creation_table.rowCount():
@@ -1007,9 +1210,10 @@ class CategoryTransferTab(QWidget):
             return
         self._content_undo = self.creation_history.transaction()
         self._content_undo.__enter__()
+        self._set_busy(True)
         self._invalidate_creation(clear_table=False)
         worker = CategoryTextReadWorker(rows=rows, source_lang=context[0], target_lang=context[1],
-                                        family=context[2], delay=self.links_delay_spin.value())
+                                        family=context[2])
         self.content_worker = worker
         worker.content_ready.connect(self._source_content_ready)
         worker.item_processed.connect(self._advance)
@@ -1017,8 +1221,7 @@ class CategoryTransferTab(QWidget):
         worker.retry_wait.connect(self._retry_notice)
         worker.finished.connect(self._source_content_finished)
         self._set_busy(True)
-        self.bar.setRange(0, len(rows))
-        self.bar.setValue(0)
+        init_progress(self.progress_label, self.bar, len(rows))
         self._set_progress(self._t("loading_source_content"))
         debug(f"[Category transfer] Load source wikitext: {context}, rows={len(rows)}")
         worker.start()
@@ -1051,7 +1254,8 @@ class CategoryTransferTab(QWidget):
             return
         result = title_fill_dialog(self.creation_stage, self._table_creation_rows(),
                                    {index.row() for index in self.creation_table.selectedIndexes()},
-                                   self._t, self.creation_table.styleSheet(), self.title_template_edit.text())
+                                   self._t, self.creation_table.styleSheet(), self.title_template_edit.text(),
+                                   only_empty=self.source_content_empty.isChecked())
         if result is not None:
             plan, template = result
             self.title_template_edit.setText(template)
@@ -1068,7 +1272,8 @@ class CategoryTransferTab(QWidget):
                 if proposal.status != "number_fill":
                     continue
                 item = self.creation_table.item(proposal.index, 1)
-                if item and not item.text().strip():
+                if (item and item.text() != proposal.target_title
+                        and (not self.source_content_empty.isChecked() or not item.text().strip())):
                     item.setText(proposal.target_title)
                     item.setToolTip(proposal.target_title)
                     changed.append(item)
@@ -1080,16 +1285,19 @@ class CategoryTransferTab(QWidget):
             self._set_progress(self._t("number_done", count=len(changed)))
             self._write_log(self._t("number_done", count=len(changed)))
 
+    @pause_sorting('creation_table')
     def _creation_edited(self, item):
         if self._busy or item.column() >= 3:
             return
         self._table_dirty = True
         # Preserve editable input, but invalidate all write and handoff snapshots.
         self._creation_rows = ()
+        self._link_only_rows = ()
         self._preview_context = self._linked_context = None
         self._linked_categories = []
         self._linked_pairs = {}
         self.create_btn.setEnabled(False)
+        self.link_only_btn.setEnabled(False)
         self.sync_btn.setEnabled(False)
         for row in range(self.creation_table.rowCount()):
             status = self.creation_table.item(row, 5)
@@ -1114,6 +1322,7 @@ class CategoryTransferTab(QWidget):
             # Even an empty table must supersede a previously imported file.
             self._table_dirty = True
             self._creation_rows = ()
+            self._link_only_rows = ()
             self._preview_context = self._linked_context = None
             self._linked_categories = []
             self._linked_pairs = {}
@@ -1123,7 +1332,7 @@ class CategoryTransferTab(QWidget):
     def export_plan(self):
         if self._busy or not self.creation_table.rowCount():
             return
-        path, _ = QFileDialog.getSaveFileName(self, self._t("export_plan"), "category-transfer-create.tsv", "TSV (*.tsv)")
+        path, _ = QFileDialog.getSaveFileName(self, self._t("export_plan"), "categories.tsv", "TSV (*.tsv)")
         if path:
             try:
                 with open(path, "w", encoding="utf-8-sig", newline="") as handle:
@@ -1147,21 +1356,30 @@ class CategoryTransferTab(QWidget):
         self._table_dirty = True
         self._preview_rows = rows
         self._preview_context = self._creation_context()
+        self._set_busy(True)
         self._fill_creation_table(rows, "checking")
         source, target, family = self._creation_context()
         worker = CategoryTransferPreviewWorker(rows=rows, source_lang=source, target_lang=target,
-                                              family=family, delay=self.links_delay_spin.value())
+                                              family=family)
         self.preview_worker = worker
         self._set_busy(True)
-        self.bar.setRange(0, len(rows))
-        self.bar.setValue(0)
+        init_progress(self.progress_label, self.bar, len(rows))
         self._set_progress(self._t("checking"))
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self._write_log(self._t('check_started', count=len(rows)))
         debug(f"[Category transfer] Start preview: {self._creation_context()}, rows={len(rows)}")
         worker.row_ready.connect(self._preview_result)
         worker.progress.connect(self._write_log)
+        worker.activity.connect(self._preview_activity)
         worker.retry_wait.connect(self._retry_notice)
         worker.finished.connect(self._preview_finished)
         worker.start()
+
+    def _preview_activity(self, payload):
+        self.bar.setRange(0, 100)
+        self.bar.setValue(payload['percent'])
+        self._set_progress(payload['text'])
 
     def _preview_result(self, result):
         row = result["index"]
@@ -1179,13 +1397,13 @@ class CategoryTransferTab(QWidget):
         self._highlight_incomplete(row, result["status"])
         self._refresh_creation_summary()
         self._show_creation_detail()
-        self._advance()
 
     def _preview_finished(self):
         worker = self.preview_worker
         self.preview_worker = None
         if worker.failed or worker._stop:
             self._creation_rows = ()
+            self._link_only_rows = ()
             self._preview_context = None
             status = self._t("failed", error=worker.failure_message) if worker.failed else self._t("stopped")
             self.creation_table.blockSignals(True)
@@ -1204,6 +1422,8 @@ class CategoryTransferTab(QWidget):
             self._preview_rows = tuple(result["row"] for result in worker.results)
             self._creation_rows = tuple(result["row"] for result in worker.results
                                         if result["status"] in {"ready_create", "ready_link", "ready_labels"})
+            self._link_only_rows = tuple(result['row'] for result in worker.results
+                                         if result['status'] in {'ready_link', 'ready_labels'})
             self._existing_linked_categories = [result["row"].target_title for result in worker.results
                                                if result["status"] == "already_linked"]
             self._linked_categories = list(self._existing_linked_categories)
@@ -1215,6 +1435,8 @@ class CategoryTransferTab(QWidget):
                              linked=len(self._existing_linked_categories),
                              drafts=sum(result["status"] in {"needs_translation", "needs_content"} for result in worker.results),
                              errors=sum(result["status"] == "error" for result in worker.results))
+        if not worker.failed and not worker._stop:
+            self.bar.setValue(self.bar.maximum())
         self._set_progress(self._t("preview_ready") if not worker.failed and not worker._stop else status)
         self._write_log(status)
         if worker.failed or any(result["status"] == "error" for result in worker.results):
@@ -1224,15 +1446,19 @@ class CategoryTransferTab(QWidget):
         self.creation_history.reset()
         worker.deleteLater()
 
-    def start_creation(self):
-        if self._busy or not self._creation_rows or self._preview_context != self._creation_context():
+    def start_linking_only(self):
+        self.start_creation(link_only=True)
+
+    def start_creation(self, *, link_only=False):
+        rows = self._link_only_rows if link_only else self._creation_rows
+        if self._busy or not self.creation_table.rowCount() or not rows or self._preview_context != self._creation_context():
             return
         user = getattr(self.parent_window, "current_user", None)
         password = getattr(self.parent_window, "current_password", None)
         if not user or not password:
             self._warn("login_required")
             return
-        if not self._confirm_creation():
+        if not self._confirm_creation(link_only=link_only):
             return
         self.creation_history.reset()
         source, target, family = self._creation_context()
@@ -1240,15 +1466,17 @@ class CategoryTransferTab(QWidget):
         self._linked_categories = list(self._existing_linked_categories)
         self._linked_context = self._creation_context()
         self._creation_row_results = {}
+        self._write_rows = rows
         worker = CategoryTransferCreateWorker(
-            rows=self._creation_rows, username=user, password=password,
+            rows=rows, username=user, password=password,
             source_lang=source, target_lang=target, family=family, summary=self.summary_edit.text().strip(),
+            create_missing=not link_only,
         )
         self.create_worker = worker
         self._set_busy(True)
-        self.bar.setRange(0, len(self._creation_rows))
-        self.bar.setValue(0)
-        self._set_progress(self._t("creating"))
+        init_progress(self.progress_label, self.bar, len(rows))
+        self._set_progress(self._t('linking' if link_only else 'creating'))
+        self._write_log(self._t('linking' if link_only else 'creating'))
         debug(f"[Category transfer] Start creation: {self._creation_context()}, rows={len(self._creation_rows)}")
         worker.category_result.connect(self._creation_result)
         worker.interactive_input_requested.connect(self._interactive_input)
@@ -1259,12 +1487,14 @@ class CategoryTransferTab(QWidget):
 
     def _creation_result(self, result):
         self._creation_row_results[result["source_title"]] = result
-        for row, data in enumerate(self._preview_rows):
-            if data.source_title == result["source_title"]:
+        for row in range(self.creation_table.rowCount()):
+            if self.creation_table.item(row, 0).text() == result["source_title"]:
                 status = QTableWidgetItem(self._t(result["status"]))
                 status.setFlags(status.flags() & ~Qt.ItemIsEditable)
                 status.setData(Qt.UserRole, result["status"])
-                status.setToolTip(result.get("error", result.get("qid", "")))
+                status.setData(Qt.UserRole + 2, result.get('label_changes', {}))
+                status.setData(Qt.UserRole + 3, result.get('link_action'))
+                status.setToolTip(result.get("error") or ' '.join(filter(None, (result.get('qid'), result.get('detail')))))
                 self.creation_table.setItem(row, 5, status)
                 if "source_qid" in result or "target_qid" in result:
                     self._set_creation_qids(row, result.get("source_qid", ""), result.get("target_qid", ""))
@@ -1276,7 +1506,7 @@ class CategoryTransferTab(QWidget):
         worker = self.create_worker
         self.create_worker = None
         self._linked_categories = list(dict.fromkeys(self._existing_linked_categories + worker.linked_categories))
-        for row in self._creation_rows:
+        for row in self._write_rows:
             result = self._creation_row_results.get(row.source_title, {})
             if result.get("status") in {"created", "linked", "labels_updated", "already_linked"}:
                 self._linked_pairs[row.target_title] = CategoryPair(
@@ -1285,6 +1515,9 @@ class CategoryTransferTab(QWidget):
         self._creation_rows = tuple(row for row in self._creation_rows
                                     if self._creation_row_results.get(row.source_title, {}).get("status")
                                     not in {"created", "linked", "labels_updated", "already_linked"})
+        self._link_only_rows = tuple(row for row in self._link_only_rows
+                                     if self._creation_row_results.get(row.source_title, {}).get('status')
+                                     not in {'created', 'linked', 'labels_updated', 'already_linked'})
         status = (self._t("failed", error=worker.failure_message) if worker.failed
                   else self._t("stopped") if worker._stop else self._t("creation_done", **{"already": 0, "labels": 0, **worker.stats}))
         self._set_progress(status)
@@ -1300,14 +1533,15 @@ class CategoryTransferTab(QWidget):
             if self._offer_sync(len(self._linked_categories)):
                 self.open_sync()
 
-    def _confirm_creation(self):
+    def _confirm_creation(self, *, link_only=False):
         dialog = QDialog(self.creation_stage)
         dialog.setObjectName("confirmCategoryCreationDialog")
         dialog.setWindowTitle(self._t("links_title"))
         dialog.setMinimumWidth(540)
         layout = QVBoxLayout(dialog)
         layout.setSpacing(14)
-        heading = QLabel(self._t("confirm_heading", count=len(self._creation_rows),
+        rows = self._link_only_rows if link_only else self._creation_rows
+        heading = QLabel(self._t('plan_link_heading' if link_only else 'confirm_heading', count=len(rows),
                                 source=self._creation_context()[0], target=self._creation_context()[1]))
         heading.setWordWrap(True)
         font = heading.font()
@@ -1319,15 +1553,15 @@ class CategoryTransferTab(QWidget):
                         target_qid=self.creation_table.item(row, 4).text(),
                         status=self.creation_table.item(row, 5).data(Qt.UserRole))
                    for row in range(self.creation_table.rowCount())]
-        plan = category_action_plan(results, (row.source_title for row in self._creation_rows))
-        layout.addWidget(category_plan_widget(plan, self._t, dialog))
+        plan = category_action_plan(results, (row.source_title for row in rows))
+        layout.addWidget(category_plan_widget(plan, self._t, dialog, results=results))
         for key in ("plan_preserve_text",) + (("confirm_items",) if plan["items"] else ()):
             label = QLabel(self._t(key))
             label.setWordWrap(True)
             label.setTextFormat(Qt.PlainText)
             layout.addWidget(label)
         buttons = QDialogButtonBox()
-        buttons.addButton(self._t("create"), QDialogButtonBox.AcceptRole)
+        buttons.addButton(self._t('link_only' if link_only else 'create'), QDialogButtonBox.AcceptRole)
         cancel = buttons.addButton(self._t("cancel"), QDialogButtonBox.RejectRole)
         cancel.setDefault(True)
         buttons.accepted.connect(dialog.accept)
@@ -1387,9 +1621,7 @@ class CategoryTransferTab(QWidget):
             self._open_article_matches(row)
 
     def _open_article_matches(self, row):
-        if self._busy or (self.article_worker and self.article_worker.isRunning()):
-            return
-        data = self.table.item(row, 0).data(Qt.UserRole)
+        data = dict(self.table.item(row, 0).data(Qt.UserRole))
         if data.get("status") != "scanned":
             return
         source, target, family = self._context()
@@ -1397,13 +1629,13 @@ class CategoryTransferTab(QWidget):
         if 'target_articles' not in data or (data.get("target_title") and dialog.articles):
             worker = CategoryArticlePresenceWorker(articles=dialog.articles if 'target_articles' in data else None,
                                                   category=data.get("target_title", ""), source_category=data["source_title"],
-                                                  source_lang=source, target_lang=target, family=family,
-                                                  delay=self.delay_spin.value())
+                                                  source_lang=source, target_lang=target, family=family)
             self.article_worker = worker
+            self._article_workers.add(worker)
             worker.result_ready.connect(dialog.show_membership)
             worker.progress.connect(dialog.show_progress)
-            worker.finished.connect(self._article_check_finished)
-            dialog.finished.connect(self._stop_article_check)
+            worker.finished.connect(lambda worker=worker: self._article_check_finished(worker))
+            dialog.finished.connect(lambda _result, worker=worker: worker.request_stop())
             worker.start()
         elif data.get("target_title"):
             dialog.show_membership([])
@@ -1411,14 +1643,14 @@ class CategoryTransferTab(QWidget):
         dialog.deleteLater()
 
     def _stop_article_check(self, *_args):
-        if self.article_worker and self.article_worker.isRunning():
-            self.article_worker.request_stop()
+        for worker in tuple(self._article_workers):
+            worker.request_stop()
 
-    def _article_check_finished(self):
-        worker = self.article_worker
-        self.article_worker = None
-        if worker:
-            worker.deleteLater()
+    def _article_check_finished(self, worker):
+        self._article_workers.discard(worker)
+        if self.article_worker is worker:
+            self.article_worker = None
+        worker.deleteLater()
 
     def _links_source_changed(self, *_args):
         if not self._busy:
@@ -1458,14 +1690,25 @@ class CategoryTransferTab(QWidget):
             linked = data.get("status") == "scanned"
         self.table.viewport().setCursor(Qt.PointingHandCursor if linked else Qt.ArrowCursor)
 
+    def _align_scan_input_captions(self):
+        labels = (self.read_category_caption, self.scan_file_row.caption)
+        width = max(label.sizeHint().width() for label in labels)
+        for label in labels:
+            label.setFixedWidth(width)
+
     def _apply_table_theme(self):
+        self._align_scan_input_captions()
         theme = getattr(self.parent_window, "_theme_mode", "teal")
         base, _, text, header, _, border, _, selected, _ = category_table_palette(theme)
         for table in (self.table, self.creation_table):
             table.setStyleSheet(category_table_style(theme))
         for source, badge in ((self.source_lang, self.target_label), (self.links_source_lang, self.links_target_label)):
             style_transfer_languages(source, badge, theme)
+        muted = {'light': '#526a7a', 'dark': '#a3b3c5', 'teal': '#91b9c5'}.get(theme, '#91b9c5')
+        for label in (self.creation_summary, self.scan_guidance):
+            label.setStyleSheet(f'color: {muted}; padding: 2px 0;')
         self.autofill_tabs.setStyleSheet(
+            'QTabWidget, QTabBar { background: transparent; }'
             f"QTabWidget::pane {{ background: {base}; border: 1px solid {border}; border-radius: 8px; }}"
             f"QTabBar::tab {{ background: {header}; color: {text}; border: 1px solid {border}; "
             "padding: 6px 10px; border-top-left-radius: 8px; border-top-right-radius: 8px; }"
@@ -1505,9 +1748,13 @@ class CategoryTransferTab(QWidget):
         self.footer.show()
         workspace = self.scan_workspace if stage is self else self.creation_workspace
         workspace.set_log_panel(self.log_panel)
+        toolbar = self.scan_table_toolbar if stage is self else self.creation_table_toolbar
+        toolbar.set_log_panel(self.log_panel)
         self.log_panel.refresh_localized_texts()
+        self.footer.refresh_localized_texts()
         self._apply_table_theme()
         self.refresh_localized_texts()
+        self._set_busy(self._busy)
 
     def refresh_localized_texts(self):
         lang = getattr(self.parent_window, "_ui_lang", "ru")
@@ -1515,29 +1762,45 @@ class CategoryTransferTab(QWidget):
             self._last_ui_lang = lang
             for toolbar in self._toolbars:
                 refresh_category_toolbar(toolbar, self._t)
-            self.log_toggle.setText(self._t("log"))
-            self.options_btn.setText(self._t("file_options"))
-            self.scan_options_btn.setText(self._t("file_options"))
+            self.log_panel.refresh_localized_texts()
+            self.root_edit.setPlaceholderText(self._t('root_placeholder'))
+            self.root_edit.setToolTip(self._t('source_root_tip'))
+            self.include_root.setText(self._t("include_root"))
+            self.depth_spin.setToolTip(self._t("scan_depth_tip"))
+            self.skip_spin.setToolTip(self._t("skip_tip"))
             self.autofill_btn.setText(self._t("autofill"))
             for index, key in enumerate(("titles_column", "content_column")):
                 self.autofill_tabs.setTabText(index, self._t(key))
             self.source_content_empty.setText(self._t("source_content_empty"))
-            self.source_content_empty.setToolTip(self._t("source_content_tip"))
+            self.source_content_empty.setToolTip(self._t("autofill_empty_tip"))
             self.autofill_title_help.setText(self._t("autofill_title_help"))
+            self.autofill_content_help.setText(self._t('autofill_content_help'))
             self.title_template_edit.setPlaceholderText(self._t("number_target_example"))
             self.copy_first_btn.setToolTip(self._t("copy_first_tip"))
             self.load_text_btn.setToolTip(self._t("source_content_tip"))
+            self.reset_scan_btn.setToolTip(self._t("reset_scan_tip"))
             self.export_scan_btn.setText(self._t("export_plan"))
-            self.creation_hint.setText(self._t("creation_hint"))
+            self.scan_file_row.refresh_localized_texts()
+            self.scan_file_row.caption.setText(self._t('ready_categories_file'))
+            self.scan_file_row.setToolTip(self._t('scan_inputs_tip'))
+            self.file_controls.refresh_localized_texts()
+            self.file_controls.caption.setText(self._t('preparation_file'))
+            self.file_controls.setToolTip(self._t('import_file_tip'))
             for table in (self.table, self.creation_table):
                 for col, key in enumerate(table.property("transfer_header_keys")):
                     table.horizontalHeaderItem(col).setText(self._t(key))
                     table.horizontalHeaderItem(col).setToolTip(self._t("potential" if key == "potential_column" else key))
             for page in (self, self.creation_stage):
+                for label in page.findChildren(QLabel):
+                    key = label.property('transfer_text_key')
+                    if key:
+                        label.setText(self._t(key))
                 for group in page.findChildren(QGroupBox):
                     key = group.property("transfer_text_key")
                     if key:
                         group.setTitle(self._t(key))
+                        if key == 'preparation_list':
+                            group.setToolTip(self._t('creation_hint'))
                 for button in page.findChildren(QPushButton) + page.findChildren(QAction):
                     key = button.property("transfer_text_key")
                     if key:
@@ -1548,14 +1811,21 @@ class CategoryTransferTab(QWidget):
                 data = self.table.item(row, 0).data(Qt.UserRole)
                 self.table.item(row, 6).setText(self._t(data["status"]))
             self.table.setSortingEnabled(sorting)
+            sorting = self.creation_table.isSortingEnabled()
+            self.creation_table.setSortingEnabled(False)
             for row in range(self.creation_table.rowCount()):
                 item = self.creation_table.item(row, 5)
                 if item and item.data(Qt.UserRole):
                     item.setText(self._t(item.data(Qt.UserRole)))
+            self.creation_table.setSortingEnabled(sorting)
             self._refresh_target()
             self._refresh_creation_summary()
             self._show_creation_detail()
             self._set_busy(self._busy)
+
+        self._align_scan_input_captions()
+        for page in (self, self.creation_stage):
+            refresh_category_button_tooltips(page, self._t)
 
     def update_language(self, lang):
         if lang != self.current_lang:

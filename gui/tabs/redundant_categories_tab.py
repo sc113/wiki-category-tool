@@ -28,7 +28,7 @@ from ...workers.redundant_category_worker import RedundantCategoryWorker
 from ..widgets.shared_panels import CategorySourcePanel, TsvPreviewPanel
 from ..widgets.ui_helpers import (
     add_info_button, pick_file, open_from_edit, create_log_wrap,
-    make_clear_button, tsv_preview_from_path, init_progress, inc_progress,
+        tsv_preview_from_path, init_progress, inc_progress,
     log_message, set_start_stop_ratio, is_default_summary, check_tsv_format
 )
 
@@ -223,18 +223,7 @@ class RedundantCategoriesTab(QWidget):
         def _clear_all():
             self._reset_preview_state(clear_preview=True, clear_log=True)
 
-        try:
-            btn_extra = make_clear_button(self, _clear_all)
-            grid = wrapped_log.layout()
-            if grid is not None:
-                grid.addWidget(
-                    btn_extra,
-                    grid.rowCount() - 1,
-                    0,
-                    Qt.AlignBottom | Qt.AlignRight,
-                )
-        except Exception:
-            pass
+        wrapped_log.clear_button.clicked.connect(_clear_all)
 
         log_layout.addWidget(wrapped_log, 1)
         content_row.addWidget(log_wrap, 5)

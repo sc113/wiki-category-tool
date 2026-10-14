@@ -13,6 +13,7 @@ from PySide6.QtCore import QThread, Signal
 from ..constants import REQUEST_HEADERS
 from ..core.api_client import APIRequestError, WikimediaAPIClient
 from ..core.localization import translate_runtime
+from ..core.category_tree import walk_subcategories
 
 
 class CategoryFetchWorker(QThread):
@@ -747,54 +748,25 @@ class CategoryFetchWorker(QThread):
     def _fetch_subcategory_tree(
         self, *, category: str, lang: str, fam: str, max_depth: int
     ) -> tuple[list[str], dict[str, int]]:
-        if max_depth < 0 or self._stop:
-            return [], {}
-
-        visited: set[str] = {category.casefold()}
-        queue = deque([(category, 0)])
-        found: list[str] = []
-        found_depths: dict[str, int] = {}
-        processed = 0
-
-        while queue and not self._stop:
-            current_category, current_depth = queue.popleft()
-            subcategory_counts: dict[str, int] = {}
-            direct_subcats = self._fetch_direct_subcategories(
-                category=current_category,
+        def fetch(current, level, found, processed, queued):
+            counts = {}
+            children = self._fetch_direct_subcategories(
+                category=current,
                 lang=lang,
                 fam=fam,
-                progress_base_subcategories=len(found),
+                progress_base_subcategories=found,
                 processed_categories=processed,
-                queued_categories=len(queue),
-                current_depth=current_depth,
-                subcategory_counts=(
-                    subcategory_counts if current_depth < max_depth else None
-                ),
+                queued_categories=queued,
+                current_depth=level,
+                subcategory_counts=counts if level < max_depth else None,
             )
-            child_depth = current_depth + 1
-            for subcat in direct_subcats:
-                subcat_key = subcat.casefold()
-                if subcat_key in visited:
-                    continue
-                visited.add(subcat_key)
-                found.append(subcat)
-                found_depths[subcat_key] = child_depth
-                # A terminal category still belongs in the result. Only skip
-                # reading its children when the API explicitly reports zero.
-                if current_depth < max_depth and subcategory_counts.get(subcat_key) != 0:
-                    queue.append((subcat, child_depth))
+            return children, counts
 
-            processed += 1
-            if processed == 1 or processed % 10 == 0 or not queue:
-                self._emit_partial_snapshot(categories=found, pages=[])
-            if processed == 1 or processed % 25 == 0 or not queue:
-                self.progress.emit(
-                    self._fmt(
-                        "ui.source.fetch_subcategories_progress",
-                        "Reading subcategories: processed {processed}, found {found}.",
-                        processed=processed,
-                        found=len(found),
-                    )
-                )
-
-        return found, found_depths
+        return walk_subcategories(
+            category=category, max_depth=max_depth, fetch_children=fetch, stopped=lambda: self._stop,
+            on_snapshot=lambda found: self._emit_partial_snapshot(categories=found, pages=[]),
+            on_progress=lambda processed, found: self.progress.emit(self._fmt(
+                'ui.source.fetch_subcategories_progress',
+                'Reading subcategories: processed {processed}, found {found}.',
+                processed=processed, found=found)),
+        )

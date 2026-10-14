@@ -5,10 +5,12 @@ Base worker class with common rate limiting functionality for Wiki Category Tool
 import time
 import re
 import threading
+from functools import wraps
 from PySide6.QtCore import QThread, Signal
 import pywikibot
 
 from ..core.localization import translate_runtime
+from ..core.pywikibot_operation import EditFilterRejected, OperationCancelled, pywikibot_operation
 
 
 class BaseWorker(QThread):
@@ -25,6 +27,30 @@ class BaseWorker(QThread):
     
     progress = Signal(str)
     item_processed = Signal()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        run = cls.__dict__.get('run')
+        if run is None:
+            return
+
+        @wraps(run)
+        def cancellable_run(self, *args, **kwargs):
+            try:
+                with pywikibot_operation(self):
+                    return run(self, *args, **kwargs)
+            except OperationCancelled:
+                return
+            except EditFilterRejected as error:
+                details = ': '.join(filter(None, (error.filter_id, error.description))) or error.code
+                text = self._fmt('log.base.edit_filter_stopped', details=details)
+                self._set_failure(text)
+                stats = getattr(self, 'stats', None)
+                if isinstance(stats, dict) and 'failed' in stats:
+                    stats['failed'] += 1
+                self.progress.emit(text)
+
+        cls.run = cancellable_run
     
     def __init__(self, username: str, password: str, lang: str, family: str):
         """

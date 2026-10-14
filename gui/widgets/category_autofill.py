@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from ...core.category_transfer import parse_title_number, plan_numbered_titles, title_number_matches
 
 
-def title_fill_dialog(parent, rows, selected, translate, style, template=""):
+def title_fill_dialog(parent, rows, selected, translate, style, template="", *, only_empty=True):
     t = translate
     if not template:
         for row in rows:
@@ -66,7 +66,7 @@ def title_fill_dialog(parent, rows, selected, translate, style, template=""):
         nonlocal plan
         try:
             plan = plan_numbered_titles(rows, source_edit.text(), target_edit.text(),
-                                        selected if selected_only.isChecked() else None)
+                                        selected if selected_only.isChecked() else None, only_empty=only_empty)
         except ValueError:
             plan = ()
             summary.setText(t("number_template_invalid"))
