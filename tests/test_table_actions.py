@@ -10,9 +10,9 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QWidget, QTextEdit, QTabWidget, QAbstractItemView
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QWidget, QTextEdit, QTabWidget, QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
 from wiki_cat_tool.core.category_transfer import CategoryCreationRow, category_action_plan
 from wiki_cat_tool.gui.tabs.category_content_sync_tab import CategoryContentSyncTab
@@ -204,11 +204,60 @@ class TableActionTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(log.verticalScrollBar().isVisible())
         self.assertTrue(log.horizontalScrollBar().isVisible())
-        self.assertIs(wrap.clear_button.parent(), log.viewport())
-        self.assertLess(wrap.clear_button.geometry().right(), log.viewport().width())
-        self.assertLess(wrap.clear_button.geometry().bottom(), log.viewport().height())
+        self._assert_log_broom_anchored(log, wrap.clear_button)
+        for scrollbar in (log.verticalScrollBar(), log.horizontalScrollBar()):
+            for value in (scrollbar.maximum(), 0, scrollbar.maximum() // 2):
+                scrollbar.setValue(value)
+                self.app.processEvents()
+                self._assert_log_broom_anchored(log, wrap.clear_button)
+        log.verticalScrollBar().setValue(log.verticalScrollBar().maximum())
+        log.append('\n'.join('New log entry' for _ in range(80)))
+        self.app.processEvents()
+        self._assert_log_broom_anchored(log, wrap.clear_button)
+        wrap.resize(460, 240)
+        self.app.processEvents()
+        self._assert_log_broom_anchored(log, wrap.clear_button)
         wrap.clear_button.click()
         self.assertEqual('', log.toPlainText())
+        self.app.processEvents()
+        self._assert_log_broom_anchored(log, wrap.clear_button)
+        wrap.close()
+        wrap.deleteLater()
+
+    def _assert_log_broom_anchored(self, log, button):
+        viewport = log.viewport()
+        self.assertEqual(viewport.pos() + QPoint(viewport.width() - button.width() - 4,
+                                                viewport.height() - button.height() - 4),
+                         button.mapTo(log, QPoint(0, 0)))
+
+    def test_tree_log_broom_stays_anchored_during_scroll_and_header_changes(self):
+        from wiki_cat_tool.gui.widgets.ui_helpers import create_tree_log_wrap
+        log = QTreeWidget()
+        log.setColumnCount(2)
+        log.header().setStretchLastSection(False)
+        log.setColumnWidth(0, 1200)
+        wrap = create_tree_log_wrap(self.parent, log, with_header=True)
+        wrap.resize(340, 180)
+        wrap.show()
+        for index in range(80):
+            QTreeWidgetItem(log, [f'Page {index}', 'Log entry'])
+        self.app.processEvents()
+        self.assertTrue(log.verticalScrollBar().isVisible())
+        self.assertTrue(log.horizontalScrollBar().isVisible())
+        for scrollbar in (log.verticalScrollBar(), log.horizontalScrollBar()):
+            for value in (scrollbar.maximum(), 0, scrollbar.maximum() // 2):
+                scrollbar.setValue(value)
+                self.app.processEvents()
+                self._assert_log_broom_anchored(log, wrap.clear_button)
+        log.scrollToItem(QTreeWidgetItem(log, ['New page', 'New log entry']))
+        self.app.processEvents()
+        self._assert_log_broom_anchored(log, wrap.clear_button)
+        log.setHeaderHidden(True)
+        wrap.resize(460, 240)
+        self.app.processEvents()
+        self._assert_log_broom_anchored(log, wrap.clear_button)
+        wrap.clear_button.click()
+        self.assertEqual(0, log.topLevelItemCount())
         wrap.close()
         wrap.deleteLater()
 

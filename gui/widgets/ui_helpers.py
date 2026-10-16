@@ -2370,25 +2370,27 @@ def _default_log_header_html(parent_widget) -> str:
 
 
 class _LogClearOverlay(QObject):
-    """Anchor the clear button inside the viewport, away from scrollbars."""
+    """Keep the clear button fixed over the viewport, away from scrollbars."""
 
     def __init__(self, log, button):
-        viewport = log.viewport()
-        super().__init__(viewport)
+        super().__init__(log)
         self.button = button
-        button.setParent(viewport)
-        viewport.installEventFilter(self)
-        self._position(viewport)
+        # Scroll areas move viewport children when scrolling their contents.
+        button.setParent(log)
+        log.installEventFilter(self)
+        log.viewport().installEventFilter(self)
+        self._position()
 
-    def _position(self, viewport):
-        self.button.move(max(0, viewport.width() - self.button.width() - 4),
-                         max(0, viewport.height() - self.button.height() - 4))
+    def _position(self):
+        viewport = self.parent().viewport().geometry()
+        self.button.move(viewport.x() + max(0, viewport.width() - self.button.width() - 4),
+                         viewport.y() + max(0, viewport.height() - self.button.height() - 4))
         self.button.raise_()
         self.button.show()
 
-    def eventFilter(self, viewport, event):
-        if event.type() in (QEvent.Resize, QEvent.Show):
-            self._position(viewport)
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Resize, QEvent.Show, QEvent.Move):
+            self._position()
         return False
 
 
