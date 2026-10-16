@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QWidget, QTextEdit, QTabWidget
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QWidget, QTextEdit, QTabWidget, QAbstractItemView
 
 from wiki_cat_tool.core.category_transfer import CategoryCreationRow, category_action_plan
 from wiki_cat_tool.gui.tabs.category_content_sync_tab import CategoryContentSyncTab
@@ -133,6 +133,38 @@ class TableActionTests(unittest.TestCase):
         self.assertEqual(('one', 'Q17', 'linked'),
                          (table.item(index, 2).text(), table.item(index, 3).text(), table.item(index, 5).data(Qt.UserRole)))
         self.tab._set_busy(False)
+        self.assertTrue(table.isSortingEnabled())
+
+    def test_busy_preparation_table_can_scroll_and_select_without_editing_or_filling(self):
+        rows = tuple(CategoryCreationRow('Category:' + str(i), 'Категория:' + str(i), 'body') for i in range(400))
+        self.tab._fill_creation_table(rows)
+        tabs = self.parent.tabs = QTabWidget(self.parent)
+        tabs.resize(1280, 850)
+        tabs.addTab(self.tab, 'scan')
+        tabs.addTab(self.tab.creation_stage, 'prepare')
+        tabs.setCurrentWidget(self.tab.creation_stage)
+        self.parent.show()
+        table = self.tab.creation_table
+        self.tab._set_busy(True)
+        self.app.processEvents()
+        self.assertTrue(table.isEnabled())
+        self.assertTrue(table.verticalScrollBar().isEnabled())
+        self.assertGreater(table.verticalScrollBar().maximum(), 0)
+        self.assertEqual(QAbstractItemView.NoEditTriggers, table.editTriggers())
+        self.assertFalse(table.isSortingEnabled())
+        table.setCurrentCell(0, 2)
+        self.assertTrue(table._handle_rect().isEmpty())
+        before = table.verticalScrollBar().value()
+        table.setFocus()
+        QTest.keyClick(table, Qt.Key_PageDown)
+        self.assertGreater(table.verticalScrollBar().value(), before)
+        QTest.keyClick(table, Qt.Key_F2)
+        QTest.keyClick(table, Qt.Key_Delete)
+        self.assertNotEqual(QAbstractItemView.EditingState, table.state())
+        self.assertEqual(rows, self.tab._table_creation_rows())
+        self.assertFalse(self.tab.creation_history.undo_action.isEnabled())
+        self.tab._set_busy(False)
+        self.assertNotEqual(QAbstractItemView.NoEditTriggers, table.editTriggers())
         self.assertTrue(table.isSortingEnabled())
 
     def test_link_only_button_excludes_creation_rows_and_keeps_them_for_later(self):

@@ -19,6 +19,9 @@ from ..core.namespace_manager import normalize_title_by_selection
 from ..core.localization import translate_runtime
 
 
+_UNRESOLVED_ITEM = object()
+
+
 class CategoryTransferReadWorker(BaseWorker):
     row_ready = Signal(object)
     read_progress = Signal(object)
@@ -164,20 +167,16 @@ class CategoryTransferCreateWorker(BaseWorker):
     def _item_for(page):
         if not page.exists():
             return None
-        # Refresh pageprops to see sitelinks created during this operation.
-        page.properties(force=True)
-        if hasattr(page, "_item"):
-            del page._item
-        try:
-            item = pywikibot.ItemPage.fromPage(page)
-            item.get(force=True)
-            return item
-        except pywikibot.exceptions.NoPageError:
-            return None
+        # Resolve by wiki/title directly in Wikidata. preload_entities performs
+        # a fresh lookup and returns a fully loaded item, including its revision.
+        # This avoids both the pageprops round trip and their replication lag.
+        item = next(page.site.data_repository().preload_entities([page]), None)
+        if item is not None:
+            item.get()  # Cached; also reject redirects as the old lookup did.
+        return item
 
-    def _resolve_item(self, source, target):
-        source_item = self._item_for(source)
-        target_item = self._item_for(target)
+    def _resolve_item(self, source, target, *, items=None):
+        source_item, target_item = items if items is not None else (self._item_for(source), self._item_for(target))
         if source_item and target_item and source_item.getID() != target_item.getID():
             raise CategoryItemConflict(source.title(), target.title(), source_item.getID(), target_item.getID())
         item = source_item or target_item
@@ -228,10 +227,11 @@ class CategoryTransferCreateWorker(BaseWorker):
                 data["labels"][code] = page.title()
         return data
 
-    def _link_categories(self, source, target, repo) -> tuple[str, str]:
+    def _link_categories(self, source, target, repo, *, resolved_item=_UNRESOLVED_ITEM) -> tuple[str, str]:
         self._label_changes = {}
-        # Re-read both sides immediately before writing; never replace a link.
-        item = self._resolve_item(source, target)
+        # Existing pages were checked immediately before this call. A newly
+        # created page requires another check after its save has completed.
+        item = self._resolve_item(source, target) if resolved_item is _UNRESOLVED_ITEM else resolved_item
         data = self._link_data(source, target, item)
         old_labels = item.labels if item else {}
         added = sorted(code for code, value in data['labels'].items() if not old_labels.get(code))
@@ -326,7 +326,10 @@ class CategoryTransferCreateWorker(BaseWorker):
                     if self._stop:
                         raise TransferStopped()
                     self._label_changes = {}
-                    qid, action = self._link_categories(source, target, repo)
+                    if created:
+                        qid, action = self._link_categories(source, target, repo)
+                    else:
+                        qid, action = self._link_categories(source, target, repo, resolved_item=item)
                     self.stats[{"linked": "linked", "labels_updated": "labels", "already_linked": "already"}[action]] += 1
                     if action != 'labels_updated' and self._label_changes:
                         self.stats['labels'] += 1
@@ -587,7 +590,8 @@ class CategoryInterwikiLinkWorker(CategoryTransferCreateWorker):
                         self.linked_categories.append(target.title())
                     else:
                         self._label_changes = {}
-                        qid, action = self._link_categories(source, target, repo)
+                        item = self._resolve_item(source, target, items=(source_item, target_item))
+                        qid, action = self._link_categories(source, target, repo, resolved_item=item)
                         result.update(status=action, source_qid=qid, target_qid=qid,
                                       label_changes=dict(self._label_changes), detail=self._label_note())
                         self.stats[{"linked": "linked", "labels_updated": "labels", "already_linked": "already"}[action]] += 1

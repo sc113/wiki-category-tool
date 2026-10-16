@@ -143,7 +143,8 @@ class CategoryCreationTable(QTableWidget):
 
     def _handle_rect(self):
         row = self._fill_end if self._fill_anchor is not None else self.currentRow()
-        if not self.isEnabled() or row is None or row < 0 or self.currentColumn() != 2:
+        if (not self.isEnabled() or self.editTriggers() == QAbstractItemView.NoEditTriggers
+                or row is None or row < 0 or self.currentColumn() != 2):
             return QRect()
         rect = self.visualRect(self.model().index(row, 2))
         return QRect(rect.right() - 7, rect.bottom() - 7, 8, 8) if rect.isValid() else QRect()
@@ -158,7 +159,8 @@ class CategoryCreationTable(QTableWidget):
             painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Delete and self.state() != QAbstractItemView.EditingState:
+        if (event.key() == Qt.Key_Delete and self.editTriggers() != QAbstractItemView.NoEditTriggers
+                and self.state() != QAbstractItemView.EditingState):
             self.delete_rows_requested.emit()
             event.accept()
             return

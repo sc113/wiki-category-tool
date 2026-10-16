@@ -506,7 +506,8 @@ class CategoryTransferTab(QWidget):
         self.incomplete_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.number_titles_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.fill_content_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
-        self.creation_table.setEnabled(not busy)
+        self.creation_table.setEditTriggers(QAbstractItemView.NoEditTriggers if busy else
+                                           QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.create_btn.setEnabled(not busy and self.creation_table.rowCount() > 0 and bool(self._creation_rows)
                                    and self._preview_context == self._creation_context())
         self.create_btn.setText(self._t("create"))

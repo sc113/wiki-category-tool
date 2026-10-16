@@ -984,9 +984,64 @@ class CategoryCreationTests(unittest.TestCase):
         self.assertEqual([row.target_title for row in rows], self.worker.linked_categories)
 
     def test_lookup_errors_do_not_become_absent_wikidata_items(self):
-        with patch("wiki_cat_tool.workers.category_transfer_worker.pywikibot.ItemPage.fromPage", side_effect=RuntimeError("network")):
-            with self.assertRaises(RuntimeError):
-                self.worker._item_for(self.source)
+        self.repo.preload_entities.side_effect = RuntimeError('network')
+        with self.assertRaises(RuntimeError):
+            self.worker._item_for(self.source)
+
+    def test_fresh_wikidata_lookup_bypasses_stale_pageprops_and_does_not_load_twice(self):
+        item = Mock()
+        self.repo.preload_entities.side_effect = lambda pages: iter([item])
+        self.source.properties.return_value = {'wikibase_item': 'Qold'}
+        self.source._item = Mock()
+        self.assertIs(item, self.worker._item_for(self.source))
+        self.assertIs(item, self.worker._item_for(self.source))
+        self.assertEqual(2, self.repo.preload_entities.call_count)
+        self.source.properties.assert_not_called()
+        self.assertTrue(all(not call.kwargs for call in item.get.call_args_list))
+
+    def test_missing_wikidata_item_does_not_require_a_second_page_lookup(self):
+        self.repo.preload_entities.return_value = iter(())
+        self.assertIsNone(self.worker._item_for(self.source))
+        self.source.exists.assert_called_once()
+        self.source.properties.assert_not_called()
+
+    def test_conflict_after_page_creation_still_prevents_wikidata_write(self):
+        self.worker._resolve_item = Mock(side_effect=[None, CategoryItemConflict('A', 'Б', 'Q1', 'Q2')])
+        with patch('wiki_cat_tool.workers.category_transfer_worker.pywikibot.ItemPage') as item:
+            self.run_worker()
+        self.target.save.assert_called_once()
+        item.assert_not_called()
+        self.assertEqual(2, self.worker._resolve_item.call_count)
+        self.assertEqual(0, self.worker.stats['linked'])
+        self.assertEqual(1, self.worker.stats['failed'])
+
+    def test_existing_page_pair_is_resolved_once_before_linking(self):
+        self.target._exists = True
+        item = Mock(sitelinks={}, labels={})
+        item.getID.return_value = 'Q42'
+        self.worker._resolve_item = Mock(return_value=item)
+        self.run_worker()
+        self.worker._resolve_item.assert_called_once_with(self.source, self.target)
+        item.editEntity.assert_called_once()
+        self.assertEqual(1, self.worker.stats['linked'])
+
+    def test_created_page_is_rechecked_using_three_fresh_item_lookups(self):
+        item = Mock(sitelinks={}, labels={})
+        item.getID.return_value = 'Q42'
+        self.repo.preload_entities.side_effect = lambda pages: iter([item] if pages[0] is self.source else [])
+        self.run_worker()
+        self.assertEqual(3, self.repo.preload_entities.call_count)
+        self.target.save.assert_called_once()
+        item.editEntity.assert_called_once()
+        self.source.properties.assert_not_called()
+        self.target.properties.assert_not_called()
+
+    def test_redirect_lookup_is_rejected_instead_of_treated_as_a_missing_item(self):
+        item = Mock()
+        item.get.side_effect = pywikibot.exceptions.IsRedirectPageError(self.source)
+        self.repo.preload_entities.return_value = iter([item])
+        with self.assertRaises(pywikibot.exceptions.IsRedirectPageError):
+            self.worker._item_for(self.source)
 
     @staticmethod
     def namespace_link(title, prefix, namespace=14):
@@ -1718,6 +1773,7 @@ class InterwikiWriteTests(unittest.TestCase):
             self.worker._item_for = Mock(side_effect=pair + pair)
             self.run_worker()
             data = item.editEntity.call_args.args[0]
+            self.assertEqual(2, self.worker._item_for.call_count)
             self.assertEqual({'ruwiki' if source_side else 'enwiki'}, set(data['sitelinks']))
             self.assertEqual({'en': 'Category:A', 'ru': 'Категория:Б'}, data['labels'])
             self.assertNotIn('claims', data)
