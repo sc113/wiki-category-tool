@@ -73,7 +73,7 @@ class FileInputRow(QWidget):
         return translate_key(key, getattr(host, '_ui_lang', 'ru'), key)
 
     def choose_file(self):
-        pick_file(self.owner, self.path_edit, self.pattern)
+        pick_file(self.owner, self.path_edit, self.pattern, on_open=self.on_open)
 
     def _show_path_menu(self, position):
         menu = self.path_edit.createStandardContextMenu()

@@ -124,6 +124,7 @@ class CategoryCreationTable(QTableWidget):
     def __init__(self, rows, columns, parent=None):
         super().__init__(rows, columns, parent)
         self.setMouseTracking(True)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._fill_anchor = None
         self._fill_end = None
         self._fill_value = ""
@@ -131,15 +132,26 @@ class CategoryCreationTable(QTableWidget):
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setInterval(80)
         self._scroll_timer.timeout.connect(self._scroll_fill)
+        self._custom_column_widths = False
+        self._fitting_columns = False
+        self.horizontalHeader().sectionResized.connect(self._remember_column_resize)
+
+    def _remember_column_resize(self, *_args):
+        if self.isVisible() and not self._fitting_columns:
+            self._custom_column_widths = True
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.columnCount() == 6:
-            remaining = self.viewport().width() - sum(self.columnWidth(col) for col in range(3, 6))
-            # Keep the three input headers readable on narrow windows; scroll
-            # horizontally instead of squeezing each editable column to 90 px.
-            for col in range(3):
-                self.setColumnWidth(col, max(200, remaining // 3))
+        if self.columnCount() == 6 and not self._custom_column_widths and not self._fitting_columns:
+            self._fitting_columns = True
+            try:
+                remaining = self.viewport().width() - sum(self.columnWidth(col) for col in range(3, 6))
+                # Fit untouched columns, but preserve widths chosen by the user
+                # when scrollbars, the log or the window change the viewport.
+                for col in range(3):
+                    self.setColumnWidth(col, max(200, remaining // 3))
+            finally:
+                self._fitting_columns = False
 
     def _handle_rect(self):
         row = self._fill_end if self._fill_anchor is not None else self.currentRow()

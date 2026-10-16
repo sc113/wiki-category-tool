@@ -491,18 +491,23 @@ def embed_button_in_lineedit(edit: QLineEdit, on_click):
         return None
 
 
-def pick_file(parent_widget, edit: QLineEdit, pattern: str):
-    """Open file dialog and set selected path to QLineEdit.
+def pick_file(parent_widget, edit: QLineEdit, pattern: str, *, on_open=None):
+    """Select a file, set its path, and open it after a successful selection.
 
     Args:
         parent_widget: Parent widget for the dialog
         edit: QLineEdit to set the selected path
         pattern: File pattern filter (e.g., '*.tsv')
+        on_open: Load the selected file; defaults to opening its editor.
     """
     path, _ = QFileDialog.getOpenFileName(
         parent_widget, _t(parent_widget, 'ui.choose_file', 'Choose file'), filter=f'Files ({pattern})')
     if path:
         edit.setText(path)
+        if on_open is None:
+            open_from_edit(parent_widget, edit)
+        else:
+            on_open()
 
 
 def pick_save(parent_widget, edit: QLineEdit, default_ext: str):

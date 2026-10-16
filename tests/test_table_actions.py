@@ -421,7 +421,7 @@ class TableActionTests(unittest.TestCase):
         self.assertEqual(1, self.tab.creation_table.rowCount())
         self.assertEqual('new input', self.tab.creation_table.item(0, 2).text())
 
-    def test_file_choice_preserves_edits_until_open_and_loads_the_typed_path(self):
+    def test_file_choice_opens_immediately_and_manual_path_waits_for_open(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'список.tsv'
@@ -430,13 +430,95 @@ class TableActionTests(unittest.TestCase):
                        return_value=(str(path), 'TSV')):
                 self.tab.browse_btn.click()
             self.assertEqual(str(path), self.tab.tsv_path.text())
-            self.assertEqual(self.rows, self.tab._table_creation_rows())
+            self.assertEqual((CategoryCreationRow('Category:New', 'Категория:Новое', 'new text'),),
+                             self.tab._table_creation_rows())
+            other = Path(directory) / 'other.tsv'
+            other.write_text('Category:Other\tКатегория:Другое\tother text\n', encoding='utf-8')
+            self.tab.tsv_path.setText(str(other))
+            self.assertEqual('Category:New', self.tab._table_creation_rows()[0].source_title)
             with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName') as chooser:
                 self.tab.preview_btn.click()
             chooser.assert_not_called()
-        self.assertEqual((CategoryCreationRow('Category:New', 'Категория:Новое', 'new text'),),
+        self.assertEqual((CategoryCreationRow('Category:Other', 'Категория:Другое', 'other text'),),
                          self.tab._table_creation_rows())
         self.assertFalse(self.tab.create_btn.isEnabled())
+
+    def test_cancelling_file_choice_keeps_current_path_and_table(self):
+        path = self.tab.tsv_path.text()
+        with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName', return_value=('', '')), \
+             patch.object(self.tab.file_controls, 'on_open') as load:
+            self.tab.browse_btn.click()
+        load.assert_not_called()
+        self.assertEqual(path, self.tab.tsv_path.text())
+        self.assertEqual(self.rows, self.tab._table_creation_rows())
+
+    def test_file_choice_loads_scan_sync_and_interwiki_inputs_immediately(self):
+        import tempfile
+        sync = CategoryContentSyncTab(self.parent)
+        interwiki = CategoryInterwikiTab(self.parent)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'categories.tsv'
+            for row in (self.tab.scan_file_row, sync.source_panel.file_row, interwiki.file_row):
+                path.write_text('Category:New\n' if row is self.tab.scan_file_row else
+                                'Category:New\tКатегория:Новое\ttext\n', encoding='utf-8')
+                with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName',
+                           return_value=(str(path), 'TSV')) as chooser, \
+                     patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor, \
+                     patch('wiki_cat_tool.gui.widgets.ui_helpers.QMessageBox.warning') as warning:
+                    row.browse_btn.click()
+                chooser.assert_called_once()
+                editor.assert_not_called()
+                warning.assert_not_called()
+                self.assertEqual(str(path), row.path_edit.text())
+        self.assertEqual(['Category:New'], [row['source_title'] for row in self.tab._rows()])
+        self.assertEqual(['Категория:Новое'], sync._load_categories_from_inputs())
+        self.assertEqual((CategoryCreationRow('Category:New', 'Категория:Новое', ''),), interwiki._rows())
+
+    def test_file_choice_opens_the_editor_once_for_legacy_file_inputs(self):
+        from wiki_cat_tool.gui.widgets.shared_panels import FileInputRow
+        from wiki_cat_tool.gui.widgets.ui_helpers import pick_file
+        path_edit = QLineEdit('old.tsv', self.parent)
+        file_row = FileInputRow(self.parent, 'File', path_edit)
+        with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName',
+                   return_value=(__file__, 'Python')), \
+             patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor:
+            file_row.browse_btn.click()
+            editor.assert_called_once()
+            self.assertEqual(Path(__file__).resolve(), Path(editor.call_args.args[0].toLocalFile()))
+            editor.reset_mock()
+            pick_file(self.parent, path_edit, '*.py')
+            editor.assert_called_once()
+        with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName', return_value=('', '')), \
+             patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor:
+            file_row.browse_btn.click()
+        editor.assert_not_called()
+
+    def test_preparation_columns_can_grow_beyond_the_viewport_and_keep_their_width(self):
+        tabs = self.parent.tabs = QTabWidget(self.parent)
+        tabs.resize(1280, 850)
+        tabs.addTab(self.tab, 'scan')
+        tabs.addTab(self.tab.creation_stage, 'prepare')
+        tabs.setCurrentWidget(self.tab.creation_stage)
+        self.parent.show()
+        for _ in range(3):
+            self.app.processEvents()
+        table = self.tab.creation_table
+        width = table.viewport().width() + 300
+        table.horizontalHeader().resizeSection(1, width)
+        for _ in range(3):
+            self.app.processEvents()
+        self.assertEqual(width, table.columnWidth(1))
+        self.assertTrue(table.horizontalScrollBar().isVisible())
+        self.assertGreater(table.horizontalScrollBar().maximum(), 300)
+        self.tab.log_toggle.setChecked(True)
+        self.app.processEvents()
+        self.assertEqual(width, table.columnWidth(1))
+        tabs.resize(1000, 700)
+        self.tab.log_toggle.setChecked(False)
+        self.app.processEvents()
+        self.assertEqual(width, table.columnWidth(1))
+        table.horizontalScrollBar().setValue(table.horizontalScrollBar().maximum())
+        self.assertGreater(table.horizontalOffset(), 0)
 
     def test_import_on_visible_preparation_page_enables_actions_without_switching_tabs(self):
         import tempfile
@@ -456,8 +538,9 @@ class TableActionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'categories.tsv'
             path.write_text(''.join(f'Category:{i} establishments\tКатегория:{i}\tbody\n' for i in range(538)), encoding='utf-8')
-            self.tab.tsv_path.setText(str(path))
-            self.tab.preview_btn.click()
+            with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName',
+                       return_value=(str(path), 'TSV')):
+                self.tab.browse_btn.click()
         self.assertEqual([], switches)
         self.assertIs(tabs.currentWidget(), self.tab.creation_stage)
         self.assertEqual(538, self.tab.creation_table.rowCount())

@@ -258,7 +258,7 @@ class CategoryTransferCreateWorker(BaseWorker):
     def _wikidata_summary(data, added, updated, *, new_item=False):
         parts = ['Create Wikimedia category item'] if new_item else []
         if data['sitelinks']:
-            parts.append('Link Wikimedia categories')
+            parts.append(f'Add sitelinks ({", ".join(sorted(data["sitelinks"]))})')
         for action, codes in (('Add', added), ('Update', updated)):
             if codes:
                 parts.append(f'{action} Wikimedia category labels ({", ".join(codes)})')

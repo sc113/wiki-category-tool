@@ -1280,7 +1280,7 @@
   "ui.transfer.button_clear_log_tip": "Clear log entries. The table and processing results are kept.",
   "ui.transfer.button_open_file_tip": "Open the specified file in the default editor.",
   "ui.transfer.button_import_file_tip": "Load the specified file into the working table or list.",
-  "ui.transfer.button_browse_file_tip": "Choose a file and set its path in the field.",
+  "ui.transfer.button_browse_file_tip": "Choose a file and open it immediately.",
   "ui.transfer.button_open_sync_file_tip": "Load target categories: column one of a plain list or column two of a transfer TSV.",
   "ui.transfer.button_add_row_tip": "Add an empty category pair and start entering the source title.",
   "ui.transfer.button_paste_pairs_tip": "Add clipboard pairs: source category in column one, current-language category in column two.",

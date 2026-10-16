@@ -862,6 +862,8 @@ class CategoryCreationTests(unittest.TestCase):
         self.assertEqual({"enwiki", "ruwiki"}, set(data["sitelinks"]))
         self.assertEqual({"en": "Category:A", "ru": "Категория:Б"}, data["labels"])
         self.assertEqual([claim.toJSON.return_value], data["claims"])
+        self.assertEqual('Create Wikimedia category item; Add sitelinks (enwiki, ruwiki); '
+                         'Add Wikimedia category labels (en, ru)', item.editEntity.call_args.kwargs['summary'])
 
     def test_existing_item_keeps_other_sitelinks_and_labels(self):
         item = Mock(sitelinks={"enwiki": Mock(title="Category:A"), "dewiki": Mock(title="Kategorie:A")},
@@ -916,7 +918,7 @@ class CategoryCreationTests(unittest.TestCase):
         self.worker.category_result.connect(results.append)
         self.worker.progress.connect(logs.append)
         self.run_worker()
-        self.assertEqual('Link Wikimedia categories', item.editEntity.call_args.kwargs['summary'])
+        self.assertEqual('Add sitelinks (ruwiki)', item.editEntity.call_args.kwargs['summary'])
         self.assertEqual({}, item.editEntity.call_args.args[0]['labels'])
         self.assertEqual({}, results[0]['label_changes'])
         self.assertEqual((1, 0), (self.worker.stats['linked'], self.worker.stats['labels']))
@@ -945,7 +947,7 @@ class CategoryCreationTests(unittest.TestCase):
         self.worker.category_result.connect(results.append)
         self.worker.progress.connect(logs.append)
         self.run_worker()
-        self.assertEqual('Link Wikimedia categories; Add Wikimedia category labels (ru); '
+        self.assertEqual('Add sitelinks (ruwiki); Add Wikimedia category labels (ru); '
                          'Update Wikimedia category labels (en)', item.editEntity.call_args.kwargs['summary'])
         self.assertEqual({'added': ['ru'], 'updated': ['en']}, results[0]['label_changes'])
         self.assertEqual((1, 1), (self.worker.stats['linked'], self.worker.stats['labels']))
@@ -1200,7 +1202,6 @@ class CategoryTransferUiTests(unittest.TestCase):
                  patch.object(self.tab, "_warn") as warning:
                 self.tab.choose_tsv()
                 self.assertEqual(rows, self.tab._table_creation_rows())
-                self.tab.preview_btn.click()
             warning.assert_called_once()
         self.assertEqual(rows, self.tab._table_creation_rows())
 
