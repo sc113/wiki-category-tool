@@ -69,11 +69,11 @@ class CategoryInterwikiTab(QWidget):
         self.toolbar = toolbar
         layout.addWidget(toolbar)
         self.tsv_path = QLineEdit('categories.tsv')
-        self.file_row = FileInputRow(self, self._t('interwiki_file'), self.tsv_path, self.open_tsv, editor_menu=True)
+        self.file_row = FileInputRow(self, self._t('interwiki_file'), self.tsv_path, editor_menu=True)
         self.file_row.setToolTip(self._t('import_file_tip'))
-        self.open_btn = self.file_row.open_btn
         layout.addWidget(self.file_row)
         self.table_tools, row = self._action_group('table_tools')
+        self.read_file_btn = self._button('read_file', self.open_tsv, row)
         self.add_btn = self._button('add_row', self.add_row, row)
         self.paste_btn = self._button('paste_pairs', self.paste_pairs, row)
         self.paste_btn.setToolTip(self._t('paste_pairs_tip'))
@@ -127,6 +127,7 @@ class CategoryInterwikiTab(QWidget):
         self.log_btn = self.log_panel.toggle
         layout.addWidget(self.footer)
         self.source_lang.textChanged.connect(self._context_changed)
+        self.tsv_path.textChanged.connect(lambda: self._set_busy(self._busy))
         self.table.itemSelectionChanged.connect(lambda: self.delete_btn.setEnabled(not self._busy and bool(self.table.selectedIndexes())))
         self._set_busy(False)
         self._apply_theme()
@@ -217,13 +218,14 @@ class CategoryInterwikiTab(QWidget):
         self.report_btn.setEnabled(not busy and bool(self._conflicts))
         self.sync_btn.setEnabled(not busy and bool(self._linked_pairs) and self._linked_context == self._context())
         self.stop_btn.setEnabled(busy)
+        self.read_file_btn.setEnabled(not busy and bool(self.tsv_path.text().strip()))
         has_rows = self.table.rowCount() > 0
         self.check_btn.setEnabled(not busy and has_rows)
         self.fill_btn.setEnabled(not busy and has_rows)
         self.export_btn.setEnabled(not busy and has_rows)
         self.delete_btn.setEnabled(not busy and bool(self.table.selectedIndexes()))
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
-        for button, active in ((self.open_btn, not has_rows), (self.add_btn, not has_rows),
+        for button, active in ((self.read_file_btn, not has_rows), (self.add_btn, not has_rows),
                                (self.check_btn, has_rows and not self.link_btn.isEnabled() and not self.sync_btn.isEnabled()),
                                (self.link_btn, self.link_btn.isEnabled()), (self.sync_btn, self.sync_btn.isEnabled())):
             highlight_next_action(button, not busy and active, theme)

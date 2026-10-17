@@ -1959,7 +1959,7 @@ class MainWindow(QMainWindow):
                 color: #e5f4f7;
                 selection-background-color: rgba(61, 129, 149, 0.85);
             }
-            QPushButton, QToolButton#categorySourceTextButton {
+            QPushButton, QToolButton[categoryActionMenu="true"] {
                 min-width: 0;
                 min-height: 27px;
                 max-height: 27px;
@@ -1976,16 +1976,25 @@ class MainWindow(QMainWindow):
                 padding: 2px 6px;
                 font-size: 12px;
             }
+            QToolButton[categoryActionMenu="true"] {
+                padding-right: 28px;
+            }
+            QToolButton[categoryActionMenu="true"]::menu-button {
+                width: 22px;
+                border: none;
+                border-left: 1px solid rgba(102, 188, 199, 0.45);
+                background: transparent;
+            }
             QComboBox#sourceFetchModeCombo {
                 padding: 2px 8px;
             }
-            QPushButton:hover, QToolButton#categorySourceTextButton:hover {
+            QPushButton:hover, QToolButton[categoryActionMenu="true"]:hover {
                 background: rgba(31, 103, 131, 0.92);
             }
-            QPushButton:pressed, QToolButton#categorySourceTextButton:pressed {
+            QPushButton:pressed, QToolButton[categoryActionMenu="true"]:pressed {
                 background: rgba(13, 67, 93, 0.96);
             }
-            QPushButton:disabled, QToolButton:disabled, QToolButton#categorySourceTextButton:disabled {
+            QPushButton:disabled, QToolButton:disabled, QToolButton[categoryActionMenu="true"]:disabled {
                 color: rgba(215, 232, 236, 0.45);
                 border-color: rgba(92, 146, 154, 0.25);
                 background: rgba(20, 51, 67, 0.52);
@@ -2187,6 +2196,11 @@ class MainWindow(QMainWindow):
         """
         arrow_path = resource_path('assets/caret-down-light.svg').replace('\\', '/')
         qss += f"""
+            QToolButton[categoryActionMenu="true"]::menu-arrow {{
+                image: url("{arrow_path}");
+                width: 10px;
+                height: 10px;
+            }}
             QComboBox::down-arrow {{
                 image: url("{arrow_path}");
                 width: 10px;
@@ -2823,7 +2837,7 @@ class MainWindow(QMainWindow):
                 color: #22313d;
                 selection-background-color: #d7eaf9;
             }
-            QPushButton, QToolButton#categorySourceTextButton {
+            QPushButton, QToolButton[categoryActionMenu="true"] {
                 min-width: 0;
                 min-height: 27px;
                 max-height: 27px;
@@ -2844,16 +2858,25 @@ class MainWindow(QMainWindow):
                 padding: 2px 6px;
                 font-size: 12px;
             }
+            QToolButton[categoryActionMenu="true"] {
+                padding-right: 28px;
+            }
+            QToolButton[categoryActionMenu="true"]::menu-button {
+                width: 22px;
+                border: none;
+                border-left: 1px solid #9fbdd6;
+                background: transparent;
+            }
             QComboBox#sourceFetchModeCombo {
                 padding: 2px 8px;
             }
-            QPushButton:hover, QToolButton#categorySourceTextButton:hover {
+            QPushButton:hover, QToolButton[categoryActionMenu="true"]:hover {
                 background: #dfedf9;
             }
-            QPushButton:pressed, QToolButton#categorySourceTextButton:pressed {
+            QPushButton:pressed, QToolButton[categoryActionMenu="true"]:pressed {
                 background: #d3e5f5;
             }
-            QPushButton:disabled, QToolButton:disabled, QToolButton#categorySourceTextButton:disabled {
+            QPushButton:disabled, QToolButton:disabled, QToolButton[categoryActionMenu="true"]:disabled {
                 color: #90a7b8;
                 border-color: #d3e0ea;
                 background: #f6f9fc;
@@ -3055,6 +3078,11 @@ class MainWindow(QMainWindow):
         """
         arrow_path = resource_path('assets/caret-down-dark.svg').replace('\\', '/')
         qss += f"""
+            QToolButton[categoryActionMenu="true"]::menu-arrow {{
+                image: url("{arrow_path}");
+                width: 10px;
+                height: 10px;
+            }}
             QComboBox::down-arrow {{
                 image: url("{arrow_path}");
                 width: 10px;

@@ -1199,9 +1199,12 @@ class CategoryTransferUiTests(unittest.TestCase):
             path = Path(folder) / "broken.tsv"
             path.write_text("\tКатегория:Нет источника\ttext", encoding="utf-8")
             with patch("wiki_cat_tool.gui.tabs.category_transfer_tab.QFileDialog.getOpenFileName", return_value=(str(path), "")), \
+                 patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl'), \
                  patch.object(self.tab, "_warn") as warning:
                 self.tab.choose_tsv()
                 self.assertEqual(rows, self.tab._table_creation_rows())
+                warning.assert_not_called()
+                self.tab.read_creation_btn.click()
             warning.assert_called_once()
         self.assertEqual(rows, self.tab._table_creation_rows())
 

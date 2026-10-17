@@ -4,12 +4,25 @@ from PySide6.QtCore import QEvent, QRect, Qt
 from PySide6.QtGui import QFont, QPainter, QPalette
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QSplitter, QToolButton,
-    QVBoxLayout, QWidget, QProgressBar, QPushButton, QStyle,
+    QVBoxLayout, QWidget, QProgressBar, QPushButton, QStyle, QMenu,
 )
 
 from ...core.localization import translate_key
 from .category_creation_table import TransferActionsLayout, TransferToolbarLayout
 from .ui_helpers import create_log_wrap, init_progress
+
+
+def category_menu_button(text, callback):
+    """A normal action button with a separate arrow for related actions."""
+    button = QToolButton()
+    button.setProperty('categoryActionMenu', True)
+    button.setText(text)
+    button.setPopupMode(QToolButton.MenuButtonPopup)
+    button.clicked.connect(callback)
+    menu = QMenu(button)
+    menu.setToolTipsVisible(True)
+    button.setMenu(menu)
+    return button, menu
 
 
 class CategorySettingsLayout(QGridLayout):

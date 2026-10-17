@@ -34,14 +34,13 @@ _FETCH_MODE_BOTH = 'both'
 class FileInputRow(QWidget):
     """The shared caption/path/browse/open row used by file-based tools."""
 
-    def __init__(self, owner, caption, path_edit, on_open=None, *, pattern='*.tsv', editor_menu=False):
+    def __init__(self, owner, caption, path_edit, *, pattern='*.tsv', editor_menu=False):
         super().__init__(owner)
         self.owner = owner
         self.path_edit = path_edit
         self.pattern = pattern
-        self.on_open = on_open or (lambda: open_from_edit(owner, path_edit))
-        self.open_tooltip_key = ('ui.transfer.button_import_file_tip' if on_open
-                                 else 'ui.transfer.button_open_file_tip')
+        self.on_open = lambda: open_from_edit(owner, path_edit)
+        self.open_tooltip_key = 'ui.transfer.button_open_file_tip'
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
@@ -244,6 +243,7 @@ class CategorySourcePanel(QGroupBox):
     """Универсальная левая панель источника страниц."""
 
     fetch_started = Signal()
+    fetch_finished = Signal()
 
     def __init__(
         self,
@@ -259,13 +259,13 @@ class CategorySourcePanel(QGroupBox):
         file_section_label: str = '',
         file_caption: str = '',
         default_input_path: str = '',
-        file_open_handler=None,
+        file_pattern='*.txt',
     ):
         self.parent_window = parent_window or parent
         super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
-        self.file_open_handler = file_open_handler
+        self.file_pattern = file_pattern
         self._fetch_worker = None
         self._fetch_base_text = ''
         self._fetch_append_mode = False
@@ -465,8 +465,7 @@ class CategorySourcePanel(QGroupBox):
 
         layout.addWidget(QLabel(file_section_label))
         self.in_path = QLineEdit(default_input_path)
-        self.file_row = FileInputRow(self, file_caption, self.in_path, self.file_open_handler,
-                                    pattern='*.txt *.tsv' if self.file_open_handler else '*.txt')
+        self.file_row = FileInputRow(self, file_caption, self.in_path, pattern=self.file_pattern)
         layout.addWidget(self.file_row)
         self.file_edit = self.in_path
 
@@ -1008,6 +1007,7 @@ class CategorySourcePanel(QGroupBox):
                 worker.deleteLater()
         except Exception:
             pass
+        self.fetch_finished.emit()
 
     def _fetch_titles_for_mode(
         self,

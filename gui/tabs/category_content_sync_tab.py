@@ -207,7 +207,7 @@ class CategoryContentSyncTab(QWidget):
             ),
             file_caption=self._t("ui.sync.file_caption", "Category list"),
             default_input_path='categories.tsv',
-            file_open_handler=self._open_sync_category_file,
+            file_pattern='*.txt *.tsv',
         )
         self.sync_ns_combo = self.source_panel.ns_combo
         self.cat_edit = self.source_panel.cat_edit
@@ -466,15 +466,17 @@ class CategoryContentSyncTab(QWidget):
         self.table_toolbar = CategoryTableToolbar(self.view_tabs)
         self.table_toolbar.set_log_panel(self.log_panel)
         self.table_tools, tools = category_actions(self._stage_t("table_tools"), framed=True)
+        self.read_file_btn = QPushButton(self._stage_t('read_file'))
+        self.read_file_btn.setProperty('transfer_text_key', 'read_file')
+        set_category_button_tooltip(self.read_file_btn, 'read_sync_file', self._stage_t)
+        self.read_file_btn.clicked.connect(self._open_sync_category_file)
+        tools.addWidget(self.read_file_btn)
         self.delete_preview_btn = QPushButton(self._stage_t("delete"))
         set_category_button_tooltip(self.delete_preview_btn, 'delete', self._stage_t)
         set_category_button_tooltip(self.clear_skipped_btn, 'clear_skipped', self._stage_t)
-        self.source_panel.file_row.open_tooltip_key = 'ui.transfer.button_open_sync_file_tip'
-        self.source_panel.file_row.refresh_localized_texts()
         self.delete_preview_btn.clicked.connect(self.delete_selected_preview_rows)
         tools.addWidget(self.delete_preview_btn)
         tools.addWidget(self.clear_skipped_btn)
-        self.table_tools.hide()
         self.preview_table.itemSelectionChanged.connect(self._update_clear_skipped_button_state)
         left_layout.addWidget(self.left_stack, 1)
         remove_inner_frame(self.source_panel)
@@ -500,7 +502,10 @@ class CategoryContentSyncTab(QWidget):
 
         self.source_panel.set_log_widget(self.sync_log)
         self.source_panel.fetch_started.connect(lambda: self.log_panel.set_expanded(True))
+        self.source_panel.fetch_started.connect(lambda: self.read_file_btn.setEnabled(False))
+        self.source_panel.fetch_finished.connect(self._update_clear_skipped_button_state)
         self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
+        self.source_panel.in_path.textChanged.connect(lambda: self._update_clear_skipped_button_state())
         self.source_lang_edit.textChanged.connect(self._update_preview_headers)
         self._bind_preview_invalidation()
         self._update_clear_skipped_button_state()
@@ -516,7 +521,6 @@ class CategoryContentSyncTab(QWidget):
             (self.subcategories_checkbox, "toggled"),
             (self.article_depth_spin, "valueChanged"),
             (self.source_panel.manual_list, "textChanged"),
-            (self.source_panel.in_path, "textChanged"),
             (self.source_panel.cat_edit, "textChanged"),
         ]
         for obj, signal_name in handlers:
@@ -568,7 +572,9 @@ class CategoryContentSyncTab(QWidget):
         self.view_tabs.setTabText(1, self._t('ui.preview', 'Preview'))
         self.view_tabs.setTabToolTip(1, self._stage_t('preview_view_tip'))
         self.log_panel.refresh_localized_texts()
-        self.table_tools.setTitle(self._stage_t('table_tools'))
+        self.table_tools.setTitle(self._stage_t('table_tools' if self._preview_mode else 'list_tools'))
+        self.read_file_btn.setText(self._stage_t('read_file'))
+        set_category_button_tooltip(self.read_file_btn, 'read_sync_file', self._stage_t)
         self.actions_group.setAccessibleName(self._stage_t('create_tools'))
         self.delete_preview_btn.setText(self._stage_t('delete'))
         for row in range(self.preview_table.rowCount()):
@@ -608,7 +614,10 @@ class CategoryContentSyncTab(QWidget):
         self.view_tabs.setTabEnabled(1, self._preview_mode or self._preview_ready or self.preview_table.rowCount() > 0)
         self.view_tabs.setCurrentIndex(1 if self._preview_mode else 0)
         self.view_tabs.blockSignals(blocked)
-        self.table_tools.setVisible(self._preview_mode)
+        self.table_tools.show()
+        self.table_tools.setTitle(self._stage_t('table_tools' if self._preview_mode else 'list_tools'))
+        self.delete_preview_btn.setVisible(self._preview_mode)
+        self.clear_skipped_btn.setVisible(self._preview_mode)
         self.current_progress_bar.setVisible(self._preview_mode)
         self.workspace_frame.setTitle(self._t('ui.sync.preview_group' if self._preview_mode else 'ui.sync.target_group', 'Categories'))
         self.preview_btn.setText(self._t('ui.preview', 'Preview'))
@@ -1292,6 +1301,8 @@ class CategoryContentSyncTab(QWidget):
         btn.setEnabled((not running) and has_skipped)
         self.delete_preview_btn.setEnabled((not running) and bool(self.preview_table.selectedIndexes()))
         self.view_tabs.setEnabled(not running)
+        fetching = bool(self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning())
+        self.read_file_btn.setEnabled(not running and not fetching and bool(self.source_panel.in_path.text().strip()))
 
     @table_action("preview_history")
     def clear_skipped_rows(self):
@@ -1947,6 +1958,10 @@ class CategoryContentSyncTab(QWidget):
         return unique
 
     def _open_sync_category_file(self):
+        if ((self.preview_worker and self.preview_worker.isRunning())
+                or (self.sync_worker and self.sync_worker.isRunning())
+                or (self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning())):
+            return
         try:
             titles, pairs = read_sync_tsv(self.source_panel.in_path.text().strip())
         except Exception as error:
@@ -1954,6 +1969,7 @@ class CategoryContentSyncTab(QWidget):
             return
         self.source_panel.cat_edit.clear()
         self.source_panel.manual_list.setPlainText('\n'.join(titles))
+        self._set_preview_mode(False)
         family, target_lang = self.get_current_family(), self.get_current_language()
         self._transfer_pairs = tuple(CategoryPair(
             pair.source_title, self._normalized_target_categories([pair.target_title], family, target_lang)[0], pair.qid)
@@ -2454,6 +2470,7 @@ class CategoryContentSyncTab(QWidget):
         self.preview_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._update_clear_skipped_button_state()
+        self.read_file_btn.setEnabled(False)
         log_message(
             self.sync_log,
             self._t("ui.sync.preview.started", "Starting preview..."),
@@ -2543,6 +2560,7 @@ class CategoryContentSyncTab(QWidget):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self._update_clear_skipped_button_state()
+        self.read_file_btn.setEnabled(False)
         log_message(
             self.sync_log,
             self._t("ui.sync.started", "Starting sync..."),

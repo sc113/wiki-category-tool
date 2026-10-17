@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QUrl, QEvent
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence, QShortcut, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGroupBox,
-    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QStyledItemDelegate, QPlainTextEdit,
     QTextEdit, QVBoxLayout, QWidget, QToolButton, QSizePolicy, QLayout,
 )
@@ -28,7 +28,7 @@ from ...workers.category_transfer_worker import (
 )
 from ..widgets.ui_helpers import category_table_palette, category_table_style, create_spin_control, add_info_button, inc_progress, init_progress, log_message, set_reading_progress, style_transfer_languages
 from ..widgets.shared_panels import FileInputRow
-from ..widgets.category_stage import CategoryLogPanel, CategoryParametersPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, highlight_next_action, refresh_category_toolbar, set_category_button_tooltip, refresh_category_button_tooltips
+from ..widgets.category_stage import CategoryLogPanel, CategoryParametersPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, category_menu_button, highlight_next_action, refresh_category_toolbar, set_category_button_tooltip, refresh_category_button_tooltips
 from ..widgets.category_autofill import title_fill_dialog
 from ..widgets.table_history import TableHistory, table_action, pause_sorting
 from ..widgets.category_plan import category_plan_widget
@@ -163,13 +163,9 @@ class CategoryTransferTab(QWidget):
         self.scan_ns_combo.hide()
         scan_toolbar, scan_controls = self._toolbar(self.source_lang, self.target_label, None)
         self.scan_report_path = QLineEdit('categories.tsv')
-        self.scan_file_row = FileInputRow(self, self._t('ready_categories_file'), self.scan_report_path,
-                                         self.open_scan_file, editor_menu=True)
+        self.scan_file_row = FileInputRow(self, self._t('ready_categories_file'), self.scan_report_path, editor_menu=True)
         self.scan_file_row.setToolTip(self._t('scan_inputs_tip'))
-        self.scan_file_row.open_tooltip_key = 'ui.transfer.scan_inputs_tip'
-        self.scan_file_row.refresh_localized_texts()
         self.scan_file_row.pattern = '*.txt *.tsv'
-        self.open_scan_btn = self.scan_file_row.open_btn
         self.export_scan_btn = QPushButton()
         self.export_scan_btn.setText(self._t("export_plan"))
         set_category_button_tooltip(self.export_scan_btn, 'export_scan', self._t)
@@ -246,7 +242,13 @@ class CategoryTransferTab(QWidget):
         scan_header_row = QHBoxLayout(self.scan_header)
         scan_header_row.setContentsMargins(0, 0, 0, 0)
         scan_header_row.setSpacing(10)
-        self.load_btn = self._button('read', lambda: self.load_categories(), scan_header_row)
+        self.load_btn, read_menu = category_menu_button(self._t('read'), lambda: self.load_categories())
+        self.load_btn.setProperty('transfer_text_key', 'read')
+        set_category_button_tooltip(self.load_btn, 'read', self._t)
+        scan_header_row.addWidget(self.load_btn)
+        self.read_scan_action = read_menu.addAction(self._t('read_file'))
+        self.read_scan_action.setToolTip(self._t('button_read_scan_file_tip'))
+        self.read_scan_action.triggered.connect(self.open_scan_file)
         scan_header_row.addWidget(self.scan_guidance, 1)
         self.scan_table_toolbar = CategoryTableToolbar(self.scan_header)
         layout.addWidget(results_page, 1)
@@ -274,19 +276,16 @@ class CategoryTransferTab(QWidget):
         self._toolbars = (scan_toolbar, creation_toolbar)
         creation_stage_layout.addWidget(creation_toolbar)
         self.tsv_path = QLineEdit('categories.tsv')
-        self.file_controls = FileInputRow(self, self._t('preparation_file'), self.tsv_path,
-                                         self.import_tsv, editor_menu=True)
+        self.file_controls = FileInputRow(self, self._t('preparation_file'), self.tsv_path, editor_menu=True)
         self.file_controls.setToolTip(self._t('import_file_tip'))
-        self.file_controls.open_tooltip_key = 'ui.transfer.import_file_tip'
-        self.file_controls.refresh_localized_texts()
         self.browse_btn = self.file_controls.browse_btn
-        self.preview_btn = self.file_controls.open_btn
         creation_stage_layout.addWidget(self.file_controls)
         self.summary_edit = QLineEdit(default_create_summary(self._context()[1]))
         self.summary_edit.setCursorPosition(0)
         self._summary_lang = self._context()[1]
         self.summary_edit.setMinimumWidth(0)
         self.creation_table_tools, edit_actions = self._action_group("table_tools")
+        self.read_creation_btn = self._button('read_file', self.import_tsv, edit_actions)
         self.autofill_btn = QToolButton()
         self.autofill_btn.setText(self._t("autofill"))
         self.autofill_btn.setCheckable(True)
@@ -325,24 +324,15 @@ class CategoryTransferTab(QWidget):
         content_actions.setSpacing(4)
         self.fill_content_btn = self._button("fill_content", self.fill_content, content_actions)
         self.copy_first_btn = self._button("copy_first_content", self.copy_first_content, content_actions)
-        self.load_text_btn = QToolButton()
+        self.load_text_btn, source_menu = category_menu_button(self._t('load_source_content'), self.load_source_content)
         self.load_text_btn.setObjectName('categorySourceTextButton')
-        self.load_text_btn.setStyleSheet('QToolButton#categorySourceTextButton { padding-right: 24px; } '
-                                        'QToolButton#categorySourceTextButton::menu-button { width: 18px; border: none; background: transparent; }')
-        self.load_text_btn.setText(self._t('load_source_content'))
         self.load_text_btn.setProperty('transfer_text_key', 'load_source_content')
-        self.load_text_btn.setFont(self.fill_content_btn.font())
-        self.load_text_btn.setPopupMode(QToolButton.MenuButtonPopup)
-        self.load_text_btn.clicked.connect(self.load_source_content)
         set_category_button_tooltip(self.load_text_btn, 'load_source_content', self._t)
         content_actions.addWidget(self.load_text_btn)
-        source_menu = QMenu(self.load_text_btn)
-        source_menu.setToolTipsVisible(True)
         self.translate_source_names = source_menu.addAction(self._t('translate_source_names'))
         self.translate_source_names.setCheckable(True)
         self.translate_source_names.setChecked(True)
         self.translate_source_names.setToolTip(self._t('translate_source_names_tip'))
-        self.load_text_btn.setMenu(source_menu)
         self.copy_first_btn.setToolTip(self._t("copy_first_tip"))
         self.load_text_btn.setToolTip(self._t("source_content_tip"))
         content_layout.addLayout(content_actions)
@@ -440,6 +430,8 @@ class CategoryTransferTab(QWidget):
         self.include_subcategories.toggled.connect(self._scan_subcategories_changed)
         self.links_source_lang.textChanged.connect(self._links_source_changed)
         self.root_edit.textChanged.connect(lambda: self._set_busy(self._busy))
+        self.scan_report_path.textChanged.connect(lambda: self._set_busy(self._busy))
+        self.tsv_path.textChanged.connect(lambda: self._set_busy(self._busy))
         self.table.itemSelectionChanged.connect(lambda: self.delete_btn.setEnabled(not self._busy and bool(self.table.selectedIndexes())))
         self.creation_table.itemSelectionChanged.connect(lambda: self.remove_creation_btn.setEnabled(not self._busy and bool(self.creation_table.selectedIndexes())))
         self._refresh_target()
@@ -531,7 +523,7 @@ class CategoryTransferTab(QWidget):
         for widget in (self.settings, self.scan_root_controls, self.source_lang, self.root_edit, self.load_btn,
                        self.scan_file_row, self.export_scan_btn, self.delete_btn, self.clear_btn, self.clear_all_scan_btn, self.clear_all_creation_btn, self.reset_scan_btn,
                        self.file_controls,
-                       self.preview_btn, self.summary_edit, self.links_source_lang,
+                       self.read_creation_btn, self.summary_edit, self.links_source_lang,
                        self.remove_creation_btn, self.export_creation_btn, self.check_links_btn,
                        self.autofill_box, self.autofill_btn):
             widget.setEnabled(not busy)
@@ -560,7 +552,9 @@ class CategoryTransferTab(QWidget):
         self.stop_btn.setEnabled(busy)
         has_scan_rows = self.table.rowCount() > 0
         has_creation_rows = self.creation_table.rowCount() > 0
-        self.load_btn.setEnabled(not busy and bool(self.root_edit.text().strip()))
+        self.load_btn.setEnabled(not busy and bool(self.root_edit.text().strip() or self.scan_report_path.text().strip()))
+        self.read_scan_action.setEnabled(not busy and bool(self.scan_report_path.text().strip()))
+        self.read_creation_btn.setEnabled(not busy and bool(self.tsv_path.text().strip()))
         self.delete_btn.setEnabled(not busy and bool(self.table.selectedIndexes()))
         self.clear_btn.setEnabled(not busy and any(row.get('status') == 'scanned' and row.get('potential') == 0 for row in self._rows()))
         self.clear_all_scan_btn.setEnabled(not busy and has_scan_rows)
@@ -580,9 +574,9 @@ class CategoryTransferTab(QWidget):
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
         needs_fill = any((self.creation_table.item(row, 5).data(Qt.UserRole) or '') in {'needs_translation', 'needs_content'}
                          for row in range(self.creation_table.rowCount()))
-        for button, active in ((self.load_btn, not has_scan_rows), (self.open_scan_btn, not has_scan_rows),
+        for button, active in ((self.load_btn, not has_scan_rows),
                                (self.scan_btn, has_scan_rows and not scanned), (self.next_btn, scanned),
-                               (self.preview_btn, not has_creation_rows),
+                               (self.read_creation_btn, not has_creation_rows),
                                (self.incomplete_btn, needs_fill), (self.autofill_btn, needs_fill),
                                (self.check_links_btn, has_creation_rows and not needs_fill and not self.create_btn.isEnabled() and not self.sync_btn.isEnabled()),
                                (self.create_btn, self.create_btn.isEnabled()), (self.sync_btn, self.sync_btn.isEnabled())):
@@ -1862,6 +1856,8 @@ class CategoryTransferTab(QWidget):
             self.scan_file_row.refresh_localized_texts()
             self.scan_file_row.caption.setText(self._t('ready_categories_file'))
             self.scan_file_row.setToolTip(self._t('scan_inputs_tip'))
+            self.read_scan_action.setText(self._t('read_file'))
+            self.read_scan_action.setToolTip(self._t('button_read_scan_file_tip'))
             self.file_controls.refresh_localized_texts()
             self.file_controls.caption.setText(self._t('preparation_file'))
             self.file_controls.setToolTip(self._t('import_file_tip'))

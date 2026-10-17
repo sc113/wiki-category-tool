@@ -535,15 +535,23 @@ class TableActionTests(unittest.TestCase):
         self.assertEqual(1, self.tab.creation_table.rowCount())
         self.assertEqual('new input', self.tab.creation_table.item(0, 2).text())
 
-    def test_file_choice_opens_immediately_and_manual_path_waits_for_open(self):
+    def test_file_choice_opens_editor_and_table_changes_only_after_reading(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'список.tsv'
             path.write_text('Category:New\tКатегория:Новое\tnew text\n', encoding='utf-8')
             with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName',
-                       return_value=(str(path), 'TSV')):
+                       return_value=(str(path), 'TSV')), \
+                 patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor:
                 self.tab.browse_btn.click()
+            editor.assert_called_once()
             self.assertEqual(str(path), self.tab.tsv_path.text())
+            self.assertEqual(self.rows, self.tab._table_creation_rows())
+            with patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor:
+                self.tab.file_controls.open_btn.click()
+            editor.assert_called_once()
+            self.assertEqual(self.rows, self.tab._table_creation_rows())
+            self.tab.read_creation_btn.click()
             self.assertEqual((CategoryCreationRow('Category:New', 'Категория:Новое', 'new text'),),
                              self.tab._table_creation_rows())
             other = Path(directory) / 'other.tsv'
@@ -551,7 +559,7 @@ class TableActionTests(unittest.TestCase):
             self.tab.tsv_path.setText(str(other))
             self.assertEqual('Category:New', self.tab._table_creation_rows()[0].source_title)
             with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName') as chooser:
-                self.tab.preview_btn.click()
+                self.tab.read_creation_btn.click()
             chooser.assert_not_called()
         self.assertEqual((CategoryCreationRow('Category:Other', 'Категория:Другое', 'other text'),),
                          self.tab._table_creation_rows())
@@ -566,7 +574,58 @@ class TableActionTests(unittest.TestCase):
         self.assertEqual(path, self.tab.tsv_path.text())
         self.assertEqual(self.rows, self.tab._table_creation_rows())
 
-    def test_file_choice_loads_scan_sync_and_interwiki_inputs_immediately(self):
+    def test_split_read_uses_category_or_file_even_when_both_fields_are_filled(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'categories.tsv'
+            path.write_text('Category:From file\n', encoding='utf-8')
+            self.tab.scan_report_path.setText(str(path))
+            self.tab.root_edit.setText('Category:From Wikipedia')
+            with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTransferReadWorker') as worker, \
+                 patch.object(self.tab, '_start_read'), \
+                 patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor:
+                self.tab.load_btn.click()
+                self.assertEqual('Category:From Wikipedia', worker.call_args.kwargs['category'])
+                worker.reset_mock()
+                self.tab.read_scan_action.trigger()
+                worker.assert_not_called()
+                editor.assert_not_called()
+            self.assertEqual(['Category:From file'], [row['source_title'] for row in self.tab._rows()])
+            self.assertEqual('Category:From Wikipedia', self.tab.root_edit.text())
+
+    def test_file_read_actions_follow_paths_and_do_not_replace_busy_tables(self):
+        interwiki = CategoryInterwikiTab(self.parent)
+        interwiki.load_pairs(self.rows, 'en')
+        self.tab.scan_report_path.clear()
+        self.tab.tsv_path.clear()
+        interwiki.tsv_path.clear()
+        self.assertFalse(self.tab.read_scan_action.isEnabled())
+        self.assertFalse(self.tab.read_creation_btn.isEnabled())
+        self.assertFalse(interwiki.read_file_btn.isEnabled())
+        self.tab.scan_report_path.setText('categories.tsv')
+        self.tab.tsv_path.setText('categories.tsv')
+        interwiki.tsv_path.setText('categories.tsv')
+        self.assertTrue(self.tab.read_scan_action.isEnabled())
+        self.assertTrue(self.tab.read_creation_btn.isEnabled())
+        self.assertTrue(interwiki.read_file_btn.isEnabled())
+        self.tab._set_busy(True)
+        interwiki._set_busy(True)
+        self.assertFalse(self.tab.load_btn.isEnabled())
+        self.assertFalse(self.tab.read_scan_action.isEnabled())
+        self.assertFalse(self.tab.read_creation_btn.isEnabled())
+        self.assertFalse(interwiki.read_file_btn.isEnabled())
+        with patch('builtins.open') as read:
+            self.tab.open_scan_file()
+            self.tab.import_tsv()
+            interwiki.open_tsv()
+        read.assert_not_called()
+        self.assertEqual(self.rows, self.tab._table_creation_rows())
+        self.assertEqual(tuple(CategoryCreationRow(row.source_title, row.target_title, '') for row in self.rows),
+                         interwiki._rows())
+        self.tab._set_busy(False)
+        interwiki._set_busy(False)
+
+    def test_opening_files_uses_editor_and_read_actions_load_each_page(self):
         import tempfile
         sync = CategoryContentSyncTab(self.parent)
         interwiki = CategoryInterwikiTab(self.parent)
@@ -581,9 +640,22 @@ class TableActionTests(unittest.TestCase):
                      patch('wiki_cat_tool.gui.widgets.ui_helpers.QMessageBox.warning') as warning:
                     row.browse_btn.click()
                 chooser.assert_called_once()
-                editor.assert_not_called()
+                editor.assert_called_once()
                 warning.assert_not_called()
                 self.assertEqual(str(path), row.path_edit.text())
+                self.assertEqual([], self.tab._rows())
+                self.assertEqual('', sync.source_panel.manual_list.toPlainText())
+                self.assertEqual((), interwiki._rows())
+                with patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor:
+                    row.open_btn.click()
+                editor.assert_called_once()
+            # Each input is read explicitly, using the same paths as Open.
+            self.tab.scan_report_path.setText(str(path))
+            path.write_text('Category:New\n', encoding='utf-8')
+            self.tab.read_scan_action.trigger()
+            path.write_text('Category:New\tКатегория:Новое\ttext\n', encoding='utf-8')
+            sync.read_file_btn.click()
+            interwiki.read_file_btn.click()
         self.assertEqual(['Category:New'], [row['source_title'] for row in self.tab._rows()])
         self.assertEqual(['Категория:Новое'], sync._load_categories_from_inputs())
         self.assertEqual((CategoryCreationRow('Category:New', 'Категория:Новое', ''),), interwiki._rows())
@@ -653,8 +725,10 @@ class TableActionTests(unittest.TestCase):
             path = Path(directory) / 'categories.tsv'
             path.write_text(''.join(f'Category:{i} establishments\tКатегория:{i}\tbody\n' for i in range(538)), encoding='utf-8')
             with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName',
-                       return_value=(str(path), 'TSV')):
+                       return_value=(str(path), 'TSV')), \
+                 patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl'):
                 self.tab.browse_btn.click()
+            self.tab.read_creation_btn.click()
         self.assertEqual([], switches)
         self.assertIs(tabs.currentWidget(), self.tab.creation_stage)
         self.assertEqual(538, self.tab.creation_table.rowCount())
@@ -679,7 +753,7 @@ class TableActionTests(unittest.TestCase):
             path = Path(directory) / 'categories.tsv'
             path.write_text('Category:New\tКатегория:Новое\ttext\n', encoding='utf-8')
             self.tab.tsv_path.setText(str(path))
-            self.tab.preview_btn.click()
+            self.tab.read_creation_btn.click()
         self.assertTrue(self.tab.check_links_btn.isEnabled())
         self.assertTrue(self.tab.export_creation_btn.isEnabled())
         self.assertFalse(self.tab.create_btn.isEnabled())
@@ -694,7 +768,7 @@ class TableActionTests(unittest.TestCase):
             path.write_text('Category:A\tКатегория:А\n', encoding='utf-8')
             tab.tsv_path.setText(str(path))
             with patch('wiki_cat_tool.gui.widgets.ui_helpers.QFileDialog.getOpenFileName') as chooser:
-                tab.open_btn.click()
+                tab.read_file_btn.click()
             chooser.assert_not_called()
         self.assertEqual((CategoryCreationRow('Category:A', 'Категория:А', ''),), tab._rows())
         self.assertFalse(tab.link_btn.isEnabled())
@@ -732,20 +806,20 @@ class TableActionTests(unittest.TestCase):
             path = Path(directory) / 'list.txt'
             path.write_text('a\nCategory:B\na\n', encoding='utf-8-sig')
             self.tab.scan_report_path.setText(str(path))
-            self.tab.open_scan_btn.click()
+            self.tab.read_scan_action.trigger()
             self.assertCountEqual(['a', 'Category:B'], [row['source_title'] for row in self.tab._rows()])
             self.assertTrue(all(row['manual_input'] and row['status'] == 'loaded' for row in self.tab._rows()))
             invalid = Path(directory) / 'invalid.tsv'
             invalid.write_text('Category:C\tTarget\n', encoding='utf-8')
             self.tab.scan_report_path.setText(str(invalid))
             with patch.object(self.tab, '_warn') as warning:
-                self.tab.open_scan_btn.click()
+                self.tab.read_scan_action.trigger()
             warning.assert_called_once()
             self.assertEqual(2, self.tab.table.rowCount())
             report = Path(directory) / 'report.tsv'
             report.write_text('a\tb\tc\td\te\tf\tg\nCategory:C\t\t\t0\t4\t2\tscanned\n', encoding='utf-8')
             self.tab.scan_report_path.setText(str(report))
-            self.tab.open_scan_btn.click()
+            self.tab.read_scan_action.trigger()
             self.assertEqual(['Category:C'], [row['source_title'] for row in self.tab._rows()])
             self.assertEqual(2, self.tab._rows()[0]['potential'])
         self.assertEqual(self.rows, self.tab._table_creation_rows())
@@ -1148,17 +1222,31 @@ class TableActionTests(unittest.TestCase):
         self.assertEqual(25, self.tab.bar.value())
         self.assertIn('10/25', self.tab.bar.format())
 
-    def test_sync_file_open_loads_first_column_and_keeps_curated_input_until_open(self):
+    def test_sync_open_uses_editor_and_read_loads_first_column(self):
         import tempfile
         tab = CategoryContentSyncTab(self.parent)
         tab.source_panel.manual_list.setPlainText('Category:Manual')
+        tab.preview_table.setRowCount(1)
+        tab.preview_table.setItem(0, 0, QTableWidgetItem('Category:Preview'))
+        tab._preview_ready = True
+        tab._set_preview_mode(True)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'categories.tsv'
             path.write_text('Category:A\nCategory:B\n', encoding='utf-8-sig')
             tab.source_panel.in_path.setText(str(path))
             self.assertEqual(['Category:Manual'], tab._load_categories_from_inputs())
-            tab.source_panel.file_row.open_btn.click()
+            with patch('wiki_cat_tool.gui.widgets.ui_helpers.QDesktopServices.openUrl') as editor:
+                tab.source_panel.file_row.open_btn.click()
+            editor.assert_called_once()
+            self.assertEqual(['Category:Manual'], tab._load_categories_from_inputs())
+            self.assertTrue(tab._preview_mode)
+            self.assertTrue(tab._preview_ready)
+            self.assertEqual('Category:Preview', tab.preview_table.item(0, 0).text())
+            tab.read_file_btn.click()
             self.assertEqual(['Category:A', 'Category:B'], tab._load_categories_from_inputs())
+            self.assertFalse(tab._preview_mode)
+            self.assertFalse(tab._preview_ready)
+            self.assertEqual(0, tab.preview_table.rowCount())
         tab.source_panel.manual_list.setPlainText('  \n')
         tab.cat_edit.setText('Category:Fallback')
         self.assertEqual(['Category:Fallback'], tab._load_categories_from_inputs())
@@ -1231,6 +1319,16 @@ class TableActionTests(unittest.TestCase):
         self.assertTrue(tab.log_panel.expanded)
         self.assertTrue(tab.log_panel.toggle.isChecked())
         self.assertFalse(tab.settings.isHidden())
+        self.assertFalse(tab.read_file_btn.isEnabled())
+        tab.source_panel._fetch_worker = Mock()
+        tab.source_panel._fetch_worker.isRunning.return_value = True
+        tab._update_clear_skipped_button_state()
+        self.assertFalse(tab.read_file_btn.isEnabled())
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.read_sync_tsv') as read:
+            tab._open_sync_category_file()
+        read.assert_not_called()
+        tab.source_panel._on_fetch_titles_finished()
+        self.assertTrue(tab.read_file_btn.isEnabled())
 
     def test_table_shortcut_preserves_cell_editors_own_undo(self):
         table = QTableWidget(1, 1)
