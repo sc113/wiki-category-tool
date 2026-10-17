@@ -259,6 +259,27 @@ def parse_scan_list(text: str) -> tuple[str, ...]:
     return tuple(titles)
 
 
+def scan_count_value(row, key):
+    value = row.get(key)
+    if value is None:
+        return None
+    categories = row.get(key + '_categories')
+    return value if categories is None else f'{value}+{categories}'
+
+
+def parse_scan_count(value):
+    if not value:
+        return None, None
+    if not re.fullmatch(r'[0-9]+(?:\+[0-9]+)?', value):
+        raise ValueError(value)
+    parts = value.split('+')
+    return int(parts[0]), int(parts[1]) if len(parts) == 2 else None
+
+
+def scan_available_count(row):
+    return (row.get('potential') or 0) + (row.get('potential_categories') or 0)
+
+
 def _scan_report_header(fields):
     return (len(fields) == 7 and fields[0].strip().casefold() in {'source category', 'исходная категория'}
             and fields[2].strip().casefold() == 'wikidata')
@@ -361,6 +382,9 @@ class CategoryTransferReader:
         self._article_links: dict[str, str] = {}
         self._scan_metadata = {}
         self._scan_articles = {}
+        self._scan_subcategories = {}
+        self._subcategory_links = {}
+        self.include_subcategories = False
         self._scan_errors = {}
 
     def close(self):
@@ -503,12 +527,15 @@ class CategoryTransferReader:
         if batch:
             yield batch
 
-    def pages(self, lang: str, titles: list[str], *, props: str = "info|pageprops|langlinks|categoryinfo") -> dict[str, dict]:
+    def pages(self, lang: str, titles: list[str], *, props: str = "info|pageprops|langlinks|categoryinfo",
+              resolve_redirects: bool = False) -> dict[str, dict]:
         result = {}
         preview = self._preview_activity is not None and self._preview_activity['phase'] == 'check_pages'
         if preview:
             self._preview_total(len(titles))
         base_params = {"action": "query", "prop": props}
+        if resolve_redirects:
+            base_params['redirects'] = 1
         if "revisions" in props:
             base_params.update(rvprop="content", rvslots="main")
         if "langlinks" in props:
@@ -521,6 +548,9 @@ class CategoryTransferReader:
                 query = data.get("query", {})
                 for alias in query.get("normalized", []):
                     aliases[alias["from"]] = alias["to"]
+                if resolve_redirects:
+                    for alias in query.get('redirects', []):
+                        aliases[alias['from']] = alias['to']
                 for page in query.get("pages", []):
                     title = page["title"]
                     if title not in result:
@@ -531,7 +561,10 @@ class CategoryTransferReader:
                     break
                 params.update(data["continue"])
             for raw in batch:
-                actual = aliases.get(raw, raw)
+                actual, seen = raw, set()
+                while actual in aliases and actual not in seen:
+                    seen.add(actual)
+                    actual = aliases[actual]
                 if actual in result:
                     result[raw] = result[actual]
             if preview:
@@ -984,6 +1017,8 @@ class CategoryTransferReader:
         base = {"action": "query", "generator": "categorymembers", "gcmtitle": category,
                 "gcmtype": "page", "gcmnamespace": 0, "gcmlimit": "max",
                 "prop": "info|pageprops", "ppprop": "wikibase_item"}
+        if self.include_subcategories:
+            base.update(gcmtype='page|subcat', gcmnamespace='0|14')
         params, pages = dict(base), {}
         while True:
             self.check_stop()
@@ -997,7 +1032,12 @@ class CategoryTransferReader:
                     stored = pages.setdefault(title, {})
                     stored.update({key: value for key, value in page.items() if key != 'pageprops'})
                     stored.setdefault('pageprops', {}).update(page.get('pageprops', {}))
-            self.on_activity(dict(phase='scan_articles', title=category, articles=len(pages)))
+            if self.include_subcategories:
+                self.on_activity(dict(phase='scan_subpages', title=category,
+                                      articles=sum(page.get('ns') == 0 for page in pages.values()),
+                                      categories=sum(page.get('ns') == 14 for page in pages.values())))
+            else:
+                self.on_activity(dict(phase='scan_articles', title=category, articles=len(pages)))
             if not data.get('continue'):
                 return pages
             params = {**base, **data['continue']}
@@ -1005,6 +1045,7 @@ class CategoryTransferReader:
     def prepare_scan_batch(self, rows):
         """Share category, Wikidata and target-page lookups for a small batch."""
         self._scan_metadata, self._scan_articles, self._scan_errors = {}, {}, {}
+        self._scan_subcategories = {}
         titles = [row['source_title'] for row in rows]
         try:
             self.check_stop()
@@ -1017,37 +1058,45 @@ class CategoryTransferReader:
                     if not self.valid_page(categories.get(title), 14):
                         raise ValueError(message('source_missing', title=title))
                     members = self.read_article_pages(title)
-                    self._scan_articles[title] = list(members)
+                    self._scan_articles[title] = [name for name, page in members.items() if page.get('ns') == 0]
+                    self._scan_subcategories[title] = [name for name, page in members.items() if page.get('ns') == 14]
                     articles.update(members)
                 except TransferStopped:
                     raise
                 except Exception as error:
                     self._scan_errors[title] = error
                 self.on_activity(dict(phase='scan_members', title=title, checked=index, count=len(rows)))
+            member_namespaces = (0, 14) if self.include_subcategories else (0,)
             qids = [page.get('pageprops', {}).get('wikibase_item', '')
-                    for pages, namespace in ((categories, 14), (articles, 0))
+                    for pages, namespace in [(categories, 14)] + [(articles, ns) for ns in member_namespaces]
                     for page in pages.values() if self.valid_page(page, namespace)]
             self.on_activity(dict(phase='scan_links', count=len(rows)))
             links = self.item_links([qid for qid in qids if qid])
             candidates = self._category_candidates(titles, categories, links)
             targets = {row['target_title'] for row in candidates.values() if row['target_title']}
             for title, page in articles.items():
-                qid = page.get('pageprops', {}).get('wikibase_item', '') if self.valid_page(page, 0) else ''
-                self._article_links[title] = links.get(qid, '')
-                if self._article_links[title]:
-                    targets.add(self._article_links[title])
+                namespace = page.get('ns')
+                if namespace not in member_namespaces:
+                    continue
+                qid = page.get('pageprops', {}).get('wikibase_item', '') if self.valid_page(page, namespace) else ''
+                cache = self._article_links if namespace == 0 else self._subcategory_links
+                cache[title] = links.get(qid, '')
+                if cache[title]:
+                    targets.add(cache[title])
             verified = self.pages(self.target_lang, sorted(targets), props='info') if targets else {}
             for row in candidates.values():
                 target = verified.get(row['target_title'])
                 row['target_title'] = target['title'] if self.valid_page(target, 14) else ''
             self._scan_metadata = candidates
-            for title, members in self._scan_articles.items():
-                found = []
-                for article in members:
-                    target = verified.get(self._article_links.get(article, ''))
-                    if self.valid_page(target, 0):
-                        found.append(target['title'])
-                self._scan_articles[title] = (len(members), list(dict.fromkeys(found)))
+            for namespace, cache, rows in ((0, self._article_links, self._scan_articles),
+                                           (14, self._subcategory_links, self._scan_subcategories)):
+                for title, members in rows.items():
+                    found = []
+                    for member in members:
+                        target = verified.get(cache.get(member, ''))
+                        if self.valid_page(target, namespace):
+                            found.append(target['title'])
+                    rows[title] = (len(members), list(dict.fromkeys(found)))
         except TransferStopped:
             raise
         except Exception as error:
@@ -1055,21 +1104,26 @@ class CategoryTransferReader:
 
     def article_matches(self, articles: list[str]) -> dict[str, str]:
         """Existing mainspace counterparts, shared by discovery and sync."""
+        return self._page_matches(articles, 0, self._article_links)
+
+    def subcategory_matches(self, categories):
+        return self._page_matches(categories, 14, self._subcategory_links)
+
+    def _page_matches(self, articles, namespace, cache):
         self.check_stop()
-        uncached = [title for title in articles if title not in self._article_links]
+        uncached = [title for title in articles if title not in cache]
         pages = self.pages(self.source_lang, uncached, props="info|pageprops") if uncached else {}
         qids = [page.get("pageprops", {}).get("wikibase_item", "") for page in pages.values()
-                if self.valid_page(page, 0)]
+                if self.valid_page(page, namespace)]
         links = self.item_links([qid for qid in qids if qid])
         for title in uncached:
             page = pages.get(title)
-            qid = page.get("pageprops", {}).get("wikibase_item", "") if self.valid_page(page, 0) else ""
-            self._article_links[title] = links.get(qid, "")
-        linked = list(dict.fromkeys(self._article_links[title] for title in articles
-                                   if self._article_links.get(title)))
+            qid = page.get("pageprops", {}).get("wikibase_item", "") if self.valid_page(page, namespace) else ""
+            cache[title] = links.get(qid, "")
+        linked = list(dict.fromkeys(cache[title] for title in articles if cache.get(title)))
         targets = self.pages(self.target_lang, linked, props="info") if linked else {}
         return {title: targets[linked]["title"] for title in articles
-                if (linked := self._article_links.get(title)) and self.valid_page(targets.get(linked), 0)}
+                if (linked := cache.get(title)) and self.valid_page(targets.get(linked), namespace)}
 
     def scan(self, row: dict) -> dict:
         self.check_stop()
@@ -1078,6 +1132,7 @@ class CategoryTransferReader:
             self.prepare_scan_batch([row])
         if error := self._scan_errors.pop(title, None):
             self._scan_articles.pop(title, None)
+            self._scan_subcategories.pop(title, None)
             self._scan_metadata.pop(title, None)
             raise error
         metadata = self._scan_metadata.pop(title, None)
@@ -1086,5 +1141,11 @@ class CategoryTransferReader:
         total, found = self._scan_articles.pop(title)
         result = {**row, **metadata, 'total': total, 'potential': len(found),
                   'target_articles': found, 'status': 'scanned'}
+        total_categories, found_categories = self._scan_subcategories.pop(title, (0, []))
+        for key in ('total_categories', 'potential_categories', 'target_categories'):
+            result.pop(key, None)
+        if self.include_subcategories:
+            result.update(total_categories=total_categories, potential_categories=len(found_categories),
+                          target_categories=found_categories)
         result.pop('error', None)
         return result

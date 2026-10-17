@@ -16,12 +16,13 @@ class CategoryArticlesDialog(QDialog):
     def __init__(self, data, *, language, family, translate, parent=None):
         super().__init__(parent)
         self._t, self.language, self.family = translate, language, family
+        self.include_subcategories = data.get('total_categories') is not None
         self.setObjectName('categoryArticlesDialog')
-        self.setWindowTitle(translate('articles_title'))
+        self.setWindowTitle(translate('subpages_title' if self.include_subcategories else 'articles_title'))
         self.resize(720, 480)
-        self.articles = tuple(dict.fromkeys(data.get('target_articles', ())))
+        self.articles = tuple(dict.fromkeys([*data.get('target_articles', ()), *data.get('target_categories', ())]))
         self.has_target = bool(data.get('target_title'))
-        count = len(self.articles) if 'target_articles' in data else data.get('potential', 0)
+        count = len(self.articles) if 'target_articles' in data else (data.get('potential') or 0) + (data.get('potential_categories') or 0)
         layout = QVBoxLayout(self)
         heading = QLabel(data['source_title'] + (' → ' + data['target_title'] if self.has_target else ''))
         heading.setWordWrap(True)
@@ -32,8 +33,9 @@ class CategoryArticlesDialog(QDialog):
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         self.table = QTableWidget(len(self.articles), 2 if self.has_target else 1)
-        self.table.setHorizontalHeaderLabels([translate('article_column'), translate('membership_column')]
-                                            if self.has_target else [translate('article_column')])
+        page_caption = translate('page_column' if self.include_subcategories else 'article_column')
+        self.table.setHorizontalHeaderLabels([page_caption, translate('membership_column')]
+                                            if self.has_target else [page_caption])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)

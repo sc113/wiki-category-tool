@@ -30,12 +30,14 @@ class CategoryTransferReadWorker(BaseWorker):
     def __init__(self, *, source_lang: str, target_lang: str, family: str,
                  delay: float = 0.5, categories: list[dict] | None = None,
                  category: str = "", depth: int = 0, skip_existing_level: int = 2,
-                 include_root: bool = False, namespace_selection: str | int = 'auto'):
+                 include_root: bool = False, namespace_selection: str | int = 'auto',
+                 include_subcategories: bool = False):
         super().__init__("", "", target_lang, family)
         self.reader = CategoryTransferReader(source_lang, target_lang, family,
                                              self._stop_event, delay)
         self.reader.on_retry = self._retry_notice
         self.reader.on_activity = self._read_activity
+        self.reader.include_subcategories = include_subcategories
         self.categories = categories
         self.category = category
         self.depth = depth
@@ -58,7 +60,8 @@ class CategoryTransferReadWorker(BaseWorker):
                 'scan_categories': 'ui.transfer.scan_batch_categories',
                 'scan_members': 'ui.transfer.scan_batch_members',
                 'scan_links': 'ui.transfer.scan_batch_links',
-                'scan_articles': 'ui.transfer.scan_article_packet'}
+                'scan_articles': 'ui.transfer.scan_article_packet',
+                'scan_subpages': 'ui.transfer.scan_subpage_packet'}
         if phase in keys:
             self.progress.emit(translate_runtime(keys[phase], keys[phase]).format(**payload))
         elif phase == 'expected' and payload.get('total') is not None:
@@ -105,6 +108,8 @@ class CategoryTransferReadWorker(BaseWorker):
                             self.error_count += 1
                             result = {**row, 'status': 'error', 'error': str(error),
                                       'potential': None, 'total': None, 'target_articles': []}
+                            for key in ('total_categories', 'potential_categories', 'target_categories'):
+                                result.pop(key, None)
                             self.progress.emit(message('row_error', title=row['source_title'], error=error))
                         if result['source_title'] != original_title:
                             result = {**result, 'input_source_title': original_title}
@@ -433,15 +438,19 @@ class CategoryTextReadWorker(BaseWorker):
     content_ready = Signal(object)
     retry_wait = Signal(str)
 
-    def __init__(self, *, rows, source_lang, target_lang, family, delay=0.5):
+    def __init__(self, *, rows, source_lang, target_lang, family, delay=0.5, translate_names=False):
         super().__init__("", "", target_lang, family)
         self.rows = tuple(rows)
         self.reader = CategoryTransferReader(source_lang, target_lang, family, self._stop_event, delay)
         self.reader.on_retry = self.retry_wait.emit
         self.stats = {"loaded": 0, "failed": 0}
+        self.translate_names = translate_names
 
     def run(self):
         try:
+            from ..core.category_text_translation import CategoryTextTranslator
+            translator = CategoryTextTranslator(self.reader) if self.translate_names else None
+            self.progress.emit(message('loading_source_content'))
             normalized = []
             for index, title in self.rows:
                 self.reader.check_stop()
@@ -454,6 +463,7 @@ class CategoryTextReadWorker(BaseWorker):
             for offset in range(0, len(normalized), 50):
                 batch = normalized[offset:offset + 50]
                 pages = self.reader.pages(self.reader.source_lang, [title for _, title in batch], props="info|revisions")
+                contents = []
                 for index, title in batch:
                     self.reader.check_stop()
                     page = pages.get(title)
@@ -467,8 +477,23 @@ class CategoryTextReadWorker(BaseWorker):
                             self.stats["failed"] += 1
                             self.progress.emit(message("content_unavailable", title=title))
                         else:
-                            self.content_ready.emit(dict(index=index, content=slot.get("content", slot.get("*", ""))))
-                            self.stats["loaded"] += 1
+                            contents.append((index, slot.get("content", slot.get("*", ""))))
+                            continue
+                    self.item_processed.emit()
+                texts = [text for _, text in contents]
+                if translator and texts:
+                    self.progress.emit(message('translating_source_names', count=len(texts)))
+                    try:
+                        texts = translator.translate(texts)
+                    except TransferStopped:
+                        raise
+                    except Exception as error:
+                        self.progress.emit(message('source_names_failed', error=error))
+                        translator = None
+                for (index, _original), text in zip(contents, texts):
+                    self.reader.check_stop()
+                    self.content_ready.emit(dict(index=index, content=text))
+                    self.stats['loaded'] += 1
                     self.item_processed.emit()
         except TransferStopped:
             pass
@@ -484,12 +509,14 @@ class CategoryArticlePresenceWorker(BaseWorker):
 
     result_ready = Signal(object)
 
-    def __init__(self, *, articles, category, source_lang, target_lang, family, source_category='', delay=0.5):
+    def __init__(self, *, articles, category, source_lang, target_lang, family, source_category='', delay=0.5,
+                 include_subcategories=False):
         super().__init__('', '', target_lang, family)
         self.articles = tuple(dict.fromkeys(articles)) if articles is not None else None
         self.category = category
         self.source_category = source_category
         self.source_lang = source_lang
+        self.include_subcategories = include_subcategories
         self.reader = CategoryTransferReader(source_lang, target_lang, family, self._stop_event, delay)
         self.reader.on_retry = self.progress.emit
 
@@ -501,6 +528,8 @@ class CategoryArticlePresenceWorker(BaseWorker):
                 if not self.reader.valid_page(pages.get(source), 14):
                     raise ValueError(message('source_missing', title=source))
                 matches = self.reader.article_matches(self.reader.members(source, 'page'))
+                if self.include_subcategories:
+                    matches.update(self.reader.subcategory_matches(self.reader.members(source, 'subcat')))
                 self.articles = tuple(dict.fromkeys(matches.values()))
             if not self.category:
                 self.result_ready.emit([(title, None) for title in self.articles])
@@ -510,6 +539,8 @@ class CategoryArticlePresenceWorker(BaseWorker):
             if not self.reader.valid_page(pages.get(title), 14):
                 raise ValueError(message('source_missing', title=title))
             members = set(self.reader.members(title, 'page', lang=self.lang))
+            if self.include_subcategories:
+                members.update(self.reader.members(title, 'subcat', lang=self.lang))
             self.result_ready.emit([(title, title in members) for title in self.articles])
         except TransferStopped:
             pass

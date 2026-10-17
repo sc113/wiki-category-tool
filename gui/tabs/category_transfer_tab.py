@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QUrl, QEvent
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence, QShortcut, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGroupBox,
-    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QStyledItemDelegate, QPlainTextEdit,
     QTextEdit, QVBoxLayout, QWidget, QToolButton, QSizePolicy, QLayout,
 )
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from ...core.category_transfer import (
     CategoryCreationRow, CategoryPair, category_action_plan, category_outcome_counts, export_creation_tsv, read_creation_tsv,
     parse_scan_list,
+    parse_scan_count, scan_count_value, scan_available_count,
 )
 from ...core.localization import translate_key
 from ...core.pywikibot_config import apply_pwb_config
@@ -32,7 +33,8 @@ from ..widgets.category_autofill import title_fill_dialog
 from ..widgets.table_history import TableHistory, table_action, pause_sorting
 from ..widgets.category_plan import category_plan_widget
 from ..widgets.category_articles import CategoryArticlesDialog
-from ..widgets.category_creation_table import CategoryCandidatesTable, CategoryCreationTable, TransferActionsLayout, TransferAutofillTabs
+from ..widgets.category_text_dialog import CategoryTextDialog
+from ..widgets.category_creation_table import CategoryCandidatesTable, CategoryCreationTable, CategoryCountItem, TransferActionsLayout, TransferAutofillTabs
 
 
 class CategoryTextDelegate(QStyledItemDelegate):
@@ -195,6 +197,8 @@ class CategoryTransferTab(QWidget):
         self.scan_read_help_btn = add_info_button(self, root_row, lambda: self._t('scan_read_help'), inline=True)
         set_category_button_tooltip(self.scan_read_help_btn, 'scan_read_help', self._t)
         self.include_root = QCheckBox(self._t("include_root"))
+        self.include_subcategories = QCheckBox(self._t('scan_subcategories'))
+        self.include_subcategories.setToolTip(self._t('scan_subcategories_tip'))
         self.depth_spin.setToolTip(self._t("scan_depth_tip"))
         self.skip_spin = QSpinBox()
         self.skip_spin.setRange(0, 99)
@@ -203,6 +207,7 @@ class CategoryTransferTab(QWidget):
         skip_wrap, _, _ = create_spin_control(self.skip_spin, plus_tip=self._t("increase"), minus_tip=self._t("decrease"))
         self.settings = CategoryInlineParameters([
             [self.include_root],
+            [self.include_subcategories],
             [self._setting_caption('skip_level'), skip_wrap],
             [self._scan_settings_help_button()],
         ])
@@ -320,7 +325,24 @@ class CategoryTransferTab(QWidget):
         content_actions.setSpacing(4)
         self.fill_content_btn = self._button("fill_content", self.fill_content, content_actions)
         self.copy_first_btn = self._button("copy_first_content", self.copy_first_content, content_actions)
-        self.load_text_btn = self._button("load_source_content", self.load_source_content, content_actions)
+        self.load_text_btn = QToolButton()
+        self.load_text_btn.setObjectName('categorySourceTextButton')
+        self.load_text_btn.setStyleSheet('QToolButton#categorySourceTextButton { padding-right: 24px; } '
+                                        'QToolButton#categorySourceTextButton::menu-button { width: 18px; border: none; background: transparent; }')
+        self.load_text_btn.setText(self._t('load_source_content'))
+        self.load_text_btn.setProperty('transfer_text_key', 'load_source_content')
+        self.load_text_btn.setFont(self.fill_content_btn.font())
+        self.load_text_btn.setPopupMode(QToolButton.MenuButtonPopup)
+        self.load_text_btn.clicked.connect(self.load_source_content)
+        set_category_button_tooltip(self.load_text_btn, 'load_source_content', self._t)
+        content_actions.addWidget(self.load_text_btn)
+        source_menu = QMenu(self.load_text_btn)
+        source_menu.setToolTipsVisible(True)
+        self.translate_source_names = source_menu.addAction(self._t('translate_source_names'))
+        self.translate_source_names.setCheckable(True)
+        self.translate_source_names.setChecked(True)
+        self.translate_source_names.setToolTip(self._t('translate_source_names_tip'))
+        self.load_text_btn.setMenu(source_menu)
         self.copy_first_btn.setToolTip(self._t("copy_first_tip"))
         self.load_text_btn.setToolTip(self._t("source_content_tip"))
         content_layout.addLayout(content_actions)
@@ -351,11 +373,13 @@ class CategoryTransferTab(QWidget):
         self.creation_table.setColumnWidth(3, 95)
         self.creation_table.setColumnWidth(4, 95)
         self.creation_table.setColumnWidth(5, 145)
-        self.creation_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.creation_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.SelectedClicked)
         self.creation_table.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.creation_table.setItemDelegateForColumn(2, CategoryTextDelegate(self.creation_table))
         self.creation_table.delete_rows_requested.connect(self.delete_creation_selected)
         self.creation_table.fill_requested.connect(self._fill_content_range)
+        self.creation_table.text_edit_requested.connect(self._edit_creation_text)
+        self.creation_table.horizontalHeaderItem(2).setToolTip(self._t('edit_category_text_tip'))
         self.creation_table.itemChanged.connect(self._creation_edited)
         self.creation_table.itemSelectionChanged.connect(self._show_creation_detail)
         self.creation_table.cellClicked.connect(self._open_creation_wd)
@@ -413,6 +437,7 @@ class CategoryTransferTab(QWidget):
         self._copy_shortcut.activated.connect(self.copy_selected)
         self.table.horizontalHeader().sortIndicatorChanged.connect(self._reindex)
         self.source_lang.textChanged.connect(self._source_changed)
+        self.include_subcategories.toggled.connect(self._scan_subcategories_changed)
         self.links_source_lang.textChanged.connect(self._links_source_changed)
         self.root_edit.textChanged.connect(lambda: self._set_busy(self._busy))
         self.table.itemSelectionChanged.connect(lambda: self.delete_btn.setEnabled(not self._busy and bool(self.table.selectedIndexes())))
@@ -420,6 +445,23 @@ class CategoryTransferTab(QWidget):
         self._refresh_target()
         self._set_busy(False)
         self._apply_table_theme()
+
+    def _refresh_scan_headers(self):
+        included = self.include_subcategories.isChecked()
+        caption = self._t('total_subpages' if included else 'total')
+        self.table.horizontalHeaderItem(4).setText(caption)
+        self.table.setColumnWidth(4, max(105, self.table.horizontalHeader().fontMetrics().horizontalAdvance(caption) + 28))
+        for col in (4, 5):
+            self.table.horizontalHeaderItem(col).setToolTip(self._t('subpages_count_help') if included else
+                                                          self._t('total' if col == 4 else 'potential'))
+
+    def _scan_subcategories_changed(self, *_args):
+        if self._busy:
+            return
+        if any(row.get('status') != 'loaded' for row in self._rows()):
+            self.reset_scan()
+        self.scan_history.reset()
+        self._refresh_scan_headers()
 
     def _toggle_log(self, checked):
         self.log_toggle.setChecked(checked)
@@ -507,7 +549,7 @@ class CategoryTransferTab(QWidget):
         self.number_titles_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.fill_content_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.creation_table.setEditTriggers(QAbstractItemView.NoEditTriggers if busy else
-                                           QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+                                           QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.SelectedClicked)
         self.create_btn.setEnabled(not busy and self.creation_table.rowCount() > 0 and bool(self._creation_rows)
                                    and self._preview_context == self._creation_context())
         self.create_btn.setText(self._t("create"))
@@ -631,6 +673,7 @@ class CategoryTransferTab(QWidget):
         self._start_read(CategoryTransferReadWorker(
             source_lang=context[0], target_lang=context[1], family=context[2],
             categories=rows,
+            include_subcategories=self.include_subcategories.isChecked(),
         ), "scan", len(rows))
 
     def _start_read(self, worker, mode, total):
@@ -684,21 +727,25 @@ class CategoryTransferTab(QWidget):
             self.table.insertRow(row)
             self._rows_by_title[data["source_title"]] = row
         values = [data["source_title"], data.get("target_title", ""), data.get("qid", ""),
-                  data["depth"], data.get("total"), data.get("potential"), self._t(data["status"])]
+                  data["depth"], scan_count_value(data, 'total'), scan_count_value(data, 'potential'), self._t(data["status"])]
         for col, value in enumerate(values):
-            item = QTableWidgetItem()
+            item = CategoryCountItem() if col in (4, 5) else QTableWidgetItem()
             if isinstance(value, int):
                 item.setData(Qt.DisplayRole, value)
             else:
                 item.setText("—" if value is None else str(value))
             if col == 0:
                 item.setData(Qt.UserRole, dict(data))
+            elif col in (4, 5):
+                key = 'total' if col == 4 else 'potential'
+                count, categories = data.get(key), data.get(key + '_categories') or 0
+                item.setData(Qt.UserRole, (-1, -1, -1) if count is None else (count + categories, count, categories))
             elif col == 2 and re.fullmatch(r"Q[1-9][0-9]*", str(value)):
                 self._style_wikidata_link(item)
             item.setToolTip(str(value or ""))
             if col == 5 and data.get("status") == "scanned":
                 self._style_wikidata_link(item)
-                item.setToolTip(self._t("articles_hint"))
+                item.setToolTip(self._t('subpages_hint' if data.get('potential_categories') is not None else 'articles_hint'))
             elif data.get("error"):
                 item.setToolTip(data["error"])
             self.table.setItem(row, col, item)
@@ -708,7 +755,8 @@ class CategoryTransferTab(QWidget):
     def _read_progress(self, payload):
         if self._read_mode != 'load':
             keys = {'scan_categories': 'scan_batch_categories', 'scan_members': 'scan_batch_members',
-                    'scan_links': 'scan_batch_links', 'scan_articles': 'scan_article_packet'}
+                    'scan_links': 'scan_batch_links', 'scan_articles': 'scan_article_packet',
+                    'scan_subpages': 'scan_subpage_packet'}
             key = keys.get(payload.get('phase'))
             if key:
                 self._set_progress(self._t(key, **payload))
@@ -775,7 +823,7 @@ class CategoryTransferTab(QWidget):
         for row in range(self.table.rowCount() - 1, -1, -1):
             data = self.table.item(row, 0).data(Qt.UserRole)
             # Errors and unscanned rows remain visible for retry.
-            if data.get("status") == "scanned" and data.get("potential") == 0:
+            if data.get("status") == "scanned" and data.get('potential') is not None and scan_available_count(data) == 0:
                 self.table.removeRow(row)
         self._reindex()
         self.scan_btn.setEnabled(self.table.rowCount() > 0)
@@ -802,7 +850,8 @@ class CategoryTransferTab(QWidget):
         try:
             for row in rows:
                 data = {key: value for key, value in row.items()
-                        if key not in {'error', 'target_articles', 'total', 'potential'}}
+                        if key not in {'error', 'target_articles', 'total', 'potential',
+                                       'total_categories', 'potential_categories', 'target_categories'}}
                 self._apply_row({**data, 'status': 'loaded', 'total': None, 'potential': None})
         finally:
             self.table.setSortingEnabled(sorting)
@@ -841,7 +890,7 @@ class CategoryTransferTab(QWidget):
                 writer.writerow([self.table.horizontalHeaderItem(col).text() for col in range(7)])
                 for row in self._rows():
                     writer.writerow([row["source_title"], row.get("target_title", ""), row.get("qid", ""),
-                                     row["depth"], row.get("total"), row.get("potential"), row["status"]])
+                                     row["depth"], scan_count_value(row, 'total'), scan_count_value(row, 'potential'), row["status"]])
         except Exception as error:
             self._warn("failed", error=error)
 
@@ -864,7 +913,11 @@ class CategoryTransferTab(QWidget):
                     continue
                 if len(fields) != 7 or not fields[0].strip() or fields[6] not in {"loaded", "scanned", "error"}:
                     raise ValueError(self._t("report_invalid", line=line))
-                depth, total, potential = (int(value) if value else None for value in fields[3:6])
+                depth = int(fields[3]) if fields[3] else None
+                total, total_categories = parse_scan_count(fields[4])
+                potential, potential_categories = parse_scan_count(fields[5])
+                if (total_categories is None) != (potential_categories is None) and total is not None and potential is not None:
+                    raise ValueError(self._t('report_invalid', line=line))
                 if depth is None or any(value is not None and value < 0 for value in (depth, total, potential)):
                     raise ValueError(self._t("report_invalid", line=line))
                 if fields[2] and not re.fullmatch(r"Q[1-9][0-9]*", fields[2]):
@@ -872,12 +925,18 @@ class CategoryTransferTab(QWidget):
                 rows.append(dict(source_title=fields[0].strip(), target_title=fields[1].strip(), qid=fields[2],
                                  depth=depth, total=total, potential=potential, status=fields[6],
                                  manual_input=fields[6] == 'loaded'))
+                if total_categories is not None or potential_categories is not None:
+                    rows[-1].update(total_categories=total_categories, potential_categories=potential_categories)
             if not rows:
                 raise ValueError(self._t("tsv_empty"))
         except Exception as error:
             self._warn("failed", error=error)
             return
         self.table.setSortingEnabled(False)
+        blocked = self.include_subcategories.blockSignals(True)
+        self.include_subcategories.setChecked(any(row.get('total_categories') is not None for row in rows))
+        self.include_subcategories.blockSignals(blocked)
+        self._refresh_scan_headers()
         self.table.setRowCount(0)
         self._rows_by_title.clear()
         for row in rows:
@@ -890,7 +949,7 @@ class CategoryTransferTab(QWidget):
         if self._busy:
             return
         candidates = [row for row in self._rows() if row.get("status") == "scanned"
-                      and (row.get("potential") or 0) > 0]
+                      and scan_available_count(row) > 0]
         if not candidates:
             self._warn("no_candidates")
             return
@@ -1198,6 +1257,20 @@ class CategoryTransferTab(QWidget):
             return
         self._fill_content_range(1, self.creation_table.rowCount() - 1, value, False)
 
+    @table_action('creation_history')
+    def _edit_creation_text(self, row):
+        if self._busy:
+            return
+        item = self.creation_table.item(row, 2)
+        if item is None:
+            return
+        category = self.creation_table.item(row, 1).text() or self.creation_table.item(row, 0).text()
+        dialog = CategoryTextDialog(item.text(), category, translate=self._t, parent=self.creation_stage)
+        if dialog.exec() == QDialog.Accepted:
+            item.setText(dialog.editor.toPlainText())
+            item.setToolTip(item.text())
+        dialog.deleteLater()
+
     def load_source_content(self):
         if self._busy or not self.creation_table.rowCount():
             return
@@ -1214,7 +1287,7 @@ class CategoryTransferTab(QWidget):
         self._set_busy(True)
         self._invalidate_creation(clear_table=False)
         worker = CategoryTextReadWorker(rows=rows, source_lang=context[0], target_lang=context[1],
-                                        family=context[2])
+                                        family=context[2], translate_names=self.translate_source_names.isChecked())
         self.content_worker = worker
         worker.content_ready.connect(self._source_content_ready)
         worker.item_processed.connect(self._advance)
@@ -1630,7 +1703,8 @@ class CategoryTransferTab(QWidget):
         if 'target_articles' not in data or (data.get("target_title") and dialog.articles):
             worker = CategoryArticlePresenceWorker(articles=dialog.articles if 'target_articles' in data else None,
                                                   category=data.get("target_title", ""), source_category=data["source_title"],
-                                                  source_lang=source, target_lang=target, family=family)
+                                                  source_lang=source, target_lang=target, family=family,
+                                                  include_subcategories=data.get('total_categories') is not None)
             self.article_worker = worker
             self._article_workers.add(worker)
             worker.result_ready.connect(dialog.show_membership)
@@ -1767,6 +1841,8 @@ class CategoryTransferTab(QWidget):
             self.root_edit.setPlaceholderText(self._t('root_placeholder'))
             self.root_edit.setToolTip(self._t('source_root_tip'))
             self.include_root.setText(self._t("include_root"))
+            self.include_subcategories.setText(self._t('scan_subcategories'))
+            self.include_subcategories.setToolTip(self._t('scan_subcategories_tip'))
             self.depth_spin.setToolTip(self._t("scan_depth_tip"))
             self.skip_spin.setToolTip(self._t("skip_tip"))
             self.autofill_btn.setText(self._t("autofill"))
@@ -1776,6 +1852,8 @@ class CategoryTransferTab(QWidget):
             self.source_content_empty.setToolTip(self._t("autofill_empty_tip"))
             self.autofill_title_help.setText(self._t("autofill_title_help"))
             self.autofill_content_help.setText(self._t('autofill_content_help'))
+            self.translate_source_names.setText(self._t('translate_source_names'))
+            self.translate_source_names.setToolTip(self._t('translate_source_names_tip'))
             self.title_template_edit.setPlaceholderText(self._t("number_target_example"))
             self.copy_first_btn.setToolTip(self._t("copy_first_tip"))
             self.load_text_btn.setToolTip(self._t("source_content_tip"))
@@ -1791,6 +1869,8 @@ class CategoryTransferTab(QWidget):
                 for col, key in enumerate(table.property("transfer_header_keys")):
                     table.horizontalHeaderItem(col).setText(self._t(key))
                     table.horizontalHeaderItem(col).setToolTip(self._t("potential" if key == "potential_column" else key))
+            self.creation_table.horizontalHeaderItem(2).setToolTip(self._t('edit_category_text_tip'))
+            self._refresh_scan_headers()
             for page in (self, self.creation_stage):
                 for label in page.findChildren(QLabel):
                     key = label.property('transfer_text_key')

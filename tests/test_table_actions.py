@@ -414,6 +414,120 @@ class TableActionTests(unittest.TestCase):
         self.tab.creation_history.redo()
         self.assertEqual(['foreign A', 'foreign B'], [r.content for r in self.tab._table_creation_rows()])
 
+    def _show_preparation_table(self):
+        tabs = self.parent.tabs = QTabWidget(self.parent)
+        tabs.resize(1280, 850)
+        tabs.addTab(self.tab, 'scan')
+        tabs.addTab(self.tab.creation_stage, 'prepare')
+        tabs.setCurrentWidget(self.tab.creation_stage)
+        self.parent.show()
+        for _ in range(3):
+            self.app.processEvents()
+        return self.tab.creation_table
+
+    def test_double_click_opens_text_dialog_and_save_is_one_undo_step(self):
+        table = self._show_preparation_table()
+        item = table.item(0, 2)
+        point = table.visualItemRect(item).center()
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextDialog') as factory:
+            dialog = factory.return_value
+            dialog.exec.return_value = 1
+            dialog.editor.toPlainText.return_value = '{{Changed}}\n[[Category:A]]'
+            table.setCurrentItem(item)
+            item.setSelected(True)
+            QTest.mouseClick(table.viewport(), Qt.LeftButton, pos=point)
+            QTest.mouseDClick(table.viewport(), Qt.LeftButton, pos=point)
+            QTest.qWait(self.app.doubleClickInterval() + 30)
+        factory.assert_called_once()
+        self.assertNotEqual(QAbstractItemView.EditingState, table.state())
+        self.assertEqual('one', factory.call_args.args[0])
+        self.assertEqual('{{Changed}}\n[[Category:A]]', table.item(0, 2).text())
+        self.tab.creation_history.undo()
+        self.assertEqual(self.rows, self.tab._table_creation_rows())
+        self.tab.creation_history.redo()
+        self.assertEqual('{{Changed}}\n[[Category:A]]', table.item(0, 2).text())
+
+    def test_cancelled_text_dialog_and_busy_double_click_do_not_change_text(self):
+        table = self._show_preparation_table()
+        point = table.visualItemRect(table.item(0, 2)).center()
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextDialog') as factory:
+            factory.return_value.exec.return_value = 0
+            QTest.mouseDClick(table.viewport(), Qt.LeftButton, pos=point)
+            factory.assert_called_once()
+            factory.reset_mock()
+            self.tab._set_busy(True)
+            QTest.mouseDClick(table.viewport(), Qt.LeftButton, pos=point)
+            factory.assert_not_called()
+        self.assertEqual(self.rows, self.tab._table_creation_rows())
+
+    def test_slow_repeated_click_edits_wikitext_inline(self):
+        from PySide6.QtWidgets import QPlainTextEdit
+        table = self._show_preparation_table()
+        point = table.visualItemRect(table.item(0, 2)).center()
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextDialog') as factory:
+            QTest.mouseClick(table.viewport(), Qt.LeftButton, pos=point)
+            QTest.qWait(self.app.doubleClickInterval() + 30)
+            QTest.mouseClick(table.viewport(), Qt.LeftButton, pos=point)
+            QTest.qWait(self.app.doubleClickInterval() + 30)
+        factory.assert_not_called()
+        self.assertEqual(QAbstractItemView.EditingState, table.state())
+        editor = table.findChild(QPlainTextEdit)
+        self.assertIsNotNone(editor)
+        self.assertEqual('one', editor.toPlainText())
+        QTest.keyClick(editor, Qt.Key_Escape)
+
+    def test_wikidata_name_option_is_passed_to_source_loading(self):
+        for enabled in (True, False):
+            self.tab.translate_source_names.setChecked(enabled)
+            with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as worker:
+                self.tab.load_source_content()
+            self.assertEqual(enabled, worker.call_args.kwargs['translate_names'])
+            self.tab._set_busy(False)
+            self.tab._content_undo.__exit__(None, None, None)
+            self.tab._content_undo = None
+
+    def test_subcategory_counts_sort_export_restore_and_keep_category_only_matches(self):
+        import tempfile
+        self.tab.include_subcategories.setChecked(True)
+        for title, articles, categories in (('Category:A', 4, 2), ('Category:B', 10, 0), ('Category:C', 0, 2)):
+            self.tab._apply_row(dict(source_title=title, depth=0, status='scanned', total=articles, total_categories=categories,
+                                     potential=0, potential_categories=categories, target_articles=[], target_categories=['Категория:А']))
+        self.assertEqual('Всего подстраниц', self.tab.table.horizontalHeaderItem(4).text())
+        self.tab.table.sortItems(4, Qt.AscendingOrder)
+        self.assertEqual(['0+2', '4+2', '10+0'], [self.tab.table.item(row, 4).text() for row in range(3)])
+        self.tab.clear_empty()
+        self.assertEqual({'Category:A', 'Category:C'}, {row['source_title'] for row in self.tab._rows()})
+        self.tab.scan_history.undo()
+        self.tab.table.sortItems(4, Qt.AscendingOrder)
+        self.assertEqual(['0+2', '4+2', '10+0'], [self.tab.table.item(row, 4).text() for row in range(3)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'categories.tsv'
+            with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.QFileDialog.getSaveFileName', return_value=(str(path), 'TSV')):
+                self.tab.export_report()
+            self.assertIn('4+2', path.read_text(encoding='utf-8-sig'))
+            self.tab.include_subcategories.setChecked(False)
+            self.tab.import_report(str(path))
+        self.assertTrue(self.tab.include_subcategories.isChecked())
+        self.assertEqual([(0, 2), (4, 2), (10, 0)], [(row['total'], row['total_categories']) for row in self.tab._rows()])
+
+    def test_changing_subcategory_mode_keeps_input_and_requires_a_fresh_scan(self):
+        self.tab._apply_row(dict(source_title='Category:A', depth=0, status='scanned', total=4, potential=2, target_articles=['Article']))
+        self.tab.include_subcategories.setChecked(True)
+        row, = self.tab._rows()
+        self.assertEqual(('Category:A', 'loaded', None), (row['source_title'], row['status'], row['potential']))
+        self.assertNotIn('target_articles', row)
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTransferReadWorker') as worker:
+            self.tab.scan_categories()
+        self.assertTrue(worker.call_args.kwargs['include_subcategories'])
+
+    def test_subcategory_details_show_prefixed_titles(self):
+        data = dict(source_title='Category:A', total_categories=2, potential=1, potential_categories=1,
+                    target_articles=['Article'], target_categories=['Категория:Подкатегория'])
+        dialog = CategoryArticlesDialog(data, language='ru', family='wikipedia', translate=self.tab._t, parent=self.parent)
+        self.assertEqual('Найденные подстраницы', dialog.windowTitle())
+        self.assertEqual(['Article', 'Категория:Подкатегория'], [dialog.table.item(row, 0).text() for row in range(2)])
+        dialog.deleteLater()
+
     def test_loading_other_input_clears_history(self):
         self.tab._fill_content_rows([0], 'replacement', False)
         self.tab._fill_creation_table((CategoryCreationRow('Category:C', '', 'new input'),))

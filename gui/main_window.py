@@ -1959,7 +1959,7 @@ class MainWindow(QMainWindow):
                 color: #e5f4f7;
                 selection-background-color: rgba(61, 129, 149, 0.85);
             }
-            QPushButton {
+            QPushButton, QToolButton#categorySourceTextButton {
                 min-width: 0;
                 min-height: 27px;
                 max-height: 27px;
@@ -1979,13 +1979,13 @@ class MainWindow(QMainWindow):
             QComboBox#sourceFetchModeCombo {
                 padding: 2px 8px;
             }
-            QPushButton:hover {
+            QPushButton:hover, QToolButton#categorySourceTextButton:hover {
                 background: rgba(31, 103, 131, 0.92);
             }
-            QPushButton:pressed {
+            QPushButton:pressed, QToolButton#categorySourceTextButton:pressed {
                 background: rgba(13, 67, 93, 0.96);
             }
-            QPushButton:disabled, QToolButton:disabled {
+            QPushButton:disabled, QToolButton:disabled, QToolButton#categorySourceTextButton:disabled {
                 color: rgba(215, 232, 236, 0.45);
                 border-color: rgba(92, 146, 154, 0.25);
                 background: rgba(20, 51, 67, 0.52);
@@ -2823,7 +2823,7 @@ class MainWindow(QMainWindow):
                 color: #22313d;
                 selection-background-color: #d7eaf9;
             }
-            QPushButton {
+            QPushButton, QToolButton#categorySourceTextButton {
                 min-width: 0;
                 min-height: 27px;
                 max-height: 27px;
@@ -2847,13 +2847,13 @@ class MainWindow(QMainWindow):
             QComboBox#sourceFetchModeCombo {
                 padding: 2px 8px;
             }
-            QPushButton:hover {
+            QPushButton:hover, QToolButton#categorySourceTextButton:hover {
                 background: #dfedf9;
             }
-            QPushButton:pressed {
+            QPushButton:pressed, QToolButton#categorySourceTextButton:pressed {
                 background: #d3e5f5;
             }
-            QPushButton:disabled, QToolButton:disabled {
+            QPushButton:disabled, QToolButton:disabled, QToolButton#categorySourceTextButton:disabled {
                 color: #90a7b8;
                 border-color: #d3e0ea;
                 background: #f6f9fc;

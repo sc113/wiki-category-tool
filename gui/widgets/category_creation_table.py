@@ -2,7 +2,17 @@
 
 from PySide6.QtCore import QPoint, QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QAbstractItemView, QLayout, QSizePolicy, QTableWidget, QTableWidgetSelectionRange, QTabWidget
+from PySide6.QtWidgets import QAbstractItemView, QLayout, QSizePolicy, QTableWidget, QTableWidgetItem, QTableWidgetSelectionRange, QTabWidget
+
+
+class CategoryCountItem(QTableWidgetItem):
+    """Sort page + category counters numerically, including after undo."""
+
+    def __lt__(self, other):
+        return tuple(self.data(Qt.UserRole)) < tuple(other.data(Qt.UserRole))
+
+    def clone(self):
+        return CategoryCountItem(self)
 
 
 class TransferAutofillTabs(QTabWidget):
@@ -120,6 +130,7 @@ class TransferToolbarLayout(TransferActionsLayout):
 class CategoryCreationTable(QTableWidget):
     delete_rows_requested = Signal()
     fill_requested = Signal(int, int, str, bool)
+    text_edit_requested = Signal(int)
 
     def __init__(self, rows, columns, parent=None):
         super().__init__(rows, columns, parent)
@@ -243,5 +254,14 @@ class CategoryCreationTable(QTableWidget):
             if value.strip() and row + 1 < self.rowCount():
                 self.fill_requested.emit(row + 1, self.rowCount() - 1, value, True)
             event.accept()
+            return
+        index = self.indexAt(event.position().toPoint())
+        if (event.button() == Qt.LeftButton and index.isValid() and index.column() == 2
+                and self.editTriggers() != QAbstractItemView.NoEditTriggers):
+            triggers = self.editTriggers()
+            self.setEditTriggers(triggers & ~QAbstractItemView.DoubleClicked)
+            super().mouseDoubleClickEvent(event)
+            self.setEditTriggers(triggers)
+            self.text_edit_requested.emit(index.row())
             return
         super().mouseDoubleClickEvent(event)
