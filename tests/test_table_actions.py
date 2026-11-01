@@ -679,6 +679,54 @@ class TableActionTests(unittest.TestCase):
             file_row.browse_btn.click()
         editor.assert_not_called()
 
+    def test_scan_columns_keep_manual_widths_beyond_the_viewport(self):
+        tabs = self.parent.tabs = QTabWidget(self.parent)
+        tabs.resize(1280, 850)
+        tabs.addTab(self.tab, 'scan')
+        self.parent.show()
+        for _ in range(3):
+            self.app.processEvents()
+        table = self.tab.table
+        widths = [table.viewport().width() + 300] + [320 + col * 11 for col in range(1, table.columnCount())]
+        for col, width in enumerate(widths):
+            table.horizontalHeader().resizeSection(col, width)
+            for _ in range(3):
+                self.app.processEvents()
+            self.assertEqual(width, table.columnWidth(col))
+        self.assertTrue(table.horizontalScrollBar().isVisible())
+        self.assertGreater(table.horizontalScrollBar().maximum(), 300)
+        self.tab.log_toggle.setChecked(True)
+        tabs.resize(1000, 700)
+        for _ in range(3):
+            self.app.processEvents()
+        self.assertEqual(widths, [table.columnWidth(col) for col in range(table.columnCount())])
+        self.tab._apply_row(dict(source_title='Category:A', depth=0, status='loaded'))
+        self.tab._set_busy(True)
+        self.tab._set_busy(False)
+        self.tab.log_toggle.setChecked(False)
+        tabs.resize(1400, 900)
+        for _ in range(3):
+            self.app.processEvents()
+        self.assertEqual(widths, [table.columnWidth(col) for col in range(table.columnCount())])
+        table.horizontalScrollBar().setValue(table.horizontalScrollBar().maximum())
+        self.assertGreater(table.horizontalOffset(), 0)
+
+    def test_scan_columns_fit_window_until_manually_resized(self):
+        tabs = self.parent.tabs = QTabWidget(self.parent)
+        tabs.resize(1000, 700)
+        tabs.addTab(self.tab, 'scan')
+        self.parent.show()
+        for _ in range(3):
+            self.app.processEvents()
+        table = self.tab.table
+        before = [table.columnWidth(col) for col in (0, 1)]
+        tabs.resize(1600, 900)
+        for _ in range(3):
+            self.app.processEvents()
+        after = [table.columnWidth(col) for col in (0, 1)]
+        self.assertGreater(after[0], before[0])
+        self.assertEqual(after[0], after[1])
+
     def test_preparation_columns_can_grow_beyond_the_viewport_and_keep_their_width(self):
         tabs = self.parent.tabs = QTabWidget(self.parent)
         tabs.resize(1280, 850)

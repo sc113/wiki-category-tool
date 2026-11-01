@@ -99,12 +99,29 @@ class TransferActionsLayout(QLayout):
 class CategoryCandidatesTable(QTableWidget):
     """Keep category headers legible; allow scrolling when space is limited."""
 
+    def __init__(self, rows, columns, parent=None):
+        super().__init__(rows, columns, parent)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._custom_column_widths = False
+        self._fitting_columns = False
+        self.horizontalHeader().sectionResized.connect(self._remember_column_resize)
+
+    def _remember_column_resize(self, *_args):
+        if self.isVisible() and not self._fitting_columns:
+            self._custom_column_widths = True
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        remaining = self.viewport().width() - sum(self.columnWidth(col) for col in range(2, self.columnCount()))
-        width = max(190, remaining // 2)
-        self.setColumnWidth(0, width)
-        self.setColumnWidth(1, width)
+        if self._custom_column_widths or self._fitting_columns:
+            return
+        self._fitting_columns = True
+        try:
+            remaining = self.viewport().width() - sum(self.columnWidth(col) for col in range(2, self.columnCount()))
+            width = max(190, remaining // 2)
+            self.setColumnWidth(0, width)
+            self.setColumnWidth(1, width)
+        finally:
+            self._fitting_columns = False
 
 
 class TransferToolbarLayout(TransferActionsLayout):
