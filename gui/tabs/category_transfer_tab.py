@@ -567,7 +567,8 @@ class CategoryTransferTab(QWidget):
         self.read_scan_action.setEnabled(not busy and bool(self.scan_report_path.text().strip()))
         self.read_creation_btn.setEnabled(not busy and bool(self.tsv_path.text().strip()))
         self.delete_btn.setEnabled(not busy and bool(self.table.selectedIndexes()))
-        self.clear_btn.setEnabled(not busy and any(row.get('status') == 'scanned' and row.get('potential') == 0 for row in self._rows()))
+        empty_count = len(self._empty_scan_titles())
+        self.clear_btn.setEnabled(not busy and empty_count > 0)
         self.clear_all_scan_btn.setEnabled(not busy and has_scan_rows)
         self.clear_all_creation_btn.setEnabled(not busy and has_creation_rows)
         self.export_scan_btn.setEnabled(not busy and has_scan_rows)
@@ -580,13 +581,16 @@ class CategoryTransferTab(QWidget):
         hint = 'scan_start_hint' if not has_scan_rows else 'scan_review_hint' if scanned else 'scan_resume_hint' if len(pending) < self.table.rowCount() else 'scan_run_hint'
         if busy and self.read_worker is not None:
             hint = 'loading' if self._read_mode == 'load' else 'scanning'
+        elif not busy and empty_count:
+            hint = 'scan_cleanup_hint'
         self.scan_guidance.setText(self._t(hint, checked=self.table.rowCount() - len(pending),
-                                            total=self.table.rowCount(), remaining=len(pending)))
+                                            total=self.table.rowCount(), remaining=len(pending), count=empty_count))
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
+        highlight_next_action(self.clear_btn, not busy and empty_count > 0, theme, prominent=True)
         needs_fill = any((self.creation_table.item(row, 5).data(Qt.UserRole) or '') in {'needs_translation', 'needs_content'}
                          for row in range(self.creation_table.rowCount()))
         for button, active in ((self.load_btn, not has_scan_rows),
-                               (self.scan_btn, has_scan_rows and not scanned), (self.next_btn, scanned),
+                               (self.scan_btn, has_scan_rows and not scanned), (self.next_btn, scanned and not empty_count),
                                (self.read_creation_btn, not has_creation_rows),
                                (self.incomplete_btn, needs_fill), (self.autofill_btn, needs_fill),
                                (self.check_links_btn, has_creation_rows and not needs_fill and not self.create_btn.isEnabled() and not self.sync_btn.isEnabled()),
@@ -632,6 +636,10 @@ class CategoryTransferTab(QWidget):
 
     def _rows(self):
         return [self.table.item(row, 0).data(Qt.UserRole) for row in range(self.table.rowCount())]
+
+    def _empty_scan_titles(self):
+        return {row['source_title'] for row in self._rows()
+                if row.get('status') == 'scanned' and row.get('potential') is not None and scan_available_count(row) == 0}
 
     def load_categories(self, *, append=False):
         if self._busy:
@@ -825,10 +833,11 @@ class CategoryTransferTab(QWidget):
     def clear_empty(self):
         if self._busy:
             return
+        empty_titles = self._empty_scan_titles()
         for row in range(self.table.rowCount() - 1, -1, -1):
             data = self.table.item(row, 0).data(Qt.UserRole)
             # Errors and unscanned rows remain visible for retry.
-            if data.get("status") == "scanned" and data.get('potential') is not None and scan_available_count(data) == 0:
+            if data['source_title'] in empty_titles:
                 self.table.removeRow(row)
         self._reindex()
         self.scan_btn.setEnabled(self.table.rowCount() > 0)
@@ -1076,6 +1085,8 @@ class CategoryTransferTab(QWidget):
     def open_links(self):
         if self._busy or not self._rows():
             return
+        if not self._confirm_scan_cleanup():
+            return
         # Carry precisely the curated list, including linked and unscanned rows.
         rows = tuple(CategoryCreationRow(row["source_title"], row.get("target_title", ""), "")
                      for row in self._rows())
@@ -1085,6 +1096,32 @@ class CategoryTransferTab(QWidget):
         self._fill_creation_table(rows)
         self._table_dirty = True
         self._open_links_page()
+
+    def _confirm_scan_cleanup(self):
+        count = len(self._empty_scan_titles())
+        if not count:
+            return True
+        box = QMessageBox(self)
+        box.setObjectName('confirmScanCleanupDialog')
+        box.setWindowTitle(self._t('scan_cleanup_title'))
+        box.setIcon(QMessageBox.Warning)
+        box.setText(self._t('scan_cleanup_warning', count=count))
+        box.setInformativeText(self._t('scan_cleanup_advice'))
+        cleanup = box.addButton(self._t('scan_cleanup_continue'), QMessageBox.AcceptRole)
+        keep = box.addButton(self._t('scan_cleanup_keep'), QMessageBox.ActionRole)
+        cancel = box.addButton(self._t('cancel'), QMessageBox.RejectRole)
+        for button, key in ((cleanup, 'scan_cleanup_continue_tip'), (keep, 'scan_cleanup_keep_tip'),
+                            (cancel, 'scan_cleanup_cancel_tip')):
+            button.setToolTip(self._t(key))
+            button.ensurePolished()
+            button.setMinimumWidth(button.fontMetrics().horizontalAdvance(button.text()) + 24)
+        box.setDefaultButton(cleanup)
+        box.setEscapeButton(cancel)
+        box.exec()
+        if box.clickedButton() is cleanup:
+            self.clear_empty()
+            return bool(self.table.rowCount())
+        return box.clickedButton() is keep
 
     @pause_sorting('creation_table')
     def _fill_creation_table(self, rows, status="editing"):
@@ -1576,6 +1613,9 @@ class CategoryTransferTab(QWidget):
         rows = self._link_only_rows if link_only else self._creation_rows
         if self._busy or not self.creation_table.rowCount() or not rows or self._preview_context != self._creation_context():
             return
+        # Keep the verified data, but execute it in the current visible order.
+        positions = {row.source_title: index for index, row in enumerate(self._table_creation_rows())}
+        rows = tuple(sorted(rows, key=lambda row: positions[row.source_title]))
         user = getattr(self.parent_window, "current_user", None)
         password = getattr(self.parent_window, "current_password", None)
         if not user or not password:
@@ -1671,6 +1711,15 @@ class CategoryTransferTab(QWidget):
         font.setBold(True)
         heading.setFont(font)
         layout.addWidget(heading)
+        if not link_only and self._context() == self._creation_context():
+            empty_titles = self._empty_scan_titles()
+            empty_count = sum(row.source_title in empty_titles for row in rows)
+            if empty_count:
+                warning = QLabel(self._t('scan_cleanup_warning', count=empty_count) + '\n' + self._t('scan_cleanup_advice'))
+                warning.setObjectName('emptyScanCreationWarning')
+                warning.setWordWrap(True)
+                warning.setStyleSheet('QLabel { background: #f0bd57; color: #192d36; border-radius: 6px; padding: 8px; }')
+                layout.addWidget(warning)
         results = [dict(source_title=self.creation_table.item(row, 0).text(),
                         source_qid=self.creation_table.item(row, 3).text(),
                         target_qid=self.creation_table.item(row, 4).text(),

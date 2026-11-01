@@ -270,14 +270,21 @@ class CategoryWorkspaceFrame(QGroupBox):
         row.addWidget(workspace, 1)
 
 
-def highlight_next_action(button, active, theme):
+def highlight_next_action(button, active, theme, *, prominent=False):
     active = bool(active and button.isEnabled())
-    if button.property('categoryNextAction') == active and button.property('categoryActionTheme') == theme:
+    if (button.property('categoryNextAction') == active and button.property('categoryActionTheme') == theme
+            and button.property('categoryActionProminent') == prominent):
         return
     button.setProperty('categoryNextAction', active)
     button.setProperty('categoryActionTheme', theme)
+    button.setProperty('categoryActionProminent', prominent)
     color = {'light': '#287fa3', 'dark': '#72c9f0', 'teal': '#64cad0'}.get(theme, '#64cad0')
-    button.setStyleSheet(f'QPushButton, QToolButton {{ border: 1px solid {color}; }}' if active else '')
+    if active and prominent:
+        button.setStyleSheet('QPushButton { background: #f0bd57; color: #192d36; border: 1px solid #c78d24; font-weight: 700; } '
+                            'QPushButton:hover { background: #ffce70; } '
+                            'QPushButton:pressed { background: #dda840; }')
+    else:
+        button.setStyleSheet(f'QPushButton, QToolButton {{ border: 1px solid {color}; }}' if active else '')
 
 
 def remove_inner_frame(group):

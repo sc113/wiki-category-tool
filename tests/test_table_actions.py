@@ -193,6 +193,65 @@ class TableActionTests(unittest.TestCase):
         self.assertEqual((), self.tab._link_only_rows)
         self.assertEqual('Q17', self.tab._linked_pairs[existing.target_title].qid)
 
+    def test_creation_and_linking_follow_all_visible_sort_orders_without_adding_unchecked_rows(self):
+        rows = tuple(CategoryCreationRow(f'Category:{index}', f'Категория:{5 - index}', f'body {index}')
+                     for index in range(5))
+        self.tab._fill_creation_table(rows)
+        self.tab._set_busy(True)
+        for index, row in enumerate(rows):
+            self.tab._preview_result(dict(index=index, row=row,
+                                          status=('ready_create', 'already_linked', 'ready_link', 'error', 'ready_labels')[index],
+                                          source_qid=f'Q{20 - index}', target_qid=f'Q{10 + index}'))
+        self.tab._creation_rows = (rows[0], rows[2], rows[4])
+        self.tab._link_only_rows = (rows[2], rows[4])
+        self.tab._preview_context = self.tab._creation_context()
+        self.parent.current_user, self.parent.current_password = 'User', 'unused'
+        for link_only in (False, True):
+            verified = self.tab._link_only_rows if link_only else self.tab._creation_rows
+            for column in range(self.tab.creation_table.columnCount()):
+                for direction in (Qt.AscendingOrder, Qt.DescendingOrder):
+                    with self.subTest(link_only=link_only, column=column, direction=direction):
+                        self.tab._set_busy(False)
+                        self.tab.creation_table.sortItems(column, direction)
+                        visible = self.tab._table_creation_rows()
+                        expected = tuple(row for row in visible if row in verified)
+                        with patch.object(self.tab, '_confirm_creation', return_value=True), \
+                             patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTransferCreateWorker') as factory:
+                            self.tab.start_creation(link_only=link_only)
+                        self.assertEqual(expected, factory.call_args.kwargs['rows'])
+                        self.assertEqual(expected, self.tab._write_rows)
+                        self.assertEqual(not link_only, factory.call_args.kwargs['create_missing'])
+                        self.assertEqual(verified, self.tab._link_only_rows if link_only else self.tab._creation_rows)
+                        self.assertFalse(self.tab.creation_table.isSortingEnabled())
+                        self.tab.create_worker = None
+        self.tab._set_busy(False)
+
+    def test_creation_resume_uses_current_table_order_and_skips_completed_rows(self):
+        self.parent.current_user, self.parent.current_password = 'User', 'unused'
+        self.tab._creation_rows = self.rows
+        self.tab._preview_context = self.tab._creation_context()
+        self.tab.creation_table.sortItems(0, Qt.DescendingOrder)
+        first_order = self.tab._table_creation_rows()
+        with patch.object(self.tab, '_confirm_creation', return_value=True), \
+             patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTransferCreateWorker') as factory:
+            self.tab.start_creation()
+            self.assertEqual(first_order, factory.call_args.kwargs['rows'])
+            worker = factory.return_value
+            worker.failed, worker._stop = False, True
+            worker.stats = dict(created=1, linked=1, exists=0, labels=0, already=0, failed=0)
+            worker.linked_categories = [first_order[0].target_title]
+            worker.saved_edits = 1
+            self.tab._creation_result(dict(source_title=first_order[0].source_title,
+                                           target_title=first_order[0].target_title, status='created', qid='Q1'))
+            with patch.object(self.tab, '_offer_sync', return_value=False):
+                self.tab._creation_finished()
+            remaining = tuple(row for row in self.tab._table_creation_rows() if row != first_order[0])
+            self.tab.start_creation()
+            self.assertEqual(remaining, factory.call_args.kwargs['rows'])
+            self.assertNotIn(first_order[0], factory.call_args.kwargs['rows'])
+        self.tab.create_worker = None
+        self.tab._set_busy(False)
+
     def test_log_broom_stays_inside_viewport_with_both_scrollbars(self):
         from wiki_cat_tool.gui.widgets.ui_helpers import create_log_wrap
         log = QTextEdit()
@@ -388,6 +447,103 @@ class TableActionTests(unittest.TestCase):
         self.tab._apply_row(dict(source_title='Category:C', depth=1, potential=5, status='scanned', qid='Q12'))
         self.assertEqual(3, self.tab.table.rowCount())
         self.assertEqual(5, next(r for r in self.tab._rows() if r['source_title'] == 'Category:C')['potential'])
+
+    def test_zero_content_cleanup_is_highlighted_after_scanning_and_restored_with_undo(self):
+        for title, status, articles, categories in (('Empty', 'scanned', 0, 0), ('Categories', 'scanned', 0, 2),
+                                                    ('Unknown', 'loaded', None, None), ('Error', 'error', 0, 0)):
+            self.tab._apply_row(dict(source_title='Category:' + title, depth=0, status=status,
+                                     potential=articles, potential_categories=categories))
+        self.tab._read_mode = 'scan'
+        self.tab.read_worker = Mock(failed=False, _stop=False, error_count=0, results=self.tab._rows())
+        self.tab._read_finished()
+        self.assertEqual({'Category:Empty'}, self.tab._empty_scan_titles())
+        self.assertTrue(self.tab.clear_btn.isEnabled())
+        self.assertTrue(self.tab.clear_btn.property('categoryNextAction'))
+        self.assertTrue(self.tab.clear_btn.property('categoryActionProminent'))
+        self.assertIn('Без доступного содержимого: 1', self.tab.scan_guidance.text())
+        self.tab.clear_empty()
+        self.assertEqual({'Category:Categories', 'Category:Unknown', 'Category:Error'},
+                         {row['source_title'] for row in self.tab._rows()})
+        self.assertFalse(self.tab.clear_btn.isEnabled())
+        self.assertFalse(self.tab.clear_btn.property('categoryNextAction'))
+        self.assertEqual('', self.tab.clear_btn.styleSheet())
+        self.tab.scan_history.undo()
+        self.assertEqual({'Category:Empty'}, self.tab._empty_scan_titles())
+        self.assertTrue(self.tab.clear_btn.property('categoryNextAction'))
+
+    def test_scan_handoff_cleanup_warning_can_clear_continue_or_cancel_without_losing_preparation(self):
+        for choice in ('cancel', 'scan_cleanup_keep', 'scan_cleanup_continue'):
+            with self.subTest(choice=choice):
+                self.tab._fill_creation_table(self.rows)
+                self.tab.table.setRowCount(0)
+                self.tab._reindex()
+                for title, count in (('Empty', 0), ('Useful', 2)):
+                    self.tab._apply_row(dict(source_title='Category:' + title, depth=0, status='scanned', potential=count))
+                self.tab._set_busy(False)
+                warnings = []
+                def choose():
+                    box = self.app.activeModalWidget()
+                    self.assertEqual('confirmScanCleanupDialog', box.objectName())
+                    warnings.append(box.text())
+                    next(button for button in box.buttons() if button.text() == self.tab._t(choice)).click()
+                QTimer.singleShot(0, choose)
+                self.tab.open_links()
+                self.assertEqual(1, len(warnings))
+                self.assertIn(': 1.', warnings[0])
+                if choice == 'cancel':
+                    self.assertEqual(self.rows, self.tab._table_creation_rows())
+                    self.assertEqual(2, self.tab.table.rowCount())
+                elif choice == 'scan_cleanup_keep':
+                    self.assertEqual({'Category:Empty', 'Category:Useful'},
+                                     {row.source_title for row in self.tab._table_creation_rows()})
+                    self.assertEqual(2, self.tab.table.rowCount())
+                else:
+                    self.assertEqual(['Category:Useful'], [row.source_title for row in self.tab._table_creation_rows()])
+                    self.assertEqual(1, self.tab.table.rowCount())
+                    self.tab.scan_history.undo()
+                    self.assertEqual(2, self.tab.table.rowCount())
+
+    def test_cleaning_an_entirely_empty_scan_does_not_replace_preparation_with_an_empty_list(self):
+        self.tab._apply_row(dict(source_title='Category:Empty', depth=0, status='scanned', potential=0))
+        def choose_cleanup():
+            box = self.app.activeModalWidget()
+            next(button for button in box.buttons() if button.text() == self.tab._t('scan_cleanup_continue')).click()
+        QTimer.singleShot(0, choose_cleanup)
+        self.tab.open_links()
+        self.assertEqual(0, self.tab.table.rowCount())
+        self.assertEqual(self.rows, self.tab._table_creation_rows())
+
+    def test_scan_with_available_categories_or_unknown_counts_needs_no_cleanup_confirmation(self):
+        self.tab._apply_row(dict(source_title='Category:Categories', depth=0, status='scanned', potential=0, potential_categories=1))
+        self.tab._apply_row(dict(source_title='Category:Unknown', depth=0, status='loaded', potential=None))
+        self.tab._set_busy(False)
+        self.assertFalse(self.tab.clear_btn.isEnabled())
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.QMessageBox') as warning:
+            self.tab.open_links()
+        warning.assert_not_called()
+        self.assertEqual({'Category:Categories', 'Category:Unknown'},
+                         {row.source_title for row in self.tab._table_creation_rows()})
+
+    def test_creation_confirmation_warns_if_scan_cleanup_was_skipped(self):
+        for row in self.rows:
+            self.tab._apply_row(dict(source_title=row.source_title, depth=0, status='scanned', potential=0))
+        self.tab._creation_rows = self.rows[:1]
+        self.tab._link_only_rows = self.rows[:1]
+        self.tab._preview_context = self.tab._creation_context()
+        for link_only in (False, True):
+            texts = []
+            def inspect():
+                dialog = self.app.activeModalWidget()
+                warning = dialog.findChild(QLabel, 'emptyScanCreationWarning')
+                texts.append(warning.text() if warning else '')
+                dialog.reject()
+            QTimer.singleShot(0, inspect)
+            self.assertFalse(self.tab._confirm_creation(link_only=link_only))
+            if link_only:
+                self.assertEqual([''], texts)
+            else:
+                self.assertIn(': 1.', texts[0])
+                self.assertIn('Очистить не найденные', texts[0])
 
     def test_history_is_disabled_while_a_worker_owns_the_table(self):
         self.tab._fill_content_rows([0], 'replacement', False)
