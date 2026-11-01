@@ -58,7 +58,8 @@ from ...workers.category_content_sync_worker import (
 from ..widgets.shared_panels import CategorySourcePanel
 from ..widgets.category_articles import CategoryArticlesDialog
 from ...workers.category_transfer_worker import CategoryArticlePresenceWorker
-from ..widgets.table_history import TableHistory, table_action
+from ...workers.category_fetch_worker import CategoryLanguageProbeWorker
+from ..widgets.table_history import TableHistory, table_action, pause_sorting
 from ..widgets.category_stage import CategoryLogPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, highlight_next_action, refresh_category_toolbar, remove_inner_frame, set_category_button_tooltip, refresh_category_button_tooltips
 from ..widgets.ui_helpers import (
     category_table_palette,
@@ -70,6 +71,19 @@ from ..widgets.ui_helpers import (
     is_default_summary,
     log_message,
 )
+
+
+class SyncCountItem(QTableWidgetItem):
+    """Sort a counter by total, then articles and subcategories."""
+
+    def __lt__(self, other):
+        def count_key(item):
+            try:
+                parts = tuple(int(value.strip()) for value in item.text().replace('/', '+').split('+'))
+                return (sum(parts), *parts)
+            except ValueError:
+                return (-1,)
+        return count_key(self) < count_key(other)
 
 
 class CategoryContentSyncTab(QWidget):
@@ -103,6 +117,7 @@ class CategoryContentSyncTab(QWidget):
         self._last_ui_lang = self._ui_lang()
         self._last_theme_mode = ""
         self._member_workers = set()
+        self._read_detected_lang = ''
         self._current_progress_row_key = ""
         self._current_progress_title = ""
         self._current_progress_done = 0
@@ -216,12 +231,10 @@ class CategoryContentSyncTab(QWidget):
         )
         self.sync_ns_combo = self.source_panel.ns_combo
         self.cat_edit = self.source_panel.cat_edit
-        self.read_source_toggle = QCheckBox(self._stage_t('read_source_toggle'))
-        self.read_source_toggle.setToolTip(self._stage_t('read_source_toggle_tip'))
-        self.source_panel.read_controls.layout().insertWidget(0, self.read_source_toggle)
-        self.source_panel.read_language_getter = lambda: (self.source_lang_edit.text().strip().lower()
-                                                          if self.read_source_toggle.isChecked() else self.get_current_language())
-        self.read_source_toggle.toggled.connect(self._refresh_read_language_hint)
+        self.read_language_label = QLabel()
+        self.source_panel.read_controls.layout().insertWidget(0, self.read_language_label)
+        self.source_panel.read_language_getter = lambda: self._read_detected_lang or self.get_current_language()
+        self.source_panel.read_request_resolver = self._start_category_read_detection
         self.left_stack = QStackedWidget(self)
         self.left_stack.setObjectName("syncLeftStack")
         self.input_scroll = QScrollArea()
@@ -271,8 +284,9 @@ class CategoryContentSyncTab(QWidget):
             header.moveSection(header.visualIndex(6), 4)
             header.moveSection(header.visualIndex(7), 5)
             self.preview_table.setWordWrap(False)
-            header.setSortIndicatorShown(False)
-            self.preview_table.setSortingEnabled(False)
+            header.setSortIndicator(-1, Qt.AscendingOrder)
+            header.setSortIndicatorShown(True)
+            self.preview_table.setSortingEnabled(True)
         except Exception:
             pass
         try:
@@ -312,6 +326,7 @@ class CategoryContentSyncTab(QWidget):
             self.preview_table.horizontalHeader().sortIndicatorChanged.connect(
                 lambda *_args: self._rebuild_preview_row_index()
             )
+            self.preview_table.model().layoutChanged.connect(self._rebuild_preview_row_index)
         except Exception:
             pass
         try:
@@ -490,6 +505,11 @@ class CategoryContentSyncTab(QWidget):
         self.delete_preview_btn.clicked.connect(self.delete_selected_preview_rows)
         tools.addWidget(self.delete_preview_btn)
         tools.addWidget(self.clear_skipped_btn)
+        self.clear_zero_additions_btn = QPushButton(self._stage_t('clear_zero_additions'))
+        self.clear_zero_additions_btn.setProperty('transfer_text_key', 'clear_zero_additions')
+        set_category_button_tooltip(self.clear_zero_additions_btn, 'clear_zero_additions', self._stage_t)
+        self.clear_zero_additions_btn.clicked.connect(self.clear_zero_addition_rows)
+        tools.addWidget(self.clear_zero_additions_btn)
         self.preview_table.itemSelectionChanged.connect(self._update_clear_skipped_button_state)
         left_layout.addWidget(self.left_stack, 1)
         remove_inner_frame(self.source_panel)
@@ -516,10 +536,10 @@ class CategoryContentSyncTab(QWidget):
         self.source_panel.set_log_widget(self.sync_log)
         self.source_panel.fetch_started.connect(lambda: self.log_panel.set_expanded(True))
         self.source_panel.fetch_started.connect(lambda: self.read_file_btn.setEnabled(False))
-        self.source_panel.fetch_started.connect(lambda: self.read_source_toggle.setEnabled(False))
+        self.source_panel.fetch_started.connect(lambda: self.preview_btn.setEnabled(False))
+        self.source_panel.fetch_started.connect(lambda: self.start_btn.setEnabled(False))
         self.source_panel.fetch_started.connect(lambda: self.source_lang_edit.setEnabled(False))
-        self.source_panel.fetch_finished.connect(self._update_clear_skipped_button_state)
-        self.source_panel.fetch_finished.connect(lambda: self.read_source_toggle.setEnabled(True))
+        self.source_panel.fetch_finished.connect(self._category_read_finished)
         self.source_panel.fetch_finished.connect(lambda: self.source_lang_edit.setEnabled(True))
         self.source_panel.fetch_finished.connect(self._refresh_read_language_hint)
         self.source_panel.fetch_empty.connect(self._notify_empty_category_read)
@@ -527,7 +547,8 @@ class CategoryContentSyncTab(QWidget):
         self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
         self.source_panel.in_path.textChanged.connect(lambda: self._update_clear_skipped_button_state())
         self.source_lang_edit.textChanged.connect(self._update_preview_headers)
-        self.source_lang_edit.textChanged.connect(self._refresh_read_language_hint)
+        self.source_lang_edit.textChanged.connect(self._reset_detected_read_language)
+        self.cat_edit.textChanged.connect(self._reset_detected_read_language)
         self._bind_preview_invalidation()
         self._update_clear_skipped_button_state()
         self._reset_current_category_progress()
@@ -554,32 +575,113 @@ class CategoryContentSyncTab(QWidget):
     def _refresh_target_lang_label(self):
         lang = (self.get_current_language() or "ru").strip().lower()
         self.target_lang_value.setText(lang)
+        self._reset_detected_read_language()
+
+    def _category_read_finished(self):
+        self._update_clear_skipped_button_state()
+        if self._can_edit_preview():
+            self.preview_btn.setEnabled(True)
+            self._refresh_start_button_state()
+
+    def _reset_detected_read_language(self, *_args):
+        self._read_detected_lang = ''
         self._refresh_read_language_hint()
 
     def _refresh_read_language_hint(self, *_args):
         if not hasattr(self, 'source_lang_edit'):
             return
-        language = self.get_current_language()
-        source_mode = self.read_source_toggle.isChecked()
-        self.read_source_toggle.setText(self._stage_t('read_source_toggle'))
-        self.read_source_toggle.setToolTip(self._stage_t('read_source_toggle_tip'))
-        if source_mode:
-            language = self.source_lang_edit.text().strip().lower()
+        language = self._read_detected_lang
+        source_mode = bool(language and language != self.get_current_language())
+        self.read_language_label.setText(self._stage_t('read_detected', lang=language) if language
+                                         else self._stage_t('read_auto_label'))
+        self.read_language_label.setToolTip(self._stage_t('read_auto_tip', source=self.source_lang_edit.text(),
+                                                         target=self.get_current_language()))
         self.source_panel.map_target_lang = self.get_current_language() if source_mode else ''
-        self.source_panel.fetch_mode_combo.setEnabled(not source_mode)
-        if source_mode:
-            self.source_panel.fetch_mode_combo.setCurrentIndex(0)
-        self.source_panel.read_controls.section_label.setText(self._stage_t('sync_read_source_label' if source_mode
-                                                                           else 'sync_read_target_label', lang=language))
-        self.cat_edit.setPlaceholderText(self._stage_t('sync_read_source_placeholder' if source_mode
-                                                      else 'sync_read_target_placeholder', lang=language))
-        tip = self._stage_t('sync_read_source_tip' if source_mode else 'sync_read_target_tip',
-                            lang=language, source=self.source_lang_edit.text(), target=self.get_current_language())
+        worker = self.source_panel._fetch_worker
+        self.source_panel.fetch_mode_combo.setEnabled(not source_mode and not (worker and worker.isRunning()))
+        caption = ('sync_read_source_label' if source_mode else 'sync_read_target_label') if language else 'sync_read_auto_label'
+        self.source_panel.read_controls.section_label.setText(self._stage_t(caption, lang=language))
+        self.cat_edit.setPlaceholderText(self._stage_t('sync_read_auto_placeholder'))
+        tip = self._stage_t('read_auto_tip', source=self.source_lang_edit.text(), target=self.get_current_language())
         for button in (self.source_panel.replace_list_btn, self.source_panel.append_list_btn):
             button.setToolTip(tip)
+        self.source_panel.open_petscan_btn.setToolTip(self._stage_t('read_auto_petscan_tip'))
+
+    def _read_detection_context(self):
+        return (self.source_lang_edit.text().strip().lower(), self.get_current_language(), self.get_current_family(),
+                self.cat_edit.text().strip(), self.source_panel.depth_spin.value())
+
+    def _start_category_read_detection(self, *, mode=None, append=False, trigger_button=None, petscan=False):
+        panel = self.source_panel
+        if not self._can_edit_preview() or (panel._fetch_worker and panel._fetch_worker.isRunning()):
+            return
+        context = self._read_detection_context()
+        source, target, family, category, _depth = context
+        if not source or not target:
+            QMessageBox.warning(self, self._t('ui.warning', 'Warning'), self._t('log.sync_preview.missing_languages'))
+            return
+        worker = CategoryLanguageProbeWorker(category=category, source_lang=source, target_lang=target, family=family)
+        panel._fetch_worker = worker
+        panel.fetch_started.emit()
+        panel._activate_fetch_stop_button(trigger_button or panel.replace_list_btn)
+        panel._set_fetch_controls_enabled(False)
+        panel._begin_fetch_progress()
+        message = self._stage_t('read_detecting', source=source, target=target)
+        panel._log(message)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat(message)
+        request = dict(mode=mode or panel._get_selected_fetch_mode(), append=append, trigger_button=trigger_button,
+                       petscan=petscan)
+        worker.progress.connect(panel._log)
+        worker.failed.connect(panel._on_fetch_titles_failed)
+        worker.finished.connect(lambda: self._read_detection_finished(worker, context, request))
+        worker.start()
+
+    def _choose_read_category(self, candidates):
+        box = QMessageBox(self)
+        box.setWindowTitle(self._stage_t('read_choose_title'))
+        box.setText(self._stage_t('read_ambiguous'))
+        choices = {}
+        for candidate in candidates:
+            key = 'read_source_choice' if candidate['lang'] == self.source_lang_edit.text().strip().lower() else 'read_target_choice'
+            button = box.addButton(self._stage_t(key, lang=candidate['lang']), QMessageBox.ActionRole)
+            choices[button] = candidate
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        return choices.get(box.clickedButton())
+
+    def _read_detection_finished(self, worker, context, request):
+        panel = self.source_panel
+        if panel._fetch_worker is not worker:
+            worker.deleteLater()
+            return
+        stopped = worker._stop or panel._fetch_stop_requested
+        candidates, failed = worker.candidates, worker.failed_check
+        panel._on_fetch_titles_finished()
+        if stopped or failed or context != self._read_detection_context():
+            return
+        if not candidates:
+            text = self._stage_t('read_not_found', source=context[0], target=context[1])
+            panel._log(text)
+            QMessageBox.warning(self, self._t('ui.warning', 'Warning'), text)
+            return
+        chosen = candidates[0] if len(candidates) == 1 else self._choose_read_category(candidates)
+        if chosen is None or context != self._read_detection_context():
+            return
+        self._read_detected_lang = chosen['lang']
+        if chosen['lang'] != context[1]:
+            panel.fetch_mode_combo.setCurrentIndex(0)
+        self._refresh_read_language_hint()
+        panel._log(self._stage_t('read_detected', lang=chosen['lang']))
+        if request.pop('petscan'):
+            url = panel._build_petscan_url(context[2], chosen['lang'], chosen['title'], context[4])
+            QDesktopServices.openUrl(QUrl(url))
+            return
+        panel.fetch_titles(**request, read_context={**chosen, 'map_target_lang': context[1] if chosen['lang'] != context[1] else ''})
 
     def _notify_empty_category_read(self):
-        text = self._stage_t('sync_read_source_empty' if self.read_source_toggle.isChecked() else 'sync_read_empty',
+        source_mode = bool(self._read_detected_lang and self._read_detected_lang != self.get_current_language())
+        text = self._stage_t('sync_read_source_empty' if source_mode else 'sync_read_empty',
                             lang=self.get_current_language(), source=self.source_lang_edit.text())
         log_message(self.sync_log, text, debug)
         QMessageBox.warning(self, self._t('ui.warning', 'Warning'), text)
@@ -622,6 +724,7 @@ class CategoryContentSyncTab(QWidget):
         for col, key in ((3, 'subpages_count_help'), (6, 'potential'), (7, 'additional_column_tip')):
             self.preview_table.horizontalHeaderItem(col).setToolTip(self._stage_t(key))
 
+    @pause_sorting('preview_table')
     def refresh_localized_texts(self):
         refresh_category_button_tooltips(self, self._stage_t)
         self.source_panel.file_row.refresh_localized_texts()
@@ -644,6 +747,7 @@ class CategoryContentSyncTab(QWidget):
         set_category_button_tooltip(self.read_file_btn, 'read_sync_file', self._stage_t)
         self.actions_group.setAccessibleName(self._stage_t('create_tools'))
         self.delete_preview_btn.setText(self._stage_t('delete'))
+        self.clear_zero_additions_btn.setText(self._stage_t('clear_zero_additions'))
         for row in range(self.preview_table.rowCount()):
             item = self.preview_table.item(row, 5)
             code = item.data(self._status_code_role()) if item else None
@@ -687,6 +791,7 @@ class CategoryContentSyncTab(QWidget):
         self.table_tools.setTitle(self._stage_t('table_tools' if self._preview_mode else 'list_tools'))
         self.delete_preview_btn.setVisible(self._preview_mode)
         self.clear_skipped_btn.setVisible(self._preview_mode)
+        self.clear_zero_additions_btn.setVisible(self._preview_mode)
         self.current_progress_bar.setVisible(self._preview_mode)
         self.workspace_frame.setTitle(self._t('ui.sync.preview_group' if self._preview_mode else 'ui.sync.target_group', 'Categories'))
         self.preview_btn.setText(self._t('ui.preview', 'Preview'))
@@ -1235,9 +1340,9 @@ class CategoryContentSyncTab(QWidget):
             return QColor("#4b5563")
 
     def _make_table_item(
-        self, text: str, *, url: str = "", align: int = Qt.AlignLeft | Qt.AlignVCenter
+        self, text: str, *, url: str = "", align: int = Qt.AlignLeft | Qt.AlignVCenter, count=False
     ) -> QTableWidgetItem:
-        item = QTableWidgetItem(text)
+        item = SyncCountItem(text) if count else QTableWidgetItem(text)
         try:
             item.setTextAlignment(Qt.AlignmentFlag(align))
         except Exception:
@@ -1373,10 +1478,42 @@ class CategoryContentSyncTab(QWidget):
             self._is_row_skipped(row) for row in range(self.preview_table.rowCount())
         )
         btn.setEnabled((not running) and has_skipped)
+        self.clear_zero_additions_btn.setEnabled(not running and bool(self._zero_addition_rows()))
         self.delete_preview_btn.setEnabled((not running) and bool(self.preview_table.selectedIndexes()))
         self.view_tabs.setEnabled(not running)
         fetching = bool(self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning())
         self.read_file_btn.setEnabled(not running and not fetching and bool(self.source_panel.in_path.text().strip()))
+        if fetching:
+            self.preview_btn.setEnabled(False)
+            self.start_btn.setEnabled(False)
+
+    def _zero_addition_rows(self):
+        rows = []
+        for row in range(self.preview_table.rowCount()):
+            item, status = self.preview_table.item(row, 6), self.preview_table.item(row, 5)
+            data = item.data(Qt.UserRole + 3) if item else None
+            if not data or (status and status.data(self._status_code_role()) in {'error', 'stopped', 'previewing', 'in_progress'}):
+                continue
+            additional, categories = data.get('additional'), data.get('additional_categories')
+            if additional is not None and (data.get('total_categories') is None or categories is not None):
+                if additional + (categories or 0) == 0:
+                    rows.append(row)
+        return rows
+
+    @table_action('preview_history')
+    def clear_zero_addition_rows(self):
+        if not self._can_edit_preview():
+            return
+        rows = self._zero_addition_rows()
+        for row in reversed(rows):
+            self.preview_table.removeRow(row)
+        self._rebuild_preview_row_index()
+        if not self.preview_table.rowCount():
+            self._preview_ready, self._preview_signature = False, None
+        self._refresh_start_button_state()
+        self._update_clear_skipped_button_state()
+        if rows:
+            log_message(self.sync_log, self._stage_t('zero_additions_removed', count=len(rows)), debug)
 
     @table_action("preview_history")
     def clear_skipped_rows(self):
@@ -1597,13 +1734,13 @@ class CategoryContentSyncTab(QWidget):
                 pair = pairs_by_target.get(row_key)
                 self.preview_table.setItem(row, 0, self._make_table_item(pair.source_title if pair else "…"))
                 self.preview_table.setItem(
-                    row, 3, self._make_table_item("—", align=Qt.AlignHCenter | Qt.AlignVCenter)
+                    row, 3, self._make_table_item("—", align=Qt.AlignHCenter | Qt.AlignVCenter, count=True)
                 )
                 self.preview_table.setItem(
-                    row, 4, self._make_table_item("0", align=Qt.AlignHCenter | Qt.AlignVCenter)
+                    row, 4, self._make_table_item("0", align=Qt.AlignHCenter | Qt.AlignVCenter, count=True)
                 )
-                self.preview_table.setItem(row, 6, self._make_table_item('…'))
-                self.preview_table.setItem(row, 7, self._make_table_item('…'))
+                self.preview_table.setItem(row, 6, self._make_table_item('…', count=True))
+                self.preview_table.setItem(row, 7, self._make_table_item('…', count=True))
                 self._set_row_status(row, "previewing")
         finally:
             self.preview_table.setUpdatesEnabled(True)
@@ -1643,8 +1780,8 @@ class CategoryContentSyncTab(QWidget):
             self._set_target_item(row, target_title, url=target_url, row_key=key)
             self.preview_table.setItem(row, 2, self._make_table_item("…", align=Qt.AlignHCenter | Qt.AlignVCenter))
             self.preview_table.setItem(row, 0, self._make_table_item("…"))
-            self.preview_table.setItem(row, 3, self._make_table_item("—", align=Qt.AlignHCenter | Qt.AlignVCenter))
-            self.preview_table.setItem(row, 4, self._make_table_item("0", align=Qt.AlignHCenter | Qt.AlignVCenter))
+            self.preview_table.setItem(row, 3, self._make_table_item("—", align=Qt.AlignHCenter | Qt.AlignVCenter, count=True))
+            self.preview_table.setItem(row, 4, self._make_table_item("0", align=Qt.AlignHCenter | Qt.AlignVCenter, count=True))
             self._set_row_status(row, "previewing")
             self._set_preview_sorting(sorting_was)
             self._rebuild_preview_row_index()
@@ -1652,6 +1789,7 @@ class CategoryContentSyncTab(QWidget):
             return self._preview_row_index.get(key, row)
         return None
 
+    @pause_sorting('preview_table')
     def _append_preview_row(self, row_data: dict):
         if not isinstance(row_data, dict):
             return
@@ -1704,7 +1842,7 @@ class CategoryContentSyncTab(QWidget):
 
         count_item = self._make_table_item(
             count_text,
-            align=Qt.AlignHCenter | Qt.AlignVCenter,
+            align=Qt.AlignHCenter | Qt.AlignVCenter, count=True,
         )
         self.preview_table.setItem(row, 3, count_item)
         if 'members' in row_data:
@@ -1713,6 +1851,7 @@ class CategoryContentSyncTab(QWidget):
         self.preview_table.item(row, 5).setToolTip(str(row_data.get("error") or ""))
         self._update_clear_skipped_button_state()
 
+    @pause_sorting('preview_table')
     def _set_member_inventory(self, row, data):
         data = dict(data)
         data['potential'] = len(data.get('target_articles', ()))
@@ -1723,13 +1862,13 @@ class CategoryContentSyncTab(QWidget):
             if data.get('total_categories') is not None:
                 data['additional_categories'] = sum(not data['membership'].get(title, False) for title in data.get('target_categories', ()))
         item = self._make_table_item(str(scan_count_value(data, 'potential')), url='members',
-                                    align=Qt.AlignHCenter | Qt.AlignVCenter)
+                                    align=Qt.AlignHCenter | Qt.AlignVCenter, count=True)
         item.setData(Qt.UserRole + 3, data)
         item.setToolTip(self._stage_t('review_members_tip'))
         self.preview_table.setItem(row, 6, item)
         additional = scan_count_value(data, 'additional')
         self.preview_table.setItem(row, 7, self._make_table_item('—' if additional is None else str(additional), url='members',
-                                                              align=Qt.AlignHCenter | Qt.AlignVCenter))
+                                                              align=Qt.AlignHCenter | Qt.AlignVCenter, count=True))
 
     def _member_plans(self):
         plans = {}
@@ -1781,6 +1920,7 @@ class CategoryContentSyncTab(QWidget):
                            'target_categories': [title for title in data.get('target_categories', ()) if title not in excluded]}
                 with self.preview_history.transaction():
                     self._set_member_inventory(current_row, updated)
+                self._update_clear_skipped_button_state()
         dialog.deleteLater()
 
     def _member_check_finished(self, worker):
@@ -1819,6 +1959,7 @@ class CategoryContentSyncTab(QWidget):
             except Exception:
                 pass
 
+    @pause_sorting('preview_table')
     def _apply_sync_category_result(self, row_data: dict):
         if not isinstance(row_data, dict):
             return
@@ -1841,14 +1982,14 @@ class CategoryContentSyncTab(QWidget):
             self.preview_table.setItem(
                 row,
                 3,
-                self._make_table_item(total_text, align=Qt.AlignHCenter | Qt.AlignVCenter),
+                self._make_table_item(total_text, align=Qt.AlignHCenter | Qt.AlignVCenter, count=True),
             )
             if row_key and row_key == self._current_progress_row_key:
                 self._current_progress_total = self._parse_total_value(total_text)
         self.preview_table.setItem(
             row,
             4,
-            self._make_table_item(str(transferred), align=Qt.AlignHCenter | Qt.AlignVCenter),
+            self._make_table_item(str(transferred), align=Qt.AlignHCenter | Qt.AlignVCenter, count=True),
         )
         self._set_row_status(row, status)
         if row_key and row_key == self._current_progress_row_key and status in {
@@ -1863,6 +2004,7 @@ class CategoryContentSyncTab(QWidget):
         self._render_current_category_progress()
         self._update_clear_skipped_button_state()
 
+    @pause_sorting('preview_table')
     def _mark_rows_stopped_if_in_progress(self):
         for row in range(self.preview_table.rowCount()):
             status_item = self.preview_table.item(row, 5)
@@ -1928,8 +2070,8 @@ class CategoryContentSyncTab(QWidget):
         text = str(raw_text or "").strip()
         if not text or text in {"—", "-", "…", "..."}:
             return None
-        if "/" in text:
-            parts = [part.strip() for part in text.split("/", 1)]
+        if "/" in text or '+' in text:
+            parts = [part.strip() for part in text.replace('/', '+').split('+', 1)]
             nums: list[int] = []
             for part in parts:
                 try:
@@ -1949,7 +2091,7 @@ class CategoryContentSyncTab(QWidget):
         if not key:
             return None
         row = self._preview_row_index.get(key)
-        if row is None or not (0 <= int(row) < self.preview_table.rowCount()):
+        if row is None or not (0 <= int(row) < self.preview_table.rowCount()) or self._row_key_for_row(int(row)) != key:
             self._rebuild_preview_row_index()
             row = self._preview_row_index.get(key)
         if row is None or not (0 <= int(row) < self.preview_table.rowCount()):
@@ -2453,6 +2595,8 @@ class CategoryContentSyncTab(QWidget):
                 allow = False
             if self.sync_worker and self.sync_worker.isRunning():
                 allow = False
+            if self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning():
+                allow = False
         except Exception:
             pass
         try:
@@ -2573,6 +2717,8 @@ class CategoryContentSyncTab(QWidget):
         self.start_preview()
 
     def start_preview(self):
+        if self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning():
+            return
         if self.preview_worker and self.preview_worker.isRunning():
             return
         if self.sync_worker and self.sync_worker.isRunning():
@@ -2654,6 +2800,8 @@ class CategoryContentSyncTab(QWidget):
         self.preview_history.refresh()
 
     def start_sync(self):
+        if self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning():
+            return
         if self.preview_worker and self.preview_worker.isRunning():
             return
         if self.sync_worker and self.sync_worker.isRunning():
@@ -2748,6 +2896,7 @@ class CategoryContentSyncTab(QWidget):
         self.sync_worker.start()
         self.preview_history.refresh()
 
+    @pause_sorting('preview_table')
     def _on_preview_finished(self):
         worker = self.preview_worker
         stopped = bool(worker and getattr(worker, "_stop", False))
@@ -2939,6 +3088,7 @@ class CategoryContentSyncTab(QWidget):
 
     def update_family(self, family: str):
         self.current_family = family
+        self._reset_detected_read_language()
         self._invalidate_preview_state()
         lang = self.get_current_language()
         try:

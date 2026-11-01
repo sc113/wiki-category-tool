@@ -18,6 +18,36 @@ from ..core.category_tree import walk_subcategories
 from ..core.category_transfer import CategoryTransferReader, CategoryPair
 
 
+class CategoryLanguageProbeWorker(QThread):
+    """Check both editions before choosing the language for category reading."""
+
+    progress = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, *, category, source_lang, target_lang, family):
+        super().__init__()
+        self.category, self.source_lang, self.target_lang, self.family = category, source_lang, target_lang, family
+        self._stop, self.failed_check = False, False
+        self._stop_event = threading.Event()
+        self.candidates = []
+
+    def request_stop(self):
+        self._stop = True
+        self._stop_event.set()
+
+    def run(self):
+        reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event)
+        reader.on_retry = self.progress.emit
+        try:
+            self.candidates = reader.category_read_candidates(self.category)
+        except Exception as error:
+            if not self._stop:
+                self.failed_check = True
+                self.failed.emit(str(error))
+        finally:
+            reader.close()
+
+
 class CategoryFetchWorker(QThread):
     """Считывает содержимое категории в фоне, чтобы не блокировать UI."""
 

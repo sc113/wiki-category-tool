@@ -577,6 +577,11 @@ class CategorySourcePanel(QGroupBox):
             )
             return
 
+        resolver = getattr(self, 'read_request_resolver', None)
+        if resolver is not None:
+            resolver(petscan=True)
+            return
+
         lang = self.get_read_language()
         fam = self.get_current_family()
         depth = self.depth_spin.value()
@@ -871,6 +876,7 @@ class CategorySourcePanel(QGroupBox):
         mode: str | None = None,
         append: bool = False,
         trigger_button=None,
+        read_context=None,
     ) -> None:
         worker = getattr(self, '_fetch_worker', None)
         try:
@@ -894,15 +900,21 @@ class CategorySourcePanel(QGroupBox):
             )
             return
 
-        lang = self.get_read_language()
+        resolver = getattr(self, 'read_request_resolver', None)
+        if resolver is not None and read_context is None:
+            resolver(mode=mode, append=append, trigger_button=trigger_button)
+            return
+
+        lang = read_context['lang'] if read_context else self.get_read_language()
         fam = self.get_current_family()
         selected_mode = mode or self._get_selected_fetch_mode()
-        map_target_lang = getattr(self, 'map_target_lang', '')
+        map_target_lang = read_context['map_target_lang'] if read_context else getattr(self, 'map_target_lang', '')
         if map_target_lang:
             selected_mode = 'categories_only'
 
         try:
-            cat_full = category if map_target_lang else self._resolve_category_title(fam, lang, category)
+            cat_full = (read_context['title'] if read_context else
+                        category if map_target_lang else self._resolve_category_title(fam, lang, category))
         except Exception:
             cat_full = category
 

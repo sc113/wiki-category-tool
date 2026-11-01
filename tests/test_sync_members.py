@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 from wiki_cat_tool.core.api_client import APIRequestError
@@ -19,7 +19,7 @@ from wiki_cat_tool.gui.tabs.category_transfer_tab import CategoryTransferTab
 from wiki_cat_tool.gui.widgets.category_articles import CategoryArticlesDialog
 from wiki_cat_tool.tests.test_category_transfer import FixtureReader, page
 from wiki_cat_tool.workers.category_content_sync_worker import CategoryContentSyncPreviewWorker, CategoryContentSyncWorker
-from wiki_cat_tool.workers.category_fetch_worker import CategoryFetchWorker
+from wiki_cat_tool.workers.category_fetch_worker import CategoryFetchWorker, CategoryLanguageProbeWorker
 
 
 def scan_row(name='A', target='А'):
@@ -116,6 +116,48 @@ class SyncMemberReadingTests(unittest.TestCase):
             worker.run()
         worker._preview_reader.close.assert_called_once()
         worker._member_reader.close.assert_called_once()
+        close.assert_called_once()
+
+    def test_probe_checks_both_editions_and_recognizes_either_localized_prefix(self):
+        base_info = self.reader.site_info
+        def info(lang):
+            data = base_info(lang)
+            if lang == 'en':
+                data['namespaces']['14']['name'] = 'Categoria'
+                data['namespacealiases'] = [dict(id=14, alias='Cat')]
+            return data
+        self.reader.site_info = info
+        self.reader.page_data['en']['Categoria:Meta'] = page('Categoria:Meta')
+        for raw in ('Meta', 'Categoria:Meta', 'Категория:Meta', 'Cat:Meta', '[[Categoria:Meta|sort]]'):
+            with self.subTest(raw=raw):
+                self.assertEqual([dict(lang='en', title='Categoria:Meta')], self.reader.category_read_candidates(raw))
+        self.reader.page_data['ru']['Категория:Meta'] = page('Категория:Meta')
+        self.assertEqual([dict(lang='en', title='Categoria:Meta'), dict(lang='ru', title='Категория:Meta')],
+                         self.reader.category_read_candidates('Categoria:Meta'))
+
+    def test_probe_accepts_populated_red_categories_but_not_empty_missing_titles(self):
+        self.reader.page_data['en']['Category:Meta'] = page('Category:Meta', missing=True, categoryinfo=dict(subcats=3))
+        self.reader.page_data['ru']['Категория:Meta'] = page('Категория:Meta', missing=True)
+        self.assertEqual([dict(lang='en', title='Category:Meta')], self.reader.category_read_candidates('Meta'))
+        self.reader.page_data['en'].clear()
+        self.assertEqual([], self.reader.category_read_candidates('Meta'))
+
+    def test_probe_resolves_category_redirects_before_selecting_the_edition(self):
+        redirected = dict(title='Category:Actual', ns=14)
+        self.reader.pages = Mock(side_effect=lambda lang, titles, **kwargs: {titles[0]: redirected} if lang == 'en' else {})
+        self.assertEqual([dict(lang='en', title='Category:Actual')], self.reader.category_read_candidates('Category:Meta'))
+        self.assertTrue(all(call.kwargs['resolve_redirects'] for call in self.reader.pages.call_args_list))
+
+    def test_probe_failure_is_not_reported_as_missing_and_reader_always_closes(self):
+        worker = CategoryLanguageProbeWorker(category='Meta', source_lang='en', target_lang='ru', family='wikipedia')
+        errors = []
+        worker.failed.connect(errors.append)
+        self.reader.category_read_candidates = Mock(side_effect=APIRequestError('offline'))
+        with patch('wiki_cat_tool.workers.category_fetch_worker.CategoryTransferReader', return_value=self.reader), \
+             patch.object(self.reader, 'close') as close:
+            worker.run()
+        self.assertTrue(worker.failed_check)
+        self.assertEqual(['offline'], errors)
         close.assert_called_once()
 
 
@@ -228,24 +270,130 @@ class SyncMemberUiTests(unittest.TestCase):
         self.assertEqual('1+1', self.sync.preview_table.item(0, 6).text())
         self.assertEqual('0+1', self.sync.preview_table.item(0, 7).text())
 
-    def test_read_language_toggle_does_not_reverse_transfer_direction(self):
+    def test_detected_read_language_does_not_reverse_transfer_direction(self):
         self.sync.source_lang_edit.setText('pt')
         self.sync.source_panel.manual_list.setPlainText('Категория:А')
-        for source_mode, language in ((False, 'ru'), (True, 'pt'), (False, 'ru')):
-            self.sync.read_source_toggle.setChecked(source_mode)
+        for language in ('ru', 'pt', 'ru'):
+            self.sync._read_detected_lang = language
+            self.sync._refresh_read_language_hint()
             self.assertEqual(language, self.sync.source_panel.get_read_language())
             config = self.sync._collect_run_config()
             self.assertEqual(('pt', 'ru'), (config['source_lang'], config['target_lang']))
 
-    def test_read_source_button_uses_source_language_without_double_namespace_prefix(self):
+    def finish_probe(self, worker, candidates, *, stopped=False, failed=False):
+        worker.candidates, worker._stop, worker.failed_check = candidates, stopped, failed
+        worker.isRunning.return_value = False
+        self.sync._read_detection_finished(worker, self.sync._read_detection_context(),
+                                            dict(mode='categories_only', append=False, trigger_button=None, petscan=False))
+
+    def test_automatic_source_read_uses_source_language_without_double_namespace_prefix(self):
         self.sync.source_lang_edit.setText('pt')
-        self.sync.read_source_toggle.setChecked(True)
         self.sync.cat_edit.setText('Categoria:Meta')
-        with patch('wiki_cat_tool.gui.widgets.shared_panels.CategoryFetchWorker') as factory:
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryLanguageProbeWorker') as probe:
             self.sync.source_panel.fetch_selected_mode_replace()
+        self.assertEqual(('pt', 'ru', 'Categoria:Meta'),
+                         tuple(probe.call_args.kwargs[key] for key in ('source_lang', 'target_lang', 'category')))
+        self.assertFalse(self.sync.source_lang_edit.isEnabled())
+        with patch('wiki_cat_tool.gui.widgets.shared_panels.CategoryFetchWorker') as factory:
+            self.finish_probe(probe.return_value, [dict(lang='pt', title='Categoria:Meta')])
         self.assertEqual(('pt', 'ru', 'Categoria:Meta'),
                          tuple(factory.call_args.kwargs[key] for key in ('lang', 'map_target_lang', 'category')))
         self.sync.source_panel._on_fetch_titles_finished()
+
+    def test_detected_target_category_reads_current_language_without_mapping(self):
+        self.sync.cat_edit.setText('Категория:Мета')
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryLanguageProbeWorker') as probe:
+            self.sync.source_panel.fetch_selected_mode_replace()
+        with patch('wiki_cat_tool.gui.widgets.shared_panels.CategoryFetchWorker') as factory:
+            self.finish_probe(probe.return_value, [dict(lang='ru', title='Категория:Мета')])
+        self.assertEqual('ru', factory.call_args.kwargs['lang'])
+        self.assertNotIn('map_target_lang', factory.call_args.kwargs)
+        self.sync.source_panel._on_fetch_titles_finished()
+
+    def test_ambiguous_category_prompts_and_cancellation_keeps_existing_input(self):
+        self.sync.cat_edit.setText('Category:Meta')
+        self.sync.source_panel.manual_list.setPlainText('Категория:Сохранённая')
+        candidates = [dict(lang='en', title='Category:Meta'), dict(lang='ru', title='Категория:Meta')]
+        for selection in (None, candidates[0], candidates[1]):
+            with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryLanguageProbeWorker') as probe:
+                self.sync.source_panel.fetch_selected_mode_replace()
+            with patch.object(self.sync, '_choose_read_category', return_value=selection) as choose, \
+                 patch('wiki_cat_tool.gui.widgets.shared_panels.CategoryFetchWorker') as fetch:
+                self.finish_probe(probe.return_value, candidates)
+            choose.assert_called_once_with(candidates)
+            if selection is None:
+                fetch.assert_not_called()
+                self.assertEqual('Категория:Сохранённая', self.sync.source_panel.manual_list.toPlainText())
+            else:
+                self.assertEqual(selection['lang'], fetch.call_args.kwargs['lang'])
+                self.sync.source_panel._on_fetch_titles_finished()
+
+    def test_stop_failure_and_missing_category_do_not_start_a_fetch_or_clear_the_list(self):
+        self.sync.cat_edit.setText('Category:Meta')
+        self.sync.source_panel.manual_list.setPlainText('Категория:Сохранённая')
+        for stopped, failed, warn in ((True, False, False), (False, True, False), (False, False, True)):
+            with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryLanguageProbeWorker') as probe:
+                self.sync.source_panel.fetch_selected_mode_replace()
+            with patch('wiki_cat_tool.gui.widgets.shared_panels.CategoryFetchWorker') as fetch, \
+                 patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.QMessageBox.warning') as warning:
+                self.finish_probe(probe.return_value, [], stopped=stopped, failed=failed)
+            fetch.assert_not_called()
+            self.assertEqual(warn, warning.called)
+            self.assertEqual('Категория:Сохранённая', self.sync.source_panel.manual_list.toPlainText())
+            self.assertTrue(self.sync.source_lang_edit.isEnabled())
+
+    def test_context_change_discards_a_late_detection_result(self):
+        self.sync.cat_edit.setText('Category:Meta')
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryLanguageProbeWorker') as probe:
+            self.sync.source_panel.fetch_selected_mode_replace()
+        worker = probe.return_value
+        worker.candidates, worker._stop, worker.failed_check = [dict(lang='en', title='Category:Meta')], False, False
+        worker.isRunning.return_value = False
+        context = self.sync._read_detection_context()
+        self.sync.cat_edit.setText('Category:Other')
+        with patch('wiki_cat_tool.gui.widgets.shared_panels.CategoryFetchWorker') as fetch:
+            self.sync._read_detection_finished(worker, context, dict(mode='categories_only', append=False, trigger_button=None, petscan=False))
+        fetch.assert_not_called()
+        self.assertEqual('', self.sync._read_detected_lang)
+
+    def test_stop_reaches_the_detection_worker_and_no_preview_can_start_while_it_runs(self):
+        self.sync.cat_edit.setText('Category:Meta')
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryLanguageProbeWorker') as probe:
+            self.sync.source_panel.fetch_selected_mode_replace()
+        self.assertFalse(self.sync.preview_btn.isEnabled())
+        with patch.object(self.sync, '_collect_run_config') as config:
+            self.sync.start_preview()
+            self.sync.start_sync()
+        config.assert_not_called()
+        self.sync.source_panel.fetch_selected_mode_replace()
+        probe.return_value.request_stop.assert_called_once()
+        with patch('wiki_cat_tool.gui.widgets.shared_panels.CategoryFetchWorker') as fetch:
+            self.finish_probe(probe.return_value, [dict(lang='en', title='Category:Meta')])
+        fetch.assert_not_called()
+        self.assertTrue(self.sync.preview_btn.isEnabled())
+
+    def test_petscan_uses_the_automatically_detected_edition(self):
+        self.sync.source_lang_edit.setText('pt')
+        self.sync.cat_edit.setText('Categoria:Meta')
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryLanguageProbeWorker') as probe:
+            self.sync.source_panel.open_petscan_in_browser()
+        worker = probe.return_value
+        worker.candidates, worker._stop, worker.failed_check = [dict(lang='pt', title='Categoria:Meta')], False, False
+        worker.isRunning.return_value = False
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.QDesktopServices.openUrl') as browser:
+            self.sync._read_detection_finished(worker, self.sync._read_detection_context(),
+                                              dict(mode='categories_only', append=False, trigger_button=None, petscan=True))
+        self.assertIn('language=pt', browser.call_args.args[0].toString())
+        self.assertIsNone(self.sync.source_panel._fetch_worker)
+
+    def test_choose_read_dialog_names_both_editions_and_returns_the_clicked_one(self):
+        candidates = [dict(lang='en', title='Category:Meta'), dict(lang='ru', title='Категория:Meta')]
+        def choose_target():
+            box = self.app.activeModalWidget()
+            button = next(button for button in box.buttons() if '(ru)' in button.text())
+            button.click()
+        QTimer.singleShot(0, choose_target)
+        self.assertEqual(candidates[1], self.sync._choose_read_category(candidates))
 
     def test_available_click_opens_review_instead_of_a_browser(self):
         self.load_scan()
@@ -262,16 +410,121 @@ class SyncMemberUiTests(unittest.TestCase):
         self.assertEqual({}, self.sync._member_plans())
         self.assertFalse(self.sync.start_btn.isEnabled())
 
-    def test_category_reading_makes_the_current_language_explicit_and_explains_empty_results(self):
+    def test_zero_additions_cleanup_keeps_unknown_errors_and_positive_subcategories_and_supports_undo(self):
+        empty = {**scan_row('Empty', 'Пустая'), 'membership': {'Статья А': True, 'Статья Б': True, 'Категория:Дочерняя': True}}
+        positive = {**scan_row('Positive', 'Добавить'), 'membership': {'Статья А': True, 'Статья Б': True, 'Категория:Дочерняя': False}}
+        unknown = scan_row('Unknown', 'Неизвестно')
+        failed = {**empty, 'source_title': 'Category:Error', 'target_title': 'Категория:Ошибка'}
+        self.load_scan([empty, positive, unknown, failed])
+        self.sync._set_row_status(3, 'error')
+        self.sync._update_clear_skipped_button_state()
+        self.assertTrue(self.sync.clear_zero_additions_btn.isEnabled())
+        self.sync.clear_zero_additions_btn.click()
+        self.assertEqual(['Категория:Добавить', 'Категория:Неизвестно', 'Категория:Ошибка'], self.sync._categories_from_preview_table())
+        self.sync.preview_history.undo()
+        self.assertEqual(4, self.sync.preview_table.rowCount())
+        self.assertTrue(self.sync.start_btn.isEnabled())
+        self.assertTrue(self.sync.clear_zero_additions_btn.isEnabled())
+        self.sync.preview_worker = Mock(isRunning=Mock(return_value=True))
+        self.sync._update_clear_skipped_button_state()
+        self.assertFalse(self.sync.clear_zero_additions_btn.isEnabled())
+        self.sync.clear_zero_addition_rows()
+        self.assertEqual(4, self.sync.preview_table.rowCount())
+        self.sync.preview_worker = None
+
+    def test_clear_zero_additions_disables_start_when_every_row_is_removed(self):
+        self.load_scan([{**scan_row(), 'membership': {'Статья А': True, 'Статья Б': True, 'Категория:Дочерняя': True}}])
+        self.sync.clear_zero_addition_rows()
+        self.assertEqual(0, self.sync.preview_table.rowCount())
+        self.assertFalse(self.sync.start_btn.isEnabled())
+        self.sync.preview_history.undo()
+        self.assertTrue(self.sync.start_btn.isEnabled())
+
+    def test_excluding_last_addable_page_immediately_enables_zero_cleanup(self):
+        data = {**scan_row(), 'membership': {'Статья А': True, 'Статья Б': False, 'Категория:Дочерняя': True}}
+        self.load_scan([data])
+        self.assertFalse(self.sync.clear_zero_additions_btn.isEnabled())
+        def exclude():
+            dialog = self.app.activeModalWidget()
+            dialog.table.selectAll()
+            dialog.remove_btn.click()
+            dialog.reject()
+        QTimer.singleShot(0, exclude)
+        self.sync._review_members(0, only_additional=True)
+        self.assertEqual('0+0', self.sync.preview_table.item(0, 7).text())
+        self.assertTrue(self.sync.clear_zero_additions_btn.isEnabled())
+
+    def test_preview_all_headers_are_sortable_and_counts_sort_numerically(self):
+        rows = []
+        for name, count in (('Ten', 10), ('Two', 2), ('One', 1)):
+            rows.append({**scan_row(name, name), 'total': count, 'total_categories': 0,
+                         'target_articles': ['Article ' + str(i) for i in range(count)], 'target_categories': [],
+                         'membership': {'Article ' + str(i): False for i in range(count)}})
+        self.load_scan(rows)
+        table = self.sync.preview_table
+        self.assertTrue(table.isSortingEnabled())
+        for column in range(table.columnCount()):
+            with self.subTest(column=column):
+                table.sortItems(column, Qt.AscendingOrder)
+                self.assertEqual(column, table.horizontalHeader().sortIndicatorSection())
+        for column in (3, 6, 7):
+            table.sortItems(column, Qt.AscendingOrder)
+            self.assertEqual(['Категория:One', 'Категория:Two', 'Категория:Ten'], self.sync._categories_from_preview_table())
+        table.sortItems(4, Qt.AscendingOrder)
+        self.sync._apply_sync_category_result(dict(row_key='категория:two', target_title='Категория:Two', transferred=12,
+                                                   total_text='14+2', status='done'))
+        self.sync._apply_sync_category_result(dict(row_key='категория:ten', target_title='Категория:Ten', transferred=2,
+                                                   total_text='10+0', status='partial'))
+        table.sortItems(4, Qt.AscendingOrder)
+        self.assertEqual(['Категория:One', 'Категория:Ten', 'Категория:Two'], self.sync._categories_from_preview_table())
+        self.assertEqual(16, self.sync._resolve_row_total('категория:two'))
+        self.assertTrue(self.sync.start_btn.isEnabled())
+
+    def test_clicking_header_changes_visible_order_and_keeps_rows_together(self):
+        self.load_scan([scan_row('B', 'Б'), scan_row('A', 'А')])
+        self.sync.show()
+        self.app.processEvents()
+        header = self.sync.preview_table.horizontalHeader()
+        point = QPoint(header.sectionViewportPosition(1) + header.sectionSize(1) // 2, header.height() // 2)
+        QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=point)
+        first_order = self.sync._categories_from_preview_table()
+        QTest.mouseClick(header.viewport(), Qt.LeftButton, pos=point)
+        self.assertEqual(list(reversed(first_order)), self.sync._categories_from_preview_table())
+        for row in range(2):
+            self.assertEqual({'Категория:А': 'Category:A', 'Категория:Б': 'Category:B'}[self.sync.preview_table.item(row, 1).text()],
+                             self.sync.preview_table.item(row, 0).text())
+
+    def test_preview_updates_and_transfer_follow_the_sorted_visible_rows(self):
+        self.load_scan([scan_row('B', 'Б'), scan_row('A', 'А')])
+        table = self.sync.preview_table
+        table.sortItems(7, Qt.AscendingOrder)
+        self.sync.preview_worker = Mock(isRunning=Mock(return_value=True))
+        self.sync._append_preview_rows_batch([dict(row_key='категория:а', target_title='Категория:А', source_title='Category:A',
+                                                   count_text='3+0', status='preview_ready',
+                                                   members={**scan_row(), 'target_articles': ['А1', 'А2', 'А3'],
+                                                            'target_categories': [], 'membership': {'А1': False, 'А2': False, 'А3': False}})])
+        self.assertTrue(table.isSortingEnabled())
+        row = self.sync._preview_row_index['категория:а']
+        self.assertEqual('Category:A', table.item(row, 0).text())
+        self.assertEqual('3+0', table.item(row, 7).text())
+        self.sync.preview_worker = None
+        table.sortItems(1, Qt.AscendingOrder)
+        self.parent.current_user, self.parent.current_password = 'User', 'unused'
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryContentSyncWorker') as factory:
+            self.sync.start_sync()
+        self.assertEqual(['Категория:А', 'Категория:Б'], factory.call_args.kwargs['target_categories'])
+        self.assertEqual(('А1', 'А2', 'А3'), factory.call_args.kwargs['member_plans']['категория:а']['articles'])
+        self.sync.sync_worker = None
+
+    def test_reading_explains_automatic_language_detection_and_empty_results(self):
         self.sync.source_lang_edit.setText('pt')
-        self.assertIn('(ru)', self.sync.source_panel.read_controls.section_label.text())
-        self.assertIn('разделе ru', self.sync.source_panel.replace_list_btn.toolTip())
+        self.assertIn('автоматически', self.sync.read_language_label.text())
+        self.assertIn('ru', self.sync.source_panel.replace_list_btn.toolTip())
         self.assertIn('pt', self.sync.source_panel.replace_list_btn.toolTip())
         self.sync.source_panel.manual_list.setPlainText('Категория:Сохранённая')
         with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.QMessageBox.warning') as warning:
             self.sync.source_panel._on_fetch_titles_ready([], {}, append=False, mode='categories_only', depth=0)
         self.assertIn('разделе ru', warning.call_args.args[2])
-        self.assertIn('pt', warning.call_args.args[2])
         self.assertEqual('Категория:Сохранённая', self.sync.source_panel.manual_list.toPlainText())
 
     def test_busy_sync_cannot_be_overwritten_by_scanning_handoff(self):

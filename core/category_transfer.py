@@ -506,6 +506,33 @@ class CategoryTransferReader:
             raw = raw[0].upper() + raw[1:]
         return f"{prefix}:{raw}"
 
+    def category_read_candidates(self, raw):
+        """Find the entered category in either edition, including uncreated category pages."""
+        raw = raw.strip().lstrip('\ufeff').replace('_', ' ')
+        if raw.startswith('[[') and raw.endswith(']]'):
+            raw = raw[2:-2].split('|', 1)[0].strip()
+        languages = tuple(dict.fromkeys((self.source_lang, self.target_lang)))
+        prefixes, aliases = {}, {'category'}
+        for lang in languages:
+            info = self.site_info(lang)
+            namespace = info['namespaces']['14']
+            prefixes[lang] = namespace.get('name', namespace.get('*', 'Category')) or 'Category'
+            aliases.update((prefixes[lang].casefold(), namespace.get('canonical', 'Category').casefold()))
+            aliases.update(alias.get('alias', alias.get('*', '')).casefold()
+                           for alias in info.get('namespacealiases', []) if alias.get('id') == 14)
+        first, separator, rest = raw.partition(':')
+        has_prefix = separator and first.casefold() in aliases
+        candidates = []
+        for lang in languages:
+            self.check_stop()
+            title = self.category_title(f'{prefixes[lang]}:{rest.strip()}' if has_prefix else raw, lang)
+            found = self.pages(lang, [title], props='info|categoryinfo', resolve_redirects=True).get(title)
+            if (found and found.get('ns') == 14 and 'invalid' not in found
+                    and ('missing' not in found or any(found.get('categoryinfo', {}).get(key, 0)
+                                                      for key in ('size', 'pages', 'subcats', 'files')))):
+                candidates.append(dict(lang=lang, title=found['title']))
+        return candidates
+
     def _title_batches(self, lang, titles, params):
         """Bound both title count and the actual percent-encoded GET URL.
 
