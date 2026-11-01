@@ -14,6 +14,13 @@ from ...core.localization import translate_key
 
 
 @dataclass
+class _CellSnapshot:
+    item_type: type
+    flags: Qt.ItemFlag
+    values: dict
+
+
+@dataclass
 class _Snapshot:
     rows: tuple
     key: tuple
@@ -70,11 +77,20 @@ class TableHistory(QObject):
         return invoke
 
     def _capture(self):
-        rows = tuple(tuple(self.table.item(row, col).clone() if self.table.item(row, col) else None
-                           for col in range(self.table.columnCount()))
-                     for row in range(self.table.rowCount()))
+        table = self.table
+        model = table.model()
+        rows = []
+        for row in range(table.rowCount()):
+            cells = []
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                cells.append(_CellSnapshot(type(item), item.flags(), model.itemData(model.index(row, col)))
+                             if item is not None else None)
+            rows.append(tuple(cells))
+        rows = tuple(rows)
         columns = self.columns or range(self.table.columnCount())
-        key = tuple(tuple(items[col].text() if items[col] else None for col in columns) for items in rows)
+        key = tuple(tuple(str(items[col].values.get(Qt.DisplayRole, '')) if items[col] else None
+                          for col in columns) for items in rows)
         selection = tuple((r.topRow(), r.leftColumn(), r.bottomRow(), r.rightColumn())
                           for r in self.table.selectedRanges())
         return _Snapshot(rows, key, (self.table.currentRow(), self.table.currentColumn()),
@@ -144,10 +160,16 @@ class TableHistory(QObject):
         try:
             table.setRowCount(0)
             table.setRowCount(len(snapshot.rows))
-            for row, items in enumerate(snapshot.rows):
-                for col, item in enumerate(items):
-                    if item is not None:
-                        table.setItem(row, col, item.clone())
+            for row, cells in enumerate(snapshot.rows):
+                for col, cell in enumerate(cells):
+                    if cell is not None:
+                        # Store values instead of detached item clones. This
+                        # also keeps Qt item lifetimes confined to the table.
+                        item = cell.item_type()
+                        item.setFlags(cell.flags)
+                        for role, value in cell.values.items():
+                            item.setData(role, value)
+                        table.setItem(row, col, item)
             table.setSortingEnabled(sorting)
             table.clearSelection()
             if snapshot.current[0] >= 0:

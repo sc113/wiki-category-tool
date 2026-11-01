@@ -244,6 +244,8 @@ class CategorySourcePanel(QGroupBox):
 
     fetch_started = Signal()
     fetch_finished = Signal()
+    fetch_empty = Signal()
+    mapped_pairs_ready = Signal(object)
 
     def __init__(
         self,
@@ -518,6 +520,10 @@ class CategorySourcePanel(QGroupBox):
             pass
         return 'ru'
 
+    def get_read_language(self):
+        getter = getattr(self, 'read_language_getter', None)
+        return getter() if getter else self.get_current_language()
+
     def get_current_family(self) -> str:
         try:
             fam = getattr(self.parent_window, 'current_family', None)
@@ -571,7 +577,7 @@ class CategorySourcePanel(QGroupBox):
             )
             return
 
-        lang = self.get_current_language()
+        lang = self.get_read_language()
         fam = self.get_current_family()
         depth = self.depth_spin.value()
         petscan_url = self._build_petscan_url(fam, lang, category, depth)
@@ -888,12 +894,15 @@ class CategorySourcePanel(QGroupBox):
             )
             return
 
-        lang = self.get_current_language()
+        lang = self.get_read_language()
         fam = self.get_current_family()
         selected_mode = mode or self._get_selected_fetch_mode()
+        map_target_lang = getattr(self, 'map_target_lang', '')
+        if map_target_lang:
+            selected_mode = 'categories_only'
 
         try:
-            cat_full = self._resolve_category_title(fam, lang, category)
+            cat_full = category if map_target_lang else self._resolve_category_title(fam, lang, category)
         except Exception:
             cat_full = category
 
@@ -921,7 +930,9 @@ class CategorySourcePanel(QGroupBox):
             family=fam,
             depth=depth,
             mode=selected_mode,
+            **(dict(map_target_lang=map_target_lang) if map_target_lang else {}),
         )
+        worker.mapped_pairs_ready.connect(self.mapped_pairs_ready)
         worker.progress.connect(self._log)
         worker.read_progress.connect(self._on_fetch_read_progress)
         worker.partial_ready.connect(self._on_fetch_titles_partial)
@@ -956,6 +967,8 @@ class CategorySourcePanel(QGroupBox):
         mode: str,
         depth: int,
     ) -> None:
+        if self._fetch_stop_requested:
+            return
         try:
             self._set_fetch_progress_count(
                 max(self._fetch_last_read_count, len(titles or [])),
@@ -986,6 +999,7 @@ class CategorySourcePanel(QGroupBox):
                     'Nothing was found for the selected mode.',
                 )
             )
+            self.fetch_empty.emit()
 
     def _on_fetch_titles_failed(self, message: str) -> None:
         text = str(message or '').strip()

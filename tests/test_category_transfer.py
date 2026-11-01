@@ -63,8 +63,8 @@ class FixtureReader(CategoryTransferReader):
     def item_links(self, qids):
         return {qid: self.links.get(qid, "") for qid in qids}
 
-    def members(self, title, kind):
-        return list(self.graph.get((title, kind), []))
+    def members(self, title, kind, *, lang=None):
+        return list(self.graph.get((lang, title, kind), self.graph.get((title, kind), [])))
 
     def read_article_pages(self, title):
         return {article: self.page_data['en'].get(article, page(article, ns=0, missing=True))

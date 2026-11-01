@@ -199,7 +199,7 @@ def _make_member_count_text(
         if process_articles and process_subcategories:
             art = _count_articles_in_source_category(source_cat, article_depth)
             sub = _count_subcategories_in_source_category(source_cat)
-            return f"{art} / {sub}"
+            return f"{art}+{sub}"
         return "0"
     except Exception:
         return "0"
@@ -622,7 +622,31 @@ class CategoryContentSyncPreviewWorker(QThread):
             reader = getattr(self, "_preview_reader", None)
             if reader is not None:
                 reader.close()
+            reader = getattr(self, '_member_reader', None)
+            if reader is not None:
+                reader.close()
             self.api_client.session.close()
+
+    def _read_available_members(self, row):
+        if not row.get('source_title') or row.get('status') == 'error':
+            return row
+        if not hasattr(self, '_member_reader'):
+            self._member_reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family,
+                                                        self._stop_event, 0.12)
+            self._member_reader.on_retry = self.progress.emit
+        try:
+            members = self._member_reader.transfer_members(row['source_title'], articles=self.process_articles,
+                                                           subcategories=self.process_subcategories,
+                                                           target_category=row['target_title'])
+            counts = [str(members['total'])] if self.process_articles else []
+            if self.process_subcategories:
+                counts.append(str(members['total_categories']))
+            return {**row, 'members': {**members, 'target_title': row['target_title']},
+                    'count_text': '+'.join(counts), 'status': 'preview_ready'}
+        except TransferStopped:
+            raise
+        except Exception as error:
+            return {**row, 'status': 'error', 'error': str(error)}
 
     def _run_preview(self):
         if not self.process_articles and not self.process_subcategories:
@@ -694,10 +718,10 @@ class CategoryContentSyncPreviewWorker(QThread):
             for row_data in batch_rows:
                 if self._stop:
                     break
+                row_data = self._read_available_members(row_data)
                 pending_rows.append(row_data)
                 processed_count += 1
-                if len(pending_rows) >= self.preview_batch_size:
-                    _flush_pending_rows()
+                _flush_pending_rows()
                 try:
                     self.category_done.emit()
                 except Exception:
@@ -736,6 +760,7 @@ class CategoryContentSyncWorker(BaseWorker):
         article_depth: int,
         edit_summary: str = "",
         category_pairs: tuple[CategoryPair, ...] = (),
+        member_plans: dict | None = None,
     ):
         super().__init__(username, password, target_lang, family)
         self.target_categories = list(target_categories or [])
@@ -747,6 +772,10 @@ class CategoryContentSyncWorker(BaseWorker):
         self.article_depth = max(0, int(article_depth or 0))
         self.edit_summary = str(edit_summary or "").strip()
         self.category_pairs = {pair.target_title.casefold(): pair for pair in category_pairs}
+        self.member_plans = ({str(category).casefold():
+                              {mode: frozenset(_normalize_space(title.replace('_', ' ')) for title in titles)
+                               for mode, titles in plan.items()}
+                              for category, plan in member_plans.items()} if member_plans is not None else None)
         self.transferred_success_total = 0
         self._lookup_min_interval = 0.12
         self._lookup_last_ts = 0.0
@@ -909,7 +938,7 @@ class CategoryContentSyncWorker(BaseWorker):
                 )
 
             if self.process_articles and self.process_subcategories:
-                total_text = f"{seen_articles} / {seen_subcats}"
+                total_text = f"{seen_articles}+{seen_subcats}"
                 category_total = seen_articles + seen_subcats
             elif self.process_articles:
                 total_text = str(seen_articles)
@@ -1323,6 +1352,10 @@ class CategoryContentSyncWorker(BaseWorker):
             members.append(source_subcat)
         return members
 
+    def _member_is_selected(self, category, mode, title):
+        return (self.member_plans is None or
+                _normalize_space(title.replace('_', ' ')) in self.member_plans.get(category.casefold(), {}).get(mode, ()))
+
     def _transfer_articles(
         self,
         source_category_name: str,
@@ -1375,6 +1408,9 @@ class CategoryContentSyncWorker(BaseWorker):
                     stats["skipped"] += 1
                     continue
                 seen_targets.add(target_page_title)
+                if not self._member_is_selected(target_category_name, 'articles', target_page_title):
+                    stats['skipped'] += 1
+                    continue
 
                 try:
                     target_page = pywikibot.Page(target_site, target_page_title)
@@ -1517,6 +1553,9 @@ class CategoryContentSyncWorker(BaseWorker):
                     target_subcat_page = pywikibot.Category(
                         target_site, target_subcat_title
                     )
+                    if not self._member_is_selected(target_parent_category_name, 'subcategories', target_subcat_page.title()):
+                        stats['skipped'] += 1
+                        continue
                     if not target_subcat_page.exists():
                         stats["skipped"] += 1
                         self.progress.emit(

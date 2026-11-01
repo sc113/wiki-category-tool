@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import quote
 
 from PySide6.QtCore import Qt, Signal, QUrl, QEvent, QTimer, QRect
 from PySide6.QtGui import (
@@ -40,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.localization import translate_key
-from ...core.category_transfer import CategoryPair, read_sync_tsv
+from ...core.category_transfer import CategoryPair, read_sync_tsv, scan_count_value
 from ...core.api_client import WikimediaAPIClient
 from ...core.pywikibot_config import apply_pwb_config
 from ...utils import (
@@ -55,6 +56,8 @@ from ...workers.category_content_sync_worker import (
     _build_page_url,
 )
 from ..widgets.shared_panels import CategorySourcePanel
+from ..widgets.category_articles import CategoryArticlesDialog
+from ...workers.category_transfer_worker import CategoryArticlePresenceWorker
 from ..widgets.table_history import TableHistory, table_action
 from ..widgets.category_stage import CategoryLogPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, highlight_next_action, refresh_category_toolbar, remove_inner_frame, set_category_button_tooltip, refresh_category_button_tooltips
 from ..widgets.ui_helpers import (
@@ -99,14 +102,15 @@ class CategoryContentSyncTab(QWidget):
         self._depth_expanded_base_signature = None
         self._last_ui_lang = self._ui_lang()
         self._last_theme_mode = ""
+        self._member_workers = set()
         self._current_progress_row_key = ""
         self._current_progress_title = ""
         self._current_progress_done = 0
         self._current_progress_total: Optional[int] = None
         self._preview_cols_user_resized = False
         self._preview_cols_auto_applying = False
-        # source, target, wikidata, total, transferred, status
-        self._preview_col_ratios = (0.28, 0.28, 0.09, 0.11, 0.08, 0.16)
+        # Keep existing logical columns stable; display both counts after Total.
+        self._preview_col_ratios = (0.22, 0.22, 0.07, 0.10, 0.07, 0.14, 0.09, 0.09)
         self._preview_header_mouse_down = False
 
         self.setup_ui()
@@ -142,8 +146,9 @@ class CategoryContentSyncTab(QWidget):
     def _processed_label(self) -> str:
         return self._t("ui.processed_short", "Processed")
 
-    def _stage_t(self, key):
-        return translate_key('ui.transfer.' + key, self._ui_lang(), key)
+    def _stage_t(self, key, **values):
+        text = translate_key('ui.transfer.' + key, self._ui_lang(), key)
+        return text.format(**values) if values else text
 
     def _show_category_inputs(self):
         if self._can_edit_preview():
@@ -211,6 +216,12 @@ class CategoryContentSyncTab(QWidget):
         )
         self.sync_ns_combo = self.source_panel.ns_combo
         self.cat_edit = self.source_panel.cat_edit
+        self.read_source_toggle = QCheckBox(self._stage_t('read_source_toggle'))
+        self.read_source_toggle.setToolTip(self._stage_t('read_source_toggle_tip'))
+        self.source_panel.read_controls.layout().insertWidget(0, self.read_source_toggle)
+        self.source_panel.read_language_getter = lambda: (self.source_lang_edit.text().strip().lower()
+                                                          if self.read_source_toggle.isChecked() else self.get_current_language())
+        self.read_source_toggle.toggled.connect(self._refresh_read_language_hint)
         self.left_stack = QStackedWidget(self)
         self.left_stack.setObjectName("syncLeftStack")
         self.input_scroll = QScrollArea()
@@ -239,7 +250,7 @@ class CategoryContentSyncTab(QWidget):
         except Exception:
             pass
 
-        self.preview_table = QTableWidget(0, 6, self.preview_group)
+        self.preview_table = QTableWidget(0, 8, self.preview_group)
         self.preview_table.setObjectName("syncPreviewTable")
         self._update_preview_headers()
         try:
@@ -255,8 +266,10 @@ class CategoryContentSyncTab(QWidget):
                 header.setMinimumSectionSize(36)
             except Exception:
                 pass
-            for col in range(6):
+            for col in range(8):
                 header.setSectionResizeMode(col, QHeaderView.Interactive)
+            header.moveSection(header.visualIndex(6), 4)
+            header.moveSection(header.visualIndex(7), 5)
             self.preview_table.setWordWrap(False)
             header.setSortIndicatorShown(False)
             self.preview_table.setSortingEnabled(False)
@@ -503,15 +516,24 @@ class CategoryContentSyncTab(QWidget):
         self.source_panel.set_log_widget(self.sync_log)
         self.source_panel.fetch_started.connect(lambda: self.log_panel.set_expanded(True))
         self.source_panel.fetch_started.connect(lambda: self.read_file_btn.setEnabled(False))
+        self.source_panel.fetch_started.connect(lambda: self.read_source_toggle.setEnabled(False))
+        self.source_panel.fetch_started.connect(lambda: self.source_lang_edit.setEnabled(False))
         self.source_panel.fetch_finished.connect(self._update_clear_skipped_button_state)
+        self.source_panel.fetch_finished.connect(lambda: self.read_source_toggle.setEnabled(True))
+        self.source_panel.fetch_finished.connect(lambda: self.source_lang_edit.setEnabled(True))
+        self.source_panel.fetch_finished.connect(self._refresh_read_language_hint)
+        self.source_panel.fetch_empty.connect(self._notify_empty_category_read)
+        self.source_panel.mapped_pairs_ready.connect(self._source_pairs_ready)
         self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
         self.source_panel.in_path.textChanged.connect(lambda: self._update_clear_skipped_button_state())
         self.source_lang_edit.textChanged.connect(self._update_preview_headers)
+        self.source_lang_edit.textChanged.connect(self._refresh_read_language_hint)
         self._bind_preview_invalidation()
         self._update_clear_skipped_button_state()
         self._reset_current_category_progress()
         self._sync_preview_button_width()
         self._update_preview_headers()
+        self._refresh_read_language_hint()
         self._set_preview_mode(False)
 
     def _bind_preview_invalidation(self):
@@ -532,6 +554,46 @@ class CategoryContentSyncTab(QWidget):
     def _refresh_target_lang_label(self):
         lang = (self.get_current_language() or "ru").strip().lower()
         self.target_lang_value.setText(lang)
+        self._refresh_read_language_hint()
+
+    def _refresh_read_language_hint(self, *_args):
+        if not hasattr(self, 'source_lang_edit'):
+            return
+        language = self.get_current_language()
+        source_mode = self.read_source_toggle.isChecked()
+        self.read_source_toggle.setText(self._stage_t('read_source_toggle'))
+        self.read_source_toggle.setToolTip(self._stage_t('read_source_toggle_tip'))
+        if source_mode:
+            language = self.source_lang_edit.text().strip().lower()
+        self.source_panel.map_target_lang = self.get_current_language() if source_mode else ''
+        self.source_panel.fetch_mode_combo.setEnabled(not source_mode)
+        if source_mode:
+            self.source_panel.fetch_mode_combo.setCurrentIndex(0)
+        self.source_panel.read_controls.section_label.setText(self._stage_t('sync_read_source_label' if source_mode
+                                                                           else 'sync_read_target_label', lang=language))
+        self.cat_edit.setPlaceholderText(self._stage_t('sync_read_source_placeholder' if source_mode
+                                                      else 'sync_read_target_placeholder', lang=language))
+        tip = self._stage_t('sync_read_source_tip' if source_mode else 'sync_read_target_tip',
+                            lang=language, source=self.source_lang_edit.text(), target=self.get_current_language())
+        for button in (self.source_panel.replace_list_btn, self.source_panel.append_list_btn):
+            button.setToolTip(tip)
+
+    def _notify_empty_category_read(self):
+        text = self._stage_t('sync_read_source_empty' if self.read_source_toggle.isChecked() else 'sync_read_empty',
+                            lang=self.get_current_language(), source=self.source_lang_edit.text())
+        log_message(self.sync_log, text, debug)
+        QMessageBox.warning(self, self._t('ui.warning', 'Warning'), text)
+
+    def _source_pairs_ready(self, payload):
+        if not payload['pairs']:
+            return
+        context = (self.source_lang_edit.text().strip().lower(), self.get_current_language(), self.get_current_family())
+        if context != (payload['source'], payload['target'], payload['family']):
+            self.source_panel._fetch_stop_requested = True
+            return
+        previous = self._transfer_pairs if self.source_panel._fetch_append_mode and self._transfer_context == context else ()
+        self._transfer_pairs = tuple({pair.target_title.casefold(): pair for pair in (*previous, *payload['pairs'])}.values())
+        self._transfer_context = context
 
     def _update_preview_headers(self):
         source_edit = getattr(self, "source_lang_edit", None)
@@ -553,13 +615,18 @@ class CategoryContentSyncTab(QWidget):
                 self._t("ui.sync.preview.col.count", "Total in category"),
                 self._t("ui.sync.preview.col.transferred", "Transferred"),
                 self._t("ui.sync.preview.col.status", "Status"),
+                self._stage_t('potential_column'),
+                self._stage_t('additional_column'),
             ]
         )
+        for col, key in ((3, 'subpages_count_help'), (6, 'potential'), (7, 'additional_column_tip')):
+            self.preview_table.horizontalHeaderItem(col).setToolTip(self._stage_t(key))
 
     def refresh_localized_texts(self):
         refresh_category_button_tooltips(self, self._stage_t)
         self.source_panel.file_row.refresh_localized_texts()
         self._update_preview_headers()
+        self._refresh_read_language_hint()
         self.source_panel.file_row.caption.setText(self._t('ui.sync.file_caption', 'Category list'))
         self.depth_label.setText(self._stage_t('sync_transfer_depth'))
         self.mode_label.setText(self._stage_t('members_caption'))
@@ -591,6 +658,8 @@ class CategoryContentSyncTab(QWidget):
             return
         if self.preview_worker and self.preview_worker.isRunning():
             return
+        for worker in self._member_workers:
+            worker.request_stop()
         self._preview_ready = False
         self._preview_cancel_requested = False
         self._preview_signature = None
@@ -728,8 +797,8 @@ class CategoryContentSyncTab(QWidget):
         if available <= 0:
             return
         ratios = tuple(getattr(self, "_preview_col_ratios", ()) or ())
-        if len(ratios) != 6:
-            ratios = (0.28, 0.28, 0.09, 0.11, 0.08, 0.16)
+        if len(ratios) != 8:
+            ratios = (0.22, 0.22, 0.07, 0.10, 0.07, 0.14, 0.09, 0.09)
         try:
             min_w = int(table.horizontalHeader().minimumSectionSize())
         except Exception:
@@ -737,7 +806,7 @@ class CategoryContentSyncTab(QWidget):
         min_w = max(24, min_w)
         metrics = table.horizontalHeader().fontMetrics()
         min_ws = [max(min_w, metrics.horizontalAdvance(table.horizontalHeaderItem(i).text()) + 18)
-                  for i in range(6)]
+                  for i in range(8)]
         # Колонка «Статус» должна по умолчанию быть заметно шире, чтобы не резать текст.
         min_ws[5] = max(min_w, 132)
 
@@ -887,6 +956,11 @@ class CategoryContentSyncTab(QWidget):
                         row = int(idx.row())
                         col = int(idx.column())
                         if self._is_click_on_link_text(row, col, event.pos()):
+                            if col in (6, 7):
+                                # Finish the table's mouse event before a modal
+                                # review can replace items in its model.
+                                QTimer.singleShot(0, lambda row=row, col=col: self._open_preview_cell_link(row, col))
+                                return True
                             self._open_preview_cell_link(row, col)
             except Exception:
                 pass
@@ -1112,9 +1186,9 @@ class CategoryContentSyncTab(QWidget):
         self._set_preview_sorting(False)
         self.preview_table.setUpdatesEnabled(False)
         try:
-            # Ссылки есть только в колонках 0, 1, 2.
+            # Category links and the two member review columns.
             for row in range(rows):
-                for col in (0, 1, 2):
+                for col in (0, 1, 2, 6, 7):
                     item = self.preview_table.item(row, col)
                     if item is None:
                         continue
@@ -1528,6 +1602,8 @@ class CategoryContentSyncTab(QWidget):
                 self.preview_table.setItem(
                     row, 4, self._make_table_item("0", align=Qt.AlignHCenter | Qt.AlignVCenter)
                 )
+                self.preview_table.setItem(row, 6, self._make_table_item('…'))
+                self.preview_table.setItem(row, 7, self._make_table_item('…'))
                 self._set_row_status(row, "previewing")
         finally:
             self.preview_table.setUpdatesEnabled(True)
@@ -1631,9 +1707,85 @@ class CategoryContentSyncTab(QWidget):
             align=Qt.AlignHCenter | Qt.AlignVCenter,
         )
         self.preview_table.setItem(row, 3, count_item)
+        if 'members' in row_data:
+            self._set_member_inventory(row, row_data['members'])
         self._set_row_status(row, row_data.get("status") or ("preview_ready" if source_title else "skipped"))
         self.preview_table.item(row, 5).setToolTip(str(row_data.get("error") or ""))
         self._update_clear_skipped_button_state()
+
+    def _set_member_inventory(self, row, data):
+        data = dict(data)
+        data['potential'] = len(data.get('target_articles', ()))
+        if data.get('total_categories') is not None:
+            data['potential_categories'] = len(data.get('target_categories', ()))
+        if 'membership' in data:
+            data['additional'] = sum(not data['membership'].get(title, False) for title in data.get('target_articles', ()))
+            if data.get('total_categories') is not None:
+                data['additional_categories'] = sum(not data['membership'].get(title, False) for title in data.get('target_categories', ()))
+        item = self._make_table_item(str(scan_count_value(data, 'potential')), url='members',
+                                    align=Qt.AlignHCenter | Qt.AlignVCenter)
+        item.setData(Qt.UserRole + 3, data)
+        item.setToolTip(self._stage_t('review_members_tip'))
+        self.preview_table.setItem(row, 6, item)
+        additional = scan_count_value(data, 'additional')
+        self.preview_table.setItem(row, 7, self._make_table_item('—' if additional is None else str(additional), url='members',
+                                                              align=Qt.AlignHCenter | Qt.AlignVCenter))
+
+    def _member_plans(self):
+        plans = {}
+        for row in range(self.preview_table.rowCount()):
+            item = self.preview_table.item(row, 6)
+            data = item.data(Qt.UserRole + 3) if item else None
+            if data is not None:
+                plans[self._row_key_for_row(row)] = dict(articles=tuple(data.get('target_articles', ())),
+                                                        subcategories=tuple(data.get('target_categories', ())))
+        return plans
+
+    def _review_members(self, row, *, only_additional=False):
+        item = self.preview_table.item(row, 6)
+        data = item.data(Qt.UserRole + 3) if item else None
+        if data is None:
+            return
+        signature, key = self._preview_signature, self._row_key_for_row(row)
+        editable = self._can_edit_preview()
+        visible_data = data
+        if only_additional and 'membership' in data:
+            visible_data = {**data, 'target_articles': [title for title in data.get('target_articles', ()) if not data['membership'].get(title)],
+                            'target_categories': [title for title in data.get('target_categories', ()) if not data['membership'].get(title)]}
+        dialog = CategoryArticlesDialog(visible_data, language=self.get_current_language(), family=self.get_current_family(),
+                                        translate=self._stage_t, parent=self, editable=editable)
+        dialog.table.setStyleSheet(self.preview_table.styleSheet())
+        if 'membership' in data:
+            shown = set(dialog.articles)
+            dialog.show_membership((title, present) for title, present in data['membership'].items() if title in shown)
+        elif dialog.articles:
+            worker = CategoryArticlePresenceWorker(articles=dialog.articles, category=data['target_title'],
+                                                   source_category=data['source_title'], source_lang=self.source_lang_edit.text(),
+                                                   target_lang=self.get_current_language(), family=self.get_current_family(),
+                                                   include_subcategories=data.get('total_categories') is not None)
+            self._member_workers.add(worker)
+            worker.result_ready.connect(dialog.show_membership)
+            worker.progress.connect(dialog.show_progress)
+            worker.finished.connect(lambda worker=worker: self._member_check_finished(worker))
+            dialog.finished.connect(lambda _result, worker=worker: worker.request_stop())
+            worker.start()
+        else:
+            dialog.show_membership([])
+        dialog.exec()
+        if editable and self._can_edit_preview() and signature == self._preview_signature:
+            self._rebuild_preview_row_index()
+            current_row = self._preview_row_index.get(key)
+            if current_row is not None:
+                excluded = set(dialog.original_articles) - set(dialog.articles)
+                updated = {**data, 'target_articles': [title for title in data.get('target_articles', ()) if title not in excluded],
+                           'target_categories': [title for title in data.get('target_categories', ()) if title not in excluded]}
+                with self.preview_history.transaction():
+                    self._set_member_inventory(current_row, updated)
+        dialog.deleteLater()
+
+    def _member_check_finished(self, worker):
+        self._member_workers.discard(worker)
+        worker.deleteLater()
 
     def _append_preview_rows_batch(self, rows_data: object):
         if self._preview_cancel_requested:
@@ -1735,6 +1887,9 @@ class CategoryContentSyncTab(QWidget):
         self._update_clear_skipped_button_state()
 
     def _open_preview_cell_link(self, row: int, col: int):
+        if col in (6, 7):
+            self._review_members(row, **(dict(only_additional=True) if col == 7 else {}))
+            return
         try:
             mods = QGuiApplication.keyboardModifiers()
         except Exception:
@@ -2581,6 +2736,7 @@ class CategoryContentSyncTab(QWidget):
             edit_summary=config["edit_summary"],
             category_pairs=self._active_transfer_pairs(config["categories"], config["source_lang"],
                                                        config["target_lang"], config["family"]),
+            member_plans=self._member_plans(),
         )
         self.sync_worker.progress.connect(
             lambda message: log_message(self.sync_log, message, debug)
@@ -2812,6 +2968,36 @@ class CategoryContentSyncTab(QWidget):
             pair.source_title, self._normalized_target_categories([pair.target_title], family, target_lang)[0], pair.qid)
             for pair in pairs)
         self._transfer_context = (source_lang, target_lang, family)
+
+    def load_scanned_categories(self, rows, source_lang, *, include_subcategories=False):
+        """Reuse a scan's matches and member lists without starting another scan."""
+        if not self._can_edit_preview() or (self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning()):
+            return False
+        pairs = tuple(CategoryPair(row['source_title'], row['target_title'], row.get('qid', '')) for row in rows)
+        self.load_transfer_categories([pair.target_title for pair in pairs], source_lang, pairs=pairs)
+        self.subcategories_checkbox.setChecked(include_subcategories)
+        family, target_lang = self.get_current_family(), self.get_current_language()
+        categories = [pair.target_title for pair in self._transfer_pairs]
+        self._prefill_preview_rows(target_categories=categories, target_lang=target_lang, family=family)
+        source_host = WikimediaAPIClient()._build_api_url(family, source_lang).split('/w/')[0]
+        target_host = WikimediaAPIClient()._build_api_url(family, target_lang).split('/w/')[0]
+        for data, pair in zip(rows, self._transfer_pairs):
+            totals = [str(data.get('total') or 0)]
+            if include_subcategories:
+                totals.append(str(data.get('total_categories') or 0))
+            self._append_preview_row(dict(phase='details', row_key=pair.target_title.casefold(),
+                                          source_title=pair.source_title, target_title=pair.target_title,
+                                          source_url=source_host + '/wiki/' + quote(pair.source_title.replace(' ', '_')),
+                                          qid=pair.qid, qid_url='https://www.wikidata.org/wiki/' + pair.qid if pair.qid else '',
+                                          target_url=target_host + '/wiki/' + quote(pair.target_title.replace(' ', '_')),
+                                          count_text='+'.join(totals), status='preview_ready',
+                                          members={**data, 'target_title': pair.target_title}))
+        self._preview_ready = True
+        self._preview_signature = self._current_signature()
+        self._set_preview_mode(True)
+        self._refresh_start_button_state()
+        self.preview_history.reset()
+        return True
 
     def set_auth_data(self, username: str, lang: str, family: str):
         self.current_user = username

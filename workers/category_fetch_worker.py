@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from collections import deque
 
 from PySide6.QtCore import QThread, Signal
@@ -14,6 +15,7 @@ from ..constants import REQUEST_HEADERS
 from ..core.api_client import APIRequestError, WikimediaAPIClient
 from ..core.localization import translate_runtime
 from ..core.category_tree import walk_subcategories
+from ..core.category_transfer import CategoryTransferReader, CategoryPair
 
 
 class CategoryFetchWorker(QThread):
@@ -24,12 +26,13 @@ class CategoryFetchWorker(QThread):
     partial_ready = Signal(object, object)
     result_ready = Signal(object, object)
     failed = Signal(str)
+    mapped_pairs_ready = Signal(object)
 
     PARTIAL_SNAPSHOT_LIMIT = 50000
     MEMBER_PROGRESS_BATCH_INTERVAL = 10
     MEMBER_PROGRESS_SECONDS_INTERVAL = 5.0
 
-    def __init__(self, *, category: str, lang: str, family: str, depth: int, mode: str):
+    def __init__(self, *, category: str, lang: str, family: str, depth: int, mode: str, map_target_lang=''):
         super().__init__()
         self.category = str(category or "").strip()
         self.lang = str(lang or "ru").strip() or "ru"
@@ -37,6 +40,8 @@ class CategoryFetchWorker(QThread):
         self.depth = max(0, int(depth or 0))
         self.mode = str(mode or "non_categories_only").strip() or "non_categories_only"
         self._stop = False
+        self._stop_event = threading.Event()
+        self.map_target_lang = map_target_lang
         self.api_client = WikimediaAPIClient()
         self._last_partial_signature: tuple[int, int] = (-1, -1)
         self._expected_read_total: int | None = None
@@ -53,9 +58,10 @@ class CategoryFetchWorker(QThread):
 
     def request_stop(self) -> None:
         self._stop = True
+        self._stop_event.set()
 
     def _emit_partial_snapshot(self, *, categories: list[str], pages: list[str]) -> None:
-        if self._stop:
+        if self._stop or self.map_target_lang:
             return
         categories_count = len(categories or [])
         pages_count = len(pages or [])
@@ -245,9 +251,15 @@ class CategoryFetchWorker(QThread):
         )
 
     def run(self) -> None:
+        reader = None
         try:
+            category = self.category
+            if self.map_target_lang:
+                reader = CategoryTransferReader(self.lang, self.map_target_lang, self.family, self._stop_event)
+                reader.on_retry = self.progress.emit
+                category = reader.category_title(category, self.lang)
             titles, stats = self._fetch_titles_for_mode(
-                category=self.category,
+                category=category,
                 lang=self.lang,
                 fam=self.family,
                 depth=self.depth,
@@ -255,6 +267,18 @@ class CategoryFetchWorker(QThread):
             )
             if self._stop:
                 return
+            if reader:
+                pairs = []
+                for offset in range(0, len(titles), 50):
+                    reader.check_stop()
+                    metadata = reader.category_metadata(titles[offset:offset + 50])
+                    pairs.extend(CategoryPair(row['source_title'], row['target_title'], row.get('qid', ''))
+                                 for row in metadata.values() if row.get('target_title'))
+                self.progress.emit(self._fmt('ui.transfer.source_categories_matched', count=len(pairs), total=len(titles)))
+                self.mapped_pairs_ready.emit(dict(pairs=tuple(pairs), source=self.lang,
+                                                  target=self.map_target_lang, family=self.family))
+                titles = list(dict.fromkeys(pair.target_title for pair in pairs))
+                stats = dict(categories=len(titles), non_categories=0)
             self.result_ready.emit(titles, stats)
         except Exception as exc:
             if self._stop:
@@ -262,6 +286,9 @@ class CategoryFetchWorker(QThread):
             self.failed.emit(
                 self._fmt("ui.source.api_error", "API error: {error}", error=exc)
             )
+        finally:
+            if reader:
+                reader.close()
 
     def _fetch_titles_for_mode(
         self,

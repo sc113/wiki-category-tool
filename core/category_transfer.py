@@ -281,7 +281,7 @@ def scan_available_count(row):
 
 
 def _scan_report_header(fields):
-    return (len(fields) == 7 and fields[0].strip().casefold() in {'source category', 'исходная категория'}
+    return (len(fields) in (7, 8) and fields[0].strip().casefold() in {'source category', 'исходная категория'}
             and fields[2].strip().casefold() == 'wikidata')
 
 
@@ -1109,6 +1109,31 @@ class CategoryTransferReader:
     def subcategory_matches(self, categories):
         return self._page_matches(categories, 14, self._subcategory_links)
 
+    def member_availability(self, target_category, articles, categories=()):
+        membership = {}
+        for kind, titles in (('page', articles), ('subcat', categories)):
+            existing = set(self.members(target_category, kind, lang=self.target_lang)) if target_category and titles else set()
+            membership.update((title, title in existing) for title in titles)
+        return dict(membership=membership, additional=sum(not membership[title] for title in articles),
+                    additional_categories=sum(not membership[title] for title in categories))
+
+    def transfer_members(self, source_category, *, articles=True, subcategories=False, target_category=''):
+        """Read direct members and their existing counterparts for review."""
+        source = self.category_title(source_category, self.source_lang)
+        result = dict(source_title=source, target_articles=[], total=0, potential=0)
+        if articles:
+            members = self.members(source, 'page')
+            found = list(dict.fromkeys(self.article_matches(members).values()))
+            result.update(total=len(members), potential=len(found), target_articles=found)
+        if subcategories:
+            members = self.members(source, 'subcat')
+            found = list(dict.fromkeys(self.subcategory_matches(members).values()))
+            result.update(total_categories=len(members), potential_categories=len(found), target_categories=found)
+        result.update(self.member_availability(target_category, result['target_articles'], result.get('target_categories', ())))
+        if not subcategories:
+            result.pop('additional_categories', None)
+        return result
+
     def _page_matches(self, articles, namespace, cache):
         self.check_stop()
         uncached = [title for title in articles if title not in cache]
@@ -1147,5 +1172,9 @@ class CategoryTransferReader:
         if self.include_subcategories:
             result.update(total_categories=total_categories, potential_categories=len(found_categories),
                           target_categories=found_categories)
+        result.update(self.member_availability(result.get('target_title', ''), found,
+                                               found_categories if self.include_subcategories else ()))
+        if not self.include_subcategories:
+            result.pop('additional_categories', None)
         result.pop('error', None)
         return result

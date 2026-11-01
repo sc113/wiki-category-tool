@@ -114,7 +114,7 @@ class TableActionTests(unittest.TestCase):
                 self.tab.export_report()
             with path.open(encoding='utf-8-sig', newline='') as handle:
                 records = list(csv.reader(handle, delimiter='\t'))
-            self.assertEqual([7, 7, 7], [len(r) for r in records])
+            self.assertEqual([8, 8, 8], [len(r) for r in records])
             self.assertEqual({'Category:A', 'Category:B'}, {r[0] for r in records[1:]})
             self.assertEqual({'Category:A', 'Category:B'}, {r.source_title for r in read_creation_tsv(str(path))})
             self.assertTrue(all(not r.content for r in read_creation_tsv(str(path))))
@@ -1211,6 +1211,39 @@ class TableActionTests(unittest.TestCase):
         table.deleteLater()
         self.app.sendPostedEvents(None, QEvent.DeferredDelete)
         operation.__exit__(None, None, None)
+
+    def test_history_stores_values_and_restores_item_type_flags_and_custom_roles(self):
+        from wiki_cat_tool.gui.widgets.category_creation_table import CategoryCountItem
+
+        class CounterWithoutCloning(CategoryCountItem):
+            def clone(self):
+                raise AssertionError('History must not retain detached Qt item clones')
+
+        table = QTableWidget(1, 1)
+        self.addCleanup(table.close)
+        item = CounterWithoutCloning('2+1')
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        item.setData(Qt.UserRole, (3, 2, 1))
+        item.setData(Qt.UserRole + 3, {'target_articles': ['Статья'], 'membership': {'Статья': True}})
+        item.setToolTip('Matched pages')
+        font = item.font()
+        font.setUnderline(True)
+        item.setFont(font)
+        table.setItem(0, 0, item)
+        history = TableHistory(table)
+        with history.transaction():
+            table.removeRow(0)
+        history.undo()
+        restored = table.item(0, 0)
+        self.assertIsInstance(restored, CounterWithoutCloning)
+        self.assertEqual('2+1', restored.text())
+        self.assertEqual((3, 2, 1), restored.data(Qt.UserRole))
+        self.assertEqual({'target_articles': ['Статья'], 'membership': {'Статья': True}}, restored.data(Qt.UserRole + 3))
+        self.assertFalse(restored.flags() & Qt.ItemIsEditable)
+        self.assertTrue(restored.font().underline())
+        self.assertEqual('Matched pages', restored.toolTip())
+        history.redo()
+        self.assertEqual(0, table.rowCount())
 
     def test_confirmation_shows_counts_for_actual_actions_and_skips(self):
         rows = self.rows + (CategoryCreationRow('Category:C', 'Категория:В', ''),)

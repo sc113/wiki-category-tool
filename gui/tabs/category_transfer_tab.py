@@ -219,7 +219,9 @@ class CategoryTransferTab(QWidget):
         result_layout = QVBoxLayout(results_page)
         result_layout.setContentsMargins(0, 0, 0, 0)
         self.table = self._table(["source_category", "existing_category", "wikidata", "depth_column",
-                                  "total", "potential_column", "status"], CategoryCandidatesTable)
+                                  "total", "potential_column", "status", 'additional_column'], CategoryCandidatesTable)
+        self.table.horizontalHeader().moveSection(7, 6)
+        self.table.setColumnWidth(7, 115)
         self.table.horizontalHeader().setStretchLastSection(False)
         for col in (0, 1):
             self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.Interactive)
@@ -264,6 +266,7 @@ class CategoryTransferTab(QWidget):
         scan_tools, run_actions = self._action_group("create_tools")
         self.scan_btn = self._button("scan", self.scan_categories, run_actions)
         self.retry_btn = self._button("retry_errors", self.retry_errors, run_actions)
+        self.direct_sync_btn = self._button('direct_sync', self.open_scan_sync, run_actions)
         self.next_btn = self._button("next_links", self.open_links, None)
         stage_layout.addWidget(CategoryRunRow(scan_tools, self.next_btn, export_action=self.export_scan_btn))
 
@@ -457,6 +460,7 @@ class CategoryTransferTab(QWidget):
         for col in (4, 5):
             self.table.horizontalHeaderItem(col).setToolTip(self._t('subpages_count_help') if included else
                                                           self._t('total' if col == 4 else 'potential'))
+        self.table.horizontalHeaderItem(7).setToolTip(self._t('additional_column_tip'))
 
     def _scan_subcategories_changed(self, *_args):
         if self._busy:
@@ -548,6 +552,7 @@ class CategoryTransferTab(QWidget):
                                        for row in self._rows()))
         self.next_btn.setEnabled(not busy and self.table.rowCount() > 0)
         self.retry_btn.setEnabled(not busy and any(row.get("status") == "error" for row in self._rows()))
+        self.direct_sync_btn.setEnabled(not busy and bool(self._scan_sync_rows()))
         self.incomplete_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.number_titles_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
         self.fill_content_btn.setEnabled(not busy and self.creation_table.rowCount() > 0)
@@ -640,6 +645,10 @@ class CategoryTransferTab(QWidget):
     def _empty_scan_titles(self):
         return {row['source_title'] for row in self._rows()
                 if row.get('status') == 'scanned' and row.get('potential') is not None and scan_available_count(row) == 0}
+
+    def _scan_sync_rows(self):
+        return [row for row in self._rows() if row.get('status') == 'scanned' and row.get('target_title')
+                and 'target_articles' in row]
 
     def load_categories(self, *, append=False):
         if self._busy:
@@ -740,23 +749,24 @@ class CategoryTransferTab(QWidget):
             self.table.insertRow(row)
             self._rows_by_title[data["source_title"]] = row
         values = [data["source_title"], data.get("target_title", ""), data.get("qid", ""),
-                  data["depth"], scan_count_value(data, 'total'), scan_count_value(data, 'potential'), self._t(data["status"])]
+                  data["depth"], scan_count_value(data, 'total'), scan_count_value(data, 'potential'), self._t(data["status"]),
+                  scan_count_value(data, 'additional')]
         for col, value in enumerate(values):
-            item = CategoryCountItem() if col in (4, 5) else QTableWidgetItem()
+            item = CategoryCountItem() if col in (4, 5, 7) else QTableWidgetItem()
             if isinstance(value, int):
                 item.setData(Qt.DisplayRole, value)
             else:
                 item.setText("—" if value is None else str(value))
             if col == 0:
                 item.setData(Qt.UserRole, dict(data))
-            elif col in (4, 5):
-                key = 'total' if col == 4 else 'potential'
+            elif col in (4, 5, 7):
+                key = {4: 'total', 5: 'potential', 7: 'additional'}[col]
                 count, categories = data.get(key), data.get(key + '_categories') or 0
                 item.setData(Qt.UserRole, (-1, -1, -1) if count is None else (count + categories, count, categories))
             elif col == 2 and re.fullmatch(r"Q[1-9][0-9]*", str(value)):
                 self._style_wikidata_link(item)
             item.setToolTip(str(value or ""))
-            if col == 5 and data.get("status") == "scanned":
+            if col in (5, 7) and data.get("status") == "scanned":
                 self._style_wikidata_link(item)
                 item.setToolTip(self._t('subpages_hint' if data.get('potential_categories') is not None else 'articles_hint'))
             elif data.get("error"):
@@ -864,7 +874,7 @@ class CategoryTransferTab(QWidget):
         try:
             for row in rows:
                 data = {key: value for key, value in row.items()
-                        if key not in {'error', 'target_articles', 'total', 'potential',
+                        if key not in {'error', 'target_articles', 'total', 'potential', 'membership', 'additional', 'additional_categories',
                                        'total_categories', 'potential_categories', 'target_categories'}}
                 self._apply_row({**data, 'status': 'loaded', 'total': None, 'potential': None})
         finally:
@@ -901,10 +911,11 @@ class CategoryTransferTab(QWidget):
         try:
             with open(path, "w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.writer(handle, delimiter="\t")
-                writer.writerow([self.table.horizontalHeaderItem(col).text() for col in range(7)])
+                writer.writerow([self.table.horizontalHeaderItem(col).text() for col in range(8)])
                 for row in self._rows():
                     writer.writerow([row["source_title"], row.get("target_title", ""), row.get("qid", ""),
-                                     row["depth"], scan_count_value(row, 'total'), scan_count_value(row, 'potential'), row["status"]])
+                                     row["depth"], scan_count_value(row, 'total'), scan_count_value(row, 'potential'), row["status"],
+                                     scan_count_value(row, 'additional')])
         except Exception as error:
             self._warn("failed", error=error)
 
@@ -920,12 +931,12 @@ class CategoryTransferTab(QWidget):
         try:
             with open(path, encoding="utf-8-sig", newline="") as handle:
                 fields_list = list(csv.reader(handle, delimiter="\t"))
-            if not fields_list or len(fields_list[0]) != 7:
+            if not fields_list or len(fields_list[0]) not in (7, 8):
                 raise ValueError(self._t("report_invalid", line=1))
             for line, fields in enumerate(fields_list[1:], 2):
                 if not fields or not any(field.strip() for field in fields):
                     continue
-                if len(fields) != 7 or not fields[0].strip() or fields[6] not in {"loaded", "scanned", "error"}:
+                if len(fields) != len(fields_list[0]) or not fields[0].strip() or fields[6] not in {"loaded", "scanned", "error"}:
                     raise ValueError(self._t("report_invalid", line=line))
                 depth = int(fields[3]) if fields[3] else None
                 total, total_categories = parse_scan_count(fields[4])
@@ -941,6 +952,11 @@ class CategoryTransferTab(QWidget):
                                  manual_input=fields[6] == 'loaded'))
                 if total_categories is not None or potential_categories is not None:
                     rows[-1].update(total_categories=total_categories, potential_categories=potential_categories)
+                if len(fields) == 8:
+                    additional, additional_categories = parse_scan_count(fields[7])
+                    rows[-1].update(additional=additional)
+                    if additional_categories is not None:
+                        rows[-1]['additional_categories'] = additional_categories
             if not rows:
                 raise ValueError(self._t("tsv_empty"))
         except Exception as error:
@@ -990,7 +1006,7 @@ class CategoryTransferTab(QWidget):
                 text = handle.read()
             fields = next((row for row in csv.reader(text.splitlines(), delimiter='\t')
                            if row and any(cell.strip() for cell in row)), [])
-            if len(fields) == 7:
+            if len(fields) in (7, 8):
                 self.import_report(self.scan_report_path.text().strip())
                 return
             titles = parse_scan_list(text)
@@ -1764,6 +1780,29 @@ class CategoryTransferTab(QWidget):
                                       pairs=tuple(self._linked_pairs.values()))
         self.parent_window.tabs.setCurrentWidget(sync)
 
+    def open_scan_sync(self):
+        if self._busy or not self._scan_sync_rows():
+            return
+        sync = getattr(self.parent_window, 'category_content_sync_tab', None)
+        if sync is None:
+            return
+        if not sync._can_edit_preview() or (sync.source_panel._fetch_worker and sync.source_panel._fetch_worker.isRunning()):
+            self._warn('sync_busy')
+            return
+        if not self._confirm_scan_cleanup():
+            return
+        rows = self._scan_sync_rows()
+        if not rows:
+            return
+        skipped = self.table.rowCount() - len(rows)
+        if skipped and QMessageBox.question(self, self._t('direct_sync'),
+                                            self._t('direct_sync_skipped', count=skipped, ready=len(rows)),
+                                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if not sync.load_scanned_categories(rows, self._context()[0], include_subcategories=self.include_subcategories.isChecked()):
+            return
+        self.parent_window.tabs.setCurrentWidget(sync)
+
     def open_interwiki(self):
         tab = getattr(self.parent_window, "category_interwiki_tab", None)
         if self._busy or tab is None or not self.creation_table.rowCount():
@@ -1789,16 +1828,24 @@ class CategoryTransferTab(QWidget):
     def _scan_cell_clicked(self, row, col):
         if col == 2:
             self._open_category(row, col)
-        elif col == 5:
-            self._open_article_matches(row)
+        elif col in (5, 7):
+            self._open_article_matches(row, only_additional=col == 7)
 
-    def _open_article_matches(self, row):
+    def _open_article_matches(self, row, *, only_additional=False):
         data = dict(self.table.item(row, 0).data(Qt.UserRole))
         if data.get("status") != "scanned":
             return
+        if only_additional and 'membership' in data:
+            data['target_articles'] = [title for title in data.get('target_articles', ()) if not data['membership'].get(title)]
+            data['target_categories'] = [title for title in data.get('target_categories', ()) if not data['membership'].get(title)]
+            shown = set(data['target_articles'] + data['target_categories'])
+            data['membership'] = {title: included for title, included in data['membership'].items() if title in shown}
         source, target, family = self._context()
-        dialog = CategoryArticlesDialog(data, language=target, family=family, translate=self._t, parent=self)
-        if 'target_articles' not in data or (data.get("target_title") and dialog.articles):
+        dialog = CategoryArticlesDialog(data, language=target, family=family, translate=self._t, parent=self,
+                                        only_additional=only_additional)
+        if 'membership' in data:
+            dialog.show_membership(data['membership'].items())
+        elif 'target_articles' not in data or (data.get("target_title") and dialog.articles):
             worker = CategoryArticlePresenceWorker(articles=dialog.articles if 'target_articles' in data else None,
                                                   category=data.get("target_title", ""), source_category=data["source_title"],
                                                   source_lang=source, target_lang=target, family=family,
@@ -1858,7 +1905,7 @@ class CategoryTransferTab(QWidget):
     def _link_cursor(self, row, col):
         item = self.table.item(row, col)
         linked = col == 2 and item and re.fullmatch(r"Q[1-9][0-9]*", item.text())
-        if col == 5:
+        if col in (5, 7):
             data = self.table.item(row, 0).data(Qt.UserRole) or {}
             linked = data.get("status") == "scanned"
         self.table.viewport().setCursor(Qt.PointingHandCursor if linked else Qt.ArrowCursor)

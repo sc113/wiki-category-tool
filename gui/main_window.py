@@ -3879,6 +3879,7 @@ class MainWindow(QMainWindow):
             ('redundant', self.redundant_categories_tab, 'rcworker'),
             ('sync', self.category_content_sync_tab, 'sync_worker'),
             ('sync_preview', self.category_content_sync_tab, 'preview_worker'),
+            ('sync_read', getattr(self.category_content_sync_tab, 'source_panel', None), '_fetch_worker'),
             ('transfer_read', self.category_transfer_tab, 'read_worker'),
             ('transfer_create', self.category_transfer_tab, 'create_worker'),
             ('transfer_preview', self.category_transfer_tab, 'preview_worker'),
@@ -3894,9 +3895,11 @@ class MainWindow(QMainWindow):
             if worker and hasattr(worker, 'isRunning') and worker.isRunning():
                 running_workers.append((tab_name, worker))
 
-        for worker in tuple(getattr(self.category_transfer_tab, '_article_workers', ())):
-            if worker.isRunning() and all(existing is not worker for _, existing in running_workers):
-                running_workers.append(('transfer_articles', worker))
+        for name, tab, collection in (('transfer_articles', self.category_transfer_tab, '_article_workers'),
+                                      ('sync_members', self.category_content_sync_tab, '_member_workers')):
+            for worker in tuple(getattr(tab, collection, ())):
+                if worker.isRunning() and all(existing is not worker for _, existing in running_workers):
+                    running_workers.append((name, worker))
 
         if running_workers:
             res = QMessageBox.question(
