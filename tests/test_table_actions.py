@@ -414,6 +414,137 @@ class TableActionTests(unittest.TestCase):
         self.tab.creation_history.redo()
         self.assertEqual(['foreign A', 'foreign B'], [r.content for r in self.tab._table_creation_rows()])
 
+    def test_target_text_loading_respects_empty_cells_and_is_one_undo_step(self):
+        rows = (CategoryCreationRow('Category:A', 'Категория:А', 'keep'),
+                CategoryCreationRow('Category:B', 'Категория:Б', ''),
+                CategoryCreationRow('Category:C', '', ''))
+        self.tab._fill_creation_table(rows)
+        self.tab.source_content_empty.setChecked(True)
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory:
+            worker = factory.return_value
+            worker.failed = worker._stop = False
+            worker.stats = dict(loaded=1, failed=0, missing=0)
+            self.tab.load_target_text_btn.click()
+            self.assertEqual(((1, 'Категория:Б'),), factory.call_args.kwargs['rows'])
+            self.assertTrue(factory.call_args.kwargs['read_target'])
+            self.assertNotIn('translate_names', factory.call_args.kwargs)
+            self.assertTrue(self.tab.log_panel.expanded)
+            self.assertFalse(self.tab.load_target_text_btn.isEnabled())
+            self.tab._source_content_ready(dict(index=1, content='{{Local}}'))
+            self.tab._source_content_finished()
+        self.assertEqual(['keep', '{{Local}}', ''], [row.content for row in self.tab._table_creation_rows()])
+        self.tab.creation_history.undo()
+        self.assertEqual(rows, self.tab._table_creation_rows())
+        self.tab.creation_history.redo()
+        self.assertEqual('{{Local}}', self.tab._table_creation_rows()[1].content)
+
+    def test_target_text_loading_can_replace_prefilled_text_without_spreading(self):
+        self.tab.source_content_empty.setChecked(False)
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory:
+            worker = factory.return_value
+            worker.failed = worker._stop = False
+            worker.stats = dict(loaded=1, failed=0, missing=1)
+            self.tab.load_target_content()
+            self.assertEqual(((0, 'Категория:А'), (1, 'Категория:Б')), factory.call_args.kwargs['rows'])
+            self.tab._source_content_ready(dict(index=0, content='{{Existing}}'))
+            self.tab._target_category_missing(1)
+            self.tab._source_content_finished()
+        self.assertEqual(['{{Existing}}', 'two'], [row.content for row in self.tab._table_creation_rows()])
+
+    def test_target_spread_keeps_existing_text_and_never_fills_unreadable_existing_pages(self):
+        from wiki_cat_tool.tests.test_category_transfer import FixtureReader, page
+        from wiki_cat_tool.workers.category_transfer_worker import CategoryTextReadWorker
+        rows = tuple(CategoryCreationRow(f'Category:{index}', f'Категория:{index}' if index < 6 else '',
+                                         'manual different' if index == 3 else '') for index in range(7))
+        self.tab._fill_creation_table(rows)
+        self.tab.source_content_empty.setChecked(False)
+        reader = FixtureReader()
+        reader.page_data['ru'] = {
+            f'Категория:{index}': page(f'Категория:{index}', revisions=[{'slots': {'main': data}}])
+            for index, data in ((0, {'content': '{{Base}}'}), (1, {'content': '{{Different}}'}),
+                                (3, {'content': '{{Existing}}'}), (4, {'texthidden': True}), (5, {'content': ''}))
+        }
+        workers = []
+        def make_worker(**kwargs):
+            worker = CategoryTextReadWorker(**kwargs)
+            worker.reader.close()
+            worker.reader = reader
+            workers.append(worker)
+            return worker
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker', side_effect=make_worker):
+            self.tab.spread_target_text_action.trigger()
+            for _ in range(100):
+                QTest.qWait(10)
+                if self.tab.content_worker is None:
+                    break
+            self.assertIsNone(self.tab.content_worker)
+        self.assertEqual(1, len(workers))
+        result = [row.content for row in self.tab._table_creation_rows()]
+        self.assertEqual(['{{Base}}', '{{Different}}', '{{Base}}', 'manual different', '', '', '{{Base}}'], result)
+        self.assertFalse(self.tab._busy)
+        self.tab.creation_history.undo()
+        self.assertEqual(rows, self.tab._table_creation_rows())
+        self.tab.creation_history.redo()
+        self.assertEqual(result, [row.content for row in self.tab._table_creation_rows()])
+
+    def test_target_spread_requires_first_category_text_and_does_not_use_a_later_row(self):
+        rows = (CategoryCreationRow('Category:A', 'Категория:А', 'manual first'),
+                CategoryCreationRow('Category:B', 'Категория:Б', ''),
+                CategoryCreationRow('Category:C', 'Категория:В', ''))
+        self.tab._fill_creation_table(rows)
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory:
+            worker = factory.return_value
+            worker.failed = worker._stop = False
+            worker.stats = dict(loaded=1, failed=0, missing=2)
+            self.tab.load_target_content(spread=True)
+            self.tab._target_category_missing(0)
+            self.tab._target_category_missing(2)
+            self.tab._source_content_ready(dict(index=1, content='{{Later}}'))
+            self.tab._source_content_finished()
+        self.assertEqual(['manual first', '{{Later}}', ''], [row.content for row in self.tab._table_creation_rows()])
+        self.assertIn('Заполнение остальных строк не выполнено', self.tab.log.toPlainText())
+
+    def test_stopped_or_failed_target_read_does_not_spread_partial_results(self):
+        for stopped in (True, False):
+            with self.subTest(stopped=stopped):
+                self.tab._fill_creation_table(tuple(CategoryCreationRow(row.source_title, row.target_title, '') for row in self.rows))
+                with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory:
+                    worker = factory.return_value
+                    worker.failed, worker._stop = not stopped, stopped
+                    worker.failure_message = 'API unavailable'
+                    worker.stats = dict(loaded=1, failed=0, missing=1)
+                    self.tab.load_target_content(spread=True)
+                    self.tab._source_content_ready(dict(index=0, content='{{Base}}'))
+                    self.tab._target_category_missing(1)
+                    self.tab._source_content_finished()
+                self.assertEqual(['{{Base}}', ''], [row.content for row in self.tab._table_creation_rows()])
+
+    def test_target_spread_uses_the_first_visible_row_after_sorting(self):
+        self.tab._fill_creation_table(tuple(CategoryCreationRow(row.source_title, row.target_title, '') for row in self.rows))
+        self.tab.creation_table.sortItems(0, Qt.DescendingOrder)
+        self.assertEqual('Category:B', self.tab._table_creation_rows()[0].source_title)
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory:
+            worker = factory.return_value
+            worker.failed = worker._stop = False
+            worker.stats = dict(loaded=1, failed=0, missing=1)
+            self.tab.load_target_content(spread=True)
+            self.assertEqual((0, 'Категория:Б'), factory.call_args.kwargs['rows'][0])
+            self.tab._target_category_missing(1)
+            self.tab._source_content_ready(dict(index=0, content='{{From B}}'))
+            self.tab._source_content_finished()
+        self.assertEqual(['{{From B}}', '{{From B}}'], [row.content for row in self.tab._table_creation_rows()])
+
+    def test_target_loading_requires_titles_and_cannot_run_while_busy(self):
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory, \
+             patch.object(self.tab, '_warn') as warning:
+            self.tab._set_busy(True)
+            self.tab.load_target_content()
+            self.tab._set_busy(False)
+            self.tab._fill_creation_table((CategoryCreationRow('Category:A', '', ''),))
+            self.tab.load_target_content()
+            warning.assert_called_once_with('target_content_titles_required')
+            factory.assert_not_called()
+
     def _show_preparation_table(self):
         tabs = self.parent.tabs = QTabWidget(self.parent)
         tabs.resize(1280, 850)

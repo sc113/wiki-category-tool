@@ -83,6 +83,10 @@ class CategoryTransferTab(QWidget):
         self.current_user = None
         self.read_worker = None
         self.content_worker = None
+        self._target_content_mode = False
+        self._spread_target_content = False
+        self._target_first_content = None
+        self._target_missing_rows = set()
         self.create_worker = None
         self.preview_worker = None
         self.article_worker = None
@@ -333,6 +337,13 @@ class CategoryTransferTab(QWidget):
         self.translate_source_names.setCheckable(True)
         self.translate_source_names.setChecked(True)
         self.translate_source_names.setToolTip(self._t('translate_source_names_tip'))
+        self.load_target_text_btn, target_menu = category_menu_button(self._t('load_target_content'), self.load_target_content)
+        self.load_target_text_btn.setProperty('transfer_text_key', 'load_target_content')
+        set_category_button_tooltip(self.load_target_text_btn, 'load_target_content', self._t)
+        content_actions.addWidget(self.load_target_text_btn)
+        self.spread_target_text_action = target_menu.addAction(self._t('load_and_spread_target_content'))
+        self.spread_target_text_action.setToolTip(self._t('load_and_spread_target_content_tip'))
+        self.spread_target_text_action.triggered.connect(lambda: self.load_target_content(spread=True))
         self.copy_first_btn.setToolTip(self._t("copy_first_tip"))
         self.load_text_btn.setToolTip(self._t("source_content_tip"))
         content_layout.addLayout(content_actions)
@@ -1266,37 +1277,64 @@ class CategoryTransferTab(QWidget):
         dialog.deleteLater()
 
     def load_source_content(self):
+        self._load_category_content()
+
+    def load_target_content(self, *, spread=False):
+        self._load_category_content(target=True, spread=spread)
+
+    def _load_category_content(self, *, target=False, spread=False):
         if self._busy or not self.creation_table.rowCount():
             return
         context = self._validate_context(creation=True)
         if context is None:
             return
-        rows = tuple((index, row.source_title) for index, row in enumerate(self._table_creation_rows())
-                     if not self.source_content_empty.isChecked() or not row.content.strip())
+        table_rows = self._table_creation_rows()
+        if target and not any(row.target_title for row in table_rows):
+            self._warn('target_content_titles_required')
+            return
+        if spread and not table_rows[0].target_title:
+            self._warn('first_target_content_required')
+            return
+        rows = tuple((index, row.target_title if target else row.source_title) for index, row in enumerate(table_rows)
+                     if (row.target_title if target else row.source_title)
+                     and (spread or not self.source_content_empty.isChecked() or not row.content.strip()))
         if not rows:
             self._write_log(self._t("no_empty_content"))
             return
         self._content_undo = self.creation_history.transaction()
         self._content_undo.__enter__()
+        self._target_content_mode = target
+        self._spread_target_content = spread
+        self._target_first_content = None
+        self._target_missing_rows = {index for index, row in enumerate(table_rows) if not row.target_title} if spread else set()
         self._set_busy(True)
         self._invalidate_creation(clear_table=False)
+        options = dict(read_target=True) if target else dict(translate_names=self.translate_source_names.isChecked())
         worker = CategoryTextReadWorker(rows=rows, source_lang=context[0], target_lang=context[1],
-                                        family=context[2], translate_names=self.translate_source_names.isChecked())
+                                        family=context[2], **options)
         self.content_worker = worker
         worker.content_ready.connect(self._source_content_ready)
+        if spread:
+            worker.category_missing.connect(self._target_category_missing)
         worker.item_processed.connect(self._advance)
         worker.progress.connect(self._write_log)
         worker.retry_wait.connect(self._retry_notice)
         worker.finished.connect(self._source_content_finished)
         self._set_busy(True)
         init_progress(self.progress_label, self.bar, len(rows))
-        self._set_progress(self._t("loading_source_content"))
-        debug(f"[Category transfer] Load source wikitext: {context}, rows={len(rows)}")
+        self._set_progress(self._t('loading_target_content' if target else 'loading_source_content'))
+        debug(f"[Category transfer] Load {'target' if target else 'source'} wikitext: {context}, rows={len(rows)}")
         worker.start()
 
+    def _target_category_missing(self, index):
+        if self._spread_target_content:
+            self._target_missing_rows.add(index)
+
     def _source_content_ready(self, payload):
+        if self._spread_target_content and payload['index'] == 0:
+            self._target_first_content = payload['content']
         item = self.creation_table.item(payload["index"], 2)
-        if item:
+        if item and (not self._spread_target_content or not item.text().strip()):
             blocked = self.creation_table.blockSignals(True)
             item.setText(payload["content"])
             item.setToolTip(payload["content"])
@@ -1305,11 +1343,28 @@ class CategoryTransferTab(QWidget):
 
     def _source_content_finished(self):
         worker = self.content_worker
+        if worker is None:
+            return
         self.content_worker = None
+        if self._spread_target_content and not worker.failed and not worker._stop:
+            if self._target_first_content and self._target_first_content.strip():
+                filled = 0
+                for index in sorted(self._target_missing_rows):
+                    item = self.creation_table.item(index, 2)
+                    if item and not item.text().strip():
+                        self._source_content_ready(dict(index=index, content=self._target_first_content))
+                        filled += 1
+                self._write_log(self._t('target_content_spread_done', count=filled))
+            else:
+                self._write_log(self._t('first_target_content_required'))
+        done_key = 'target_content_done' if self._target_content_mode else 'source_content_done'
         status = (self._t("failed", error=worker.failure_message) if worker.failed
-                  else self._t("stopped") if worker._stop else self._t("source_content_done", **worker.stats))
+                  else self._t("stopped") if worker._stop else self._t(done_key, **worker.stats))
         self._set_progress(status)
         self._write_log(status)
+        self._target_content_mode = self._spread_target_content = False
+        self._target_first_content = None
+        self._target_missing_rows = set()
         self._set_busy(False)
         if self._content_undo:
             self._content_undo.__exit__(None, None, None)
@@ -1848,6 +1903,9 @@ class CategoryTransferTab(QWidget):
             self.autofill_content_help.setText(self._t('autofill_content_help'))
             self.translate_source_names.setText(self._t('translate_source_names'))
             self.translate_source_names.setToolTip(self._t('translate_source_names_tip'))
+            self.load_target_text_btn.setText(self._t('load_target_content'))
+            self.spread_target_text_action.setText(self._t('load_and_spread_target_content'))
+            self.spread_target_text_action.setToolTip(self._t('load_and_spread_target_content_tip'))
             self.title_template_edit.setPlaceholderText(self._t("number_target_example"))
             self.copy_first_btn.setToolTip(self._t("copy_first_tip"))
             self.load_text_btn.setToolTip(self._t("source_content_tip"))

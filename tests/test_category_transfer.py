@@ -1832,6 +1832,45 @@ class SourceTextTests(unittest.TestCase):
         self.assertEqual([{'index': 4, 'content': '{{Source}}'}], payloads)
         self.assertEqual({'loaded': 1, 'failed': 2}, worker.stats)
 
+    def test_target_text_uses_current_language_without_translation_and_reports_missing_separately(self):
+        worker = CategoryTextReadWorker(rows=((4, 'А'), (9, 'Б'), (12, 'В'), (13, 'Г'), (14, 'Д')),
+                                       source_lang='en', target_lang='ru', family='wikipedia',
+                                       read_target=True, translate_names=True)
+        worker.reader.close()
+        reader = worker.reader = FixtureReader()
+        reader.page_data['ru'] = {
+            'Категория:А': page('Категория:А', revisions=[{'slots': {'main': {'content': '{{Текст}}'}}}]),
+            'Категория:Б': page('Категория:Б', revisions=[{'slots': {'main': {'texthidden': True}}}]),
+            'Категория:Г': page('Категория:Г', redirect=True),
+            'Категория:Д': page('Категория:Д', revisions=[{'slots': {'main': {'content': ''}}}]),
+        }
+        payloads, missing, processed = [], [], []
+        worker.content_ready.connect(payloads.append)
+        worker.category_missing.connect(missing.append)
+        worker.item_processed.connect(lambda: processed.append(True))
+        with patch('wiki_cat_tool.core.category_text_translation.CategoryTextTranslator') as translator:
+            worker.run()
+        translator.assert_not_called()
+        self.assertEqual([{'index': 4, 'content': '{{Текст}}'}, {'index': 14, 'content': ''}], payloads)
+        self.assertEqual([12], missing)
+        self.assertEqual({'loaded': 2, 'failed': 2, 'missing': 1}, worker.stats)
+        self.assertEqual(5, len(processed))
+        self.assertTrue(all(lang == 'ru' for lang, _titles in reader.page_calls))
+        self.assertFalse(worker.failed)
+
+    def test_target_text_read_failure_does_not_report_unread_categories_as_missing(self):
+        worker = CategoryTextReadWorker(rows=((0, 'А'),), source_lang='en', target_lang='ru',
+                                       family='wikipedia', read_target=True)
+        worker.reader.close()
+        worker.reader = FixtureReader()
+        worker.reader.pages = Mock(side_effect=RuntimeError('API unavailable'))
+        missing = []
+        worker.category_missing.connect(missing.append)
+        worker.run()
+        self.assertTrue(worker.failed)
+        self.assertEqual([], missing)
+        self.assertEqual(0, worker.stats['missing'])
+
     def test_credentials_write_binds_active_profile_to_runtime_and_file(self):
         from wiki_cat_tool.core.pywikibot_config import PywikibotConfigManager
         manager = PywikibotConfigManager()

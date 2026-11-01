@@ -436,40 +436,48 @@ class CategoryTransferPreviewWorker(BaseWorker):
 
 class CategoryTextReadWorker(BaseWorker):
     content_ready = Signal(object)
+    category_missing = Signal(int)
     retry_wait = Signal(str)
 
-    def __init__(self, *, rows, source_lang, target_lang, family, delay=0.5, translate_names=False):
+    def __init__(self, *, rows, source_lang, target_lang, family, delay=0.5, translate_names=False, read_target=False):
         super().__init__("", "", target_lang, family)
         self.rows = tuple(rows)
         self.reader = CategoryTransferReader(source_lang, target_lang, family, self._stop_event, delay)
         self.reader.on_retry = self.retry_wait.emit
         self.stats = {"loaded": 0, "failed": 0}
-        self.translate_names = translate_names
+        self.read_target = read_target
+        self.read_lang = target_lang if read_target else source_lang
+        self.translate_names = translate_names and not read_target
+        if read_target:
+            self.stats['missing'] = 0
 
     def run(self):
         try:
             from ..core.category_text_translation import CategoryTextTranslator
             translator = CategoryTextTranslator(self.reader) if self.translate_names else None
-            self.progress.emit(message('loading_source_content'))
+            self.progress.emit(message('loading_target_content' if self.read_target else 'loading_source_content'))
             normalized = []
             for index, title in self.rows:
                 self.reader.check_stop()
                 try:
-                    normalized.append((index, self.reader.category_title(title, self.reader.source_lang)))
+                    normalized.append((index, self.reader.category_title(title, self.read_lang)))
                 except ValueError as error:
                     self.stats["failed"] += 1
                     self.progress.emit(message("row_error", title=title, error=error))
                     self.item_processed.emit()
             for offset in range(0, len(normalized), 50):
                 batch = normalized[offset:offset + 50]
-                pages = self.reader.pages(self.reader.source_lang, [title for _, title in batch], props="info|revisions")
+                pages = self.reader.pages(self.read_lang, [title for _, title in batch], props="info|revisions")
                 contents = []
                 for index, title in batch:
                     self.reader.check_stop()
                     page = pages.get(title)
-                    if not self.reader.valid_page(page, 14):
+                    if self.read_target and page and 'missing' in page:
+                        self.stats['missing'] += 1
+                        self.category_missing.emit(index)
+                    elif not self.reader.valid_page(page, 14):
                         self.stats["failed"] += 1
-                        self.progress.emit(message("source_missing", title=title))
+                        self.progress.emit(message('content_unavailable' if self.read_target else 'source_missing', title=title))
                     else:
                         revision = (page.get("revisions") or [{}])[0]
                         slot = revision.get("slots", {}).get("main", revision)
