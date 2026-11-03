@@ -17,12 +17,54 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QTextEdit, QToolButton, QHBoxLayout,
     QFileDialog, QMessageBox, QDialog, QVBoxLayout, QTextBrowser,
     QTreeWidget, QTreeWidgetItem, QLabel, QHeaderView, QAbstractItemView,
-    QWidget, QGridLayout
+    QWidget, QGridLayout, QPlainTextEdit, QDialogButtonBox
 )
 from PySide6.QtGui import QKeySequence, QGuiApplication, QShortcut
 from PySide6.QtGui import QAction
 from PySide6.QtGui import QDesktopServices
 from ...core.localization import translate_key
+
+
+LOG_RAW_CONTENT_ROLE = Qt.UserRole + 24
+LOG_DETAILS_ROLE = Qt.UserRole + 25
+
+
+def show_log_error_details(tree, row, _column=3):
+    """Show the complete error as selectable, wrapped plain text."""
+    if row is None or row.data(2, Qt.UserRole) != 'error':
+        return
+    data = row.data(3, LOG_DETAILS_ROLE) or {}
+    message = data.get('message') or row.text(3)
+    details = data.get('details')
+    if details and details != message:
+        message += '\n\n' + _t(tree, 'ui.log.technical_details', 'Technical details:') + '\n' + details
+    dialog = QDialog(tree)
+    dialog.setObjectName('logErrorDetailsDialog')
+    dialog.setWindowTitle(_t(tree, 'ui.log.error_details', 'Error details'))
+    dialog.resize(800, 480)
+    dialog.setMinimumSize(460, 280)
+    layout = QVBoxLayout(dialog)
+    page = data.get('page')
+    if page:
+        heading = QLabel(page)
+        heading.setTextFormat(Qt.PlainText)
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+    view = QPlainTextEdit()
+    view.setObjectName('logErrorDetailsText')
+    view.setProperty('_wct_skip_text_translation', True)
+    view.setReadOnly(True)
+    view.setPlainText(message)
+    layout.addWidget(view, 1)
+    buttons = QDialogButtonBox()
+    copy_button = buttons.addButton(_t(tree, 'ui.context.copy', 'Copy'), QDialogButtonBox.ActionRole)
+    copy_button.setObjectName('copyLogErrorButton')
+    copy_button.clicked.connect(lambda: QGuiApplication.clipboard().setText(view.toPlainText()))
+    buttons.addButton(_t(tree, 'ui.close', 'Close'), QDialogButtonBox.RejectRole)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    dialog.exec()
+    dialog.deleteLater()
 
 
 # Структурированный приём событий из воркера
@@ -41,7 +83,7 @@ def log_tree_add_event(tree: QTreeWidget, event: dict) -> None:
             message = str(event.get('message') or '').strip()
             obj_type = _detect_object_type_by_ns(tree, page_title) if page_title else None
             log_tree_add(tree, ts, page_title or None, message, 'manual',
-                         'error', None, obj_type, True)
+                         'error', None, obj_type, True, details=str(event.get('details') or ''))
             return
         if et == 'rename_transfer_resumed':
             page_title = str(event.get('title') or '').strip()
@@ -1576,6 +1618,7 @@ def init_log_tree(parent_widget) -> QTreeWidget:
         # Разрешаем множественное копирование и контекстное меню «Открыть» по правому клику
         enable_tree_copy_shortcut(tree)
         _enable_open_on_title_right_click(tree)
+        tree.itemDoubleClicked.connect(lambda row, column: show_log_error_details(tree, row, column))
     except Exception:
         pass
     return tree
@@ -1583,7 +1626,7 @@ def init_log_tree(parent_widget) -> QTreeWidget:
 
 def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str,
                  mode: str, status: str, source: str | None = None,
-                 object_type: str | None = None, system: bool = False) -> None:
+                 object_type: str | None = None, system: bool = False, *, details: str = '') -> None:
     """Добавить запись в лог-таблицу (плоский режим, 6 колонок).
 
     Args:
@@ -1684,6 +1727,7 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
             src_tooltip = ''
         # Колонка «Страница» — тип определяем по самой странице,
         # а не по object_type (он может относиться к другому объекту в строке).
+        page_txt = str(page or '').strip()
         try:
             page_txt = html.unescape((page or '').strip())
             if not page_txt:
@@ -1719,9 +1763,14 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
         row = QTreeWidgetItem(
             [timestamp, action_cell, status_text, title_cell, page_cell, src_cell])
         row.setData(2, Qt.UserRole, status)
+        if status == 'error':
+            row.setData(3, LOG_DETAILS_ROLE, dict(message=title or '', page=page_txt, details=details))
+            for col in (3, 4):
+                row.setData(col, LOG_RAW_CONTENT_ROLE, True)
         try:
             for col in range(6):
-                row.setText(col, _ui_translate(tree, row.text(col)))
+                if not row.data(col, LOG_RAW_CONTENT_ROLE):
+                    row.setText(col, _ui_translate(tree, row.text(col)))
                 if col == 1:
                     row.setTextAlignment(col, Qt.AlignHCenter | Qt.AlignVCenter)
                 else:
@@ -1741,9 +1790,13 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
                 system, mode, object_type))
             row.setToolTip(2, _build_status_tooltip(
                 tree, status, title or '', source, mode, object_type, system))
-            # Отключаем подсказки для 3 и 4 колонок
-            row.setToolTip(3, '')
-            row.setToolTip(4, '')
+            if status == 'error':
+                hint = _t(tree, 'ui.log.error_details_hint', 'Double-click to view and copy the complete error.')
+                row.setToolTip(3, '<qt>' + html.escape((title or '') + '\n\n' + hint).replace('\n', '<br/>') + '</qt>')
+                row.setToolTip(4, page_txt)
+            else:
+                row.setToolTip(3, '')
+                row.setToolTip(4, '')
             # Подсказка для «Источник»: различаем полное/частичное исправление
             try:
                 if src_tooltip:
@@ -1752,7 +1805,8 @@ def log_tree_add(tree: QTreeWidget, timestamp: str, page: str | None, title: str
                 pass
             try:
                 for col in range(6):
-                    row.setToolTip(col, _ui_translate(tree, row.toolTip(col)))
+                    if not row.data(col, LOG_RAW_CONTENT_ROLE):
+                        row.setToolTip(col, _ui_translate(tree, row.toolTip(col)))
             except Exception:
                 pass
         except Exception:

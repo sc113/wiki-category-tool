@@ -1880,6 +1880,22 @@ class CategoryContentSyncTab(QWidget):
                                                         subcategories=tuple(data.get('target_categories', ())))
         return plans
 
+    def _apply_member_presence(self, row_key, title):
+        key = str(row_key).strip().casefold()
+        row = self._preview_row_index.get(key)
+        if row is None or self._row_key_for_row(row) != key:
+            self._rebuild_preview_row_index()
+            row = self._preview_row_index.get(key)
+        if row is None:
+            return
+        item = self.preview_table.item(row, 6)
+        data = item.data(Qt.UserRole + 3) if item else None
+        if not data or title not in (*data.get('target_articles', ()), *data.get('target_categories', ())):
+            return
+        membership = {**data.get('membership', {}), title: True}
+        self._set_member_inventory(row, {**data, 'membership': membership})
+        self._update_clear_skipped_button_state()
+
     def _review_members(self, row, *, only_additional=False):
         item = self.preview_table.item(row, 6)
         data = item.data(Qt.UserRole + 3) if item else None
@@ -2892,6 +2908,7 @@ class CategoryContentSyncTab(QWidget):
         self.sync_worker.category_done.connect(self._inc_progress)
         self.sync_worker.category_result.connect(self._apply_sync_category_result)
         self.sync_worker.member_progress.connect(self._on_member_progress)
+        self.sync_worker.member_present.connect(self._apply_member_presence)
         self.sync_worker.finished.connect(self._on_sync_finished)
         self.sync_worker.start()
         self.preview_history.refresh()

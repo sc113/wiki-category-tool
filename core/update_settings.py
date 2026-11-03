@@ -5,7 +5,6 @@
 
 import os
 import json
-from typing import Optional
 
 
 class UpdateSettings:

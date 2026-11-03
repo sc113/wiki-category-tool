@@ -9,10 +9,8 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
     QPlainTextEdit, QFileDialog, QMessageBox
 )
-from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QFont, QTextCursor
 from datetime import datetime
-import os
 
 from ...core.localization import translate_key
 

@@ -28,7 +28,7 @@ from ..utils import debug, default_summary, default_create_summary, resource_pat
 from .widgets.ui_helpers import add_info_button as ui_add_info_button
 from .widgets.ui_helpers import force_on_top as ui_force_on_top
 from .widgets.ui_helpers import bring_to_front_sequence as ui_bring_to_front_sequence
-from .widgets.ui_helpers import install_localized_context_menu
+from .widgets.ui_helpers import install_localized_context_menu, LOG_RAW_CONTENT_ROLE
 from .widgets.ui_helpers import show_help_dialog as ui_show_help_dialog
 
 _DEFAULT_SESSION_PROJECT = 'wikipedia / ru'
@@ -1165,6 +1165,8 @@ class MainWindow(QMainWindow):
                 try:
                     for item in tree.findItems('', Qt.MatchContains | Qt.MatchRecursive, 0):
                         for col in range(tree.columnCount()):
+                            if item.data(col, LOG_RAW_CONTENT_ROLE):
+                                continue
                             txt = item.text(col)
                             new_txt = self._translate_value(txt, target)
                             if new_txt != txt:

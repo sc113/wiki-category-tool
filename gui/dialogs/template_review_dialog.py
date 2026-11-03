@@ -245,7 +245,6 @@ class TemplateReviewDialog(QDialog):
         layout.addSpacing(4)
 
         # Сообщение о типе замены (плотный блок: заголовок + сообщение без промежутков)
-        is_direct = (self.mode == 'direct')
         is_partial = (self.mode == 'partial')
         is_locative = (self.mode == 'locative')
 

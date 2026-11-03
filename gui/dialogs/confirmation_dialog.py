@@ -7,11 +7,10 @@
 """
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 )
 from PySide6.QtCore import Qt
 from ...utils import format_russian_pages_accusative, format_russian_pages_genitive_for_content
-from PySide6.QtGui import QIcon, QPixmap
 from ...core.localization import translate_key
 
 

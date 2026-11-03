@@ -172,7 +172,7 @@ class RenameWorker(BaseWorker):
     def _emitf(self, key: str, default: str = '', **kwargs) -> None:
         self.progress.emit(self._tf(key, default, **kwargs))
 
-    def _record_error(self, title: str, message: str) -> None:
+    def _record_error(self, title: str, message: str, *, details: str = '') -> None:
         """Store a failed action and send a typed, theme-aware log event."""
         self.error_count += 1
         if title:
@@ -181,6 +181,7 @@ class RenameWorker(BaseWorker):
             'type': 'operation_error',
             'title': title,
             'message': message,
+            'details': details,
             'status': 'error',
         })
 
@@ -189,13 +190,10 @@ class RenameWorker(BaseWorker):
             title = page.title()
         except Exception:
             title = ''
+        reason = getattr(error, 'reason', None) or error
         self._record_error(title, self._tf(
-            'log.rename_worker.save_error_detail',
-            'Could not save {title}: {error_type}: {error}',
-            title=title,
-            error_type=type(error).__name__,
-            error=error,
-        ))
+            'log.rename_worker.save_error_reason', 'Could not save: {error}', error=reason,
+        ), details=f'{type(error).__name__}: {error}')
 
     def _debugf(self, key: str, default: str = '', **kwargs) -> None:
         debug(self._tf(key, default, **kwargs))

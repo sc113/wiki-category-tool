@@ -745,6 +745,7 @@ class CategoryContentSyncWorker(BaseWorker):
     category_done = Signal()
     category_result = Signal(dict)
     member_progress = Signal(dict)
+    member_present = Signal(str, str)
 
     def __init__(
         self,
@@ -777,6 +778,7 @@ class CategoryContentSyncWorker(BaseWorker):
                                for mode, titles in plan.items()}
                               for category, plan in member_plans.items()} if member_plans is not None else None)
         self.transferred_success_total = 0
+        self.error_count = 0
         self._lookup_min_interval = 0.12
         self._lookup_last_ts = 0.0
         self._lookup_retries = 4
@@ -813,6 +815,7 @@ class CategoryContentSyncWorker(BaseWorker):
             source_site = pywikibot.Site(self.source_lang, self.family)
             target_site = pywikibot.Site(self.target_lang, self.family)
         except Exception as exc:
+            self._set_failure(exc)
             self.progress.emit(
                 self._fmt("log.sync_worker.site_init_error", error_type=type(exc).__name__, error=exc)
             )
@@ -848,6 +851,7 @@ class CategoryContentSyncWorker(BaseWorker):
         total_requested = len(normalized_targets)
         total_processed_pairs = 0
         total_failed_source = 0
+        total_errors = 0
         stats_articles = {"success": 0, "error": 0, "skipped": 0, "already": 0}
         stats_subcats = {"success": 0, "error": 0, "skipped": 0, "already": 0}
         self.transferred_success_total = 0
@@ -1002,6 +1006,8 @@ class CategoryContentSyncWorker(BaseWorker):
             self.transferred_success_total = int(
                 getattr(self, "transferred_success_total", 0) or 0
             ) + max(0, int(transferred_total or 0))
+            total_errors += errors_total
+            self.error_count = max(self.error_count, total_errors)
 
             status = "done"
             if transferred_total == 0 and errors_total > 0:
@@ -1053,7 +1059,7 @@ class CategoryContentSyncWorker(BaseWorker):
                     already=stats_subcats["already"],
                 )
             )
-        self.error_count = int(stats_articles["error"]) + int(stats_subcats["error"])
+        self.error_count = max(self.error_count, total_errors)
 
     def _emit_category_done(self) -> None:
         try:
@@ -1150,9 +1156,10 @@ class CategoryContentSyncWorker(BaseWorker):
             )
             - now,
         )
-        if wait_s > 0:
-            time.sleep(wait_s)
+        if not self._interruptible_wait(wait_s):
+            return False
         self._lookup_last_ts = time.time()
+        return True
 
     def _increase_lookup_interval(self, attempt: int, hinted_wait: float = 0.0):
         cur = float(getattr(self, "_lookup_min_interval", 0.12) or 0.12)
@@ -1175,7 +1182,8 @@ class CategoryContentSyncWorker(BaseWorker):
             if self._stop:
                 return None
             try:
-                self._wait_before_lookup()
+                if not self._wait_before_lookup():
+                    return None
                 item_page = pywikibot.ItemPage.fromPage(source_page)
                 linked_sitelink = item_page.getSitelink(target_site)
                 if not linked_sitelink:
@@ -1209,7 +1217,8 @@ class CategoryContentSyncWorker(BaseWorker):
                         )
                     except Exception:
                         pass
-                    time.sleep(wait_s)
+                    if not self._interruptible_wait(wait_s):
+                        return None
                     continue
                 return None
         return None
@@ -1430,6 +1439,7 @@ class CategoryContentSyncWorker(BaseWorker):
                     text = target_page.get()
                     if self._category_already_exists(text, target_category_name):
                         stats["already"] += 1
+                        self.member_present.emit(row_key, target_page.title())
                         self.progress.emit(
                             self._fmt("log.sync_worker.article_already_in_category", title=target_page.title())
                         )
@@ -1461,6 +1471,7 @@ class CategoryContentSyncWorker(BaseWorker):
                     ok = self._save_with_retry(target_page, new_text, summary, False)
                     if ok:
                         stats["success"] += 1
+                        self.member_present.emit(row_key, target_page.title())
                         self.progress.emit(self._fmt("log.sync_worker.article_success", title=target_page.title()))
                     else:
                         stats["error"] += 1
@@ -1578,6 +1589,7 @@ class CategoryContentSyncWorker(BaseWorker):
                     text = target_subcat_page.get()
                     if self._category_already_exists(text, target_parent_category_name):
                         stats["already"] += 1
+                        self.member_present.emit(row_key, target_subcat_page.title())
                         self.progress.emit(
                             self._fmt("log.sync_worker.subcategory_already_in_category", title=target_subcat_page.title())
                         )
@@ -1609,6 +1621,7 @@ class CategoryContentSyncWorker(BaseWorker):
                     ok = self._save_with_retry(target_subcat_page, new_text, summary, False)
                     if ok:
                         stats["success"] += 1
+                        self.member_present.emit(row_key, target_subcat_page.title())
                         self.progress.emit(
                             self._fmt("log.sync_worker.subcategory_success", title=target_subcat_page.title())
                         )

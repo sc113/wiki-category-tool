@@ -3,6 +3,8 @@ from __future__ import annotations
 # ruff: noqa: E402
 import os
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -440,6 +442,28 @@ class SyncMemberUiTests(unittest.TestCase):
         self.sync.preview_history.undo()
         self.assertTrue(self.sync.start_btn.isEnabled())
 
+    def test_saved_members_update_remaining_counts_in_sorted_rows_and_enable_cleanup(self):
+        data = {**scan_row(), 'membership': {'Статья А': False, 'Статья Б': False, 'Категория:Дочерняя': False}}
+        self.load_scan([data, {**data, 'source_title': 'Category:B', 'target_title': 'Категория:Б'}])
+        self.sync.preview_table.sortItems(7, Qt.AscendingOrder)
+        for title in ('Статья А', 'Статья Б', 'Категория:Дочерняя'):
+            self.sync._apply_member_presence('категория:а', title)
+        self.sync._apply_sync_category_result(dict(row_key='категория:а', target_title='Категория:А', transferred=3, status='done'))
+        row = self.sync._preview_row_index['категория:а']
+        self.assertEqual('0+0', self.sync.preview_table.item(row, 7).text())
+        self.assertEqual('2+1', self.sync.preview_table.item(row, 6).text())
+        self.assertTrue(self.sync.clear_zero_additions_btn.isEnabled())
+        self.sync.clear_zero_additions_btn.click()
+        self.assertEqual(['Категория:Б'], self.sync._categories_from_preview_table())
+
+    def test_unreviewed_or_removed_member_results_cannot_change_a_transfer_plan(self):
+        data = {**scan_row(), 'membership': {'Статья А': False, 'Статья Б': False, 'Категория:Дочерняя': False}}
+        self.load_scan([data])
+        self.sync._apply_member_presence('категория:а', 'Новая страница')
+        self.sync._apply_member_presence('категория:другая', 'Статья А')
+        self.assertEqual('2+1', self.sync.preview_table.item(0, 7).text())
+        self.assertEqual(('Статья А', 'Статья Б'), self.sync._member_plans()['категория:а']['articles'])
+
     def test_excluding_last_addable_page_immediately_enables_zero_cleanup(self):
         data = {**scan_row(), 'membership': {'Статья А': True, 'Статья Б': False, 'Категория:Дочерняя': True}}
         self.load_scan([data])
@@ -605,6 +629,108 @@ class SyncMemberWriteTests(unittest.TestCase):
         self.assertFalse(self.worker._member_is_selected('Категория:Б', 'articles', 'Одна'))
         self.assertFalse(self.worker._member_is_selected('Категория:А', 'articles', 'ОДНА'))
         self.assertFalse(self.worker._member_is_selected('Категория:А', 'subcategories', 'Одна'))
+
+    def test_article_presence_is_reported_only_for_saved_or_already_present_pages(self):
+        present = []
+        self.worker.member_present.connect(lambda category, title: present.append((category, title)))
+        reader = Mock()
+        reader.article_matches.return_value = {'One': 'Одна'}
+        target = Mock()
+        target.exists.return_value, target.isRedirectPage.return_value = True, False
+        target.get.return_value, target.title.return_value = 'text', 'Одна'
+        for already, saved, expected in ((False, True, 1), (True, False, 1), (False, False, 0)):
+            present.clear()
+            self.worker._category_already_exists.return_value = already
+            self.worker._save_with_retry.return_value = saved
+            with patch('wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader', return_value=reader), \
+                 patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Page', return_value=target):
+                self.worker._transfer_articles('Category:A', 'Категория:А', Mock(), Mock(),
+                                               source_members=[Mock(title=Mock(return_value='One'))], row_key='категория:а')
+            self.assertEqual([('категория:а', 'Одна')] * expected, present)
+
+    def test_subcategory_presence_is_reported_only_for_saved_or_already_present_pages(self):
+        present = []
+        self.worker.member_present.connect(lambda category, title: present.append((category, title)))
+        self.worker._get_linked_page_title_retry = Mock(return_value='Категория:Дочерняя')
+        target = Mock()
+        target.exists.return_value, target.isRedirectPage.return_value = True, False
+        target.namespace.return_value.id = 14
+        target.get.return_value, target.title.return_value = 'text', 'Категория:Дочерняя'
+        for already, saved, expected in ((False, True, 1), (True, False, 1), (False, False, 0)):
+            present.clear()
+            self.worker._category_already_exists.return_value = already
+            self.worker._save_with_retry.return_value = saved
+            with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Category', return_value=target):
+                self.worker._transfer_subcategories('Category:A', 'Категория:А', Mock(), Mock(),
+                                                    source_members=[Mock(title=Mock(return_value='Category:Child'))], row_key='категория:а')
+            self.assertEqual([('категория:а', 'Категория:Дочерняя')] * expected, present)
+
+    def test_source_member_read_failure_counts_in_the_final_error_total(self):
+        self.worker.username, self.worker.password = '', ''
+        self.worker.process_subcategories = False
+        self.worker._resolve_source_category_with_retry = Mock(return_value=('Category:A', 'Wikidata'))
+        self.worker._collect_article_members = Mock(side_effect=APIRequestError('read failed'))
+        self.worker._transfer_articles = Mock(return_value=dict(success=0, error=0, skipped=0, already=0))
+        results = []
+        self.worker.category_result.connect(results.append)
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site', return_value=Mock()), \
+             patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Category', return_value=Mock()):
+            self.worker.run()
+        self.assertEqual('error', results[-1]['status'])
+        self.assertEqual(1, self.worker.error_count)
+
+    def test_site_initialization_failure_is_a_failed_operation(self):
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site', side_effect=RuntimeError('offline')):
+            self.worker.run()
+        self.assertTrue(self.worker.failed)
+        self.assertIn('offline', self.worker.failure_message)
+
+    def test_stop_interrupts_a_sync_lookup_rate_limit_pause(self):
+        paused = threading.Event()
+        original_wait = self.worker._interruptible_wait
+        def wait(seconds):
+            paused.set()
+            return original_wait(seconds)
+        self.worker._lookup_last_ts = time.time() + 60
+        self.worker._interruptible_wait = wait
+        result = []
+        thread = threading.Thread(target=lambda: result.append(self.worker._get_linked_page_title_retry(Mock(), Mock())), daemon=True)
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.ItemPage.fromPage') as lookup:
+            thread.start()
+            try:
+                self.assertTrue(paused.wait(1))
+                self.worker.request_stop()
+                thread.join(1)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual([None], result)
+                lookup.assert_not_called()
+            finally:
+                self.worker.request_stop()
+                thread.join(1)
+
+    def test_stop_interrupts_a_retry_after_from_wikidata_lookup(self):
+        paused = threading.Event()
+        original_wait = self.worker._interruptible_wait
+        def wait(seconds):
+            if seconds >= 30:
+                paused.set()
+            return original_wait(seconds)
+        self.worker._interruptible_wait = wait
+        result = []
+        thread = threading.Thread(target=lambda: result.append(self.worker._get_linked_page_title_retry(Mock(), Mock())), daemon=True)
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.ItemPage.fromPage',
+                   side_effect=RuntimeError('maxlag; Retry-After: 60')) as lookup:
+            thread.start()
+            try:
+                self.assertTrue(paused.wait(1))
+                self.worker.request_stop()
+                thread.join(1)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual([None], result)
+                lookup.assert_called_once()
+            finally:
+                self.worker.request_stop()
+                thread.join(1)
 
 
 if __name__ == '__main__':

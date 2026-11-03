@@ -800,7 +800,7 @@ class RenameTab(QWidget):
             widths[3] += int(remaining - total)
         elif total > remaining:
             excess = int(total - remaining)
-            for col in (3, 4, 5, 2, 0):
+            for col in cols:
                 if excess <= 0:
                     break
                 can_take = max(0, int(widths[col] - min_ws[col]))
