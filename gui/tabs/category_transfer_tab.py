@@ -596,12 +596,10 @@ class CategoryTransferTab(QWidget):
         self.scan_guidance.setText(self._t(hint, checked=self.table.rowCount() - len(pending),
                                             total=self.table.rowCount(), remaining=len(pending), count=empty_count))
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
-        highlight_next_action(self.clear_btn, not busy and empty_count > 0, theme, prominent=True)
-        for button, active in ((self.load_btn, not has_scan_rows),
-                               (self.scan_btn, has_scan_rows and not scanned), (self.next_btn, scanned and not empty_count),
-                               (self.read_creation_btn, not has_creation_rows),
-                               (self.create_btn, self.create_btn.isEnabled()), (self.sync_btn, self.sync_btn.isEnabled())):
-            highlight_next_action(button, not busy and active, theme)
+        next_action = (self.clear_btn if empty_count else self.load_btn if not has_scan_rows
+                       else self.scan_btn if not scanned else self.next_btn)
+        for button in (self.load_btn, self.scan_btn, self.clear_btn, self.next_btn):
+            highlight_next_action(button, not busy and button is next_action, theme, prominent=True)
         self._refresh_preparation_guidance()
         self._reindex()
         for name in ("scan_history", "creation_history"):
@@ -1216,11 +1214,21 @@ class CategoryTransferTab(QWidget):
         missing = self._preparation_missing_columns()
         needs_fill = any(missing)
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
-        highlight_next_action(self.autofill_btn, not self._busy and needs_fill, theme, prominent=True)
+        if not self.creation_table.rowCount():
+            next_action = self.read_creation_btn
+        elif needs_fill:
+            next_action = self.autofill_btn
+        elif self.create_btn.isEnabled():
+            next_action = (self.link_only_btn if self.link_only_btn.isEnabled()
+                           and len(self._link_only_rows) == len(self._creation_rows) else self.create_btn)
+        elif self.sync_btn.isEnabled():
+            next_action = self.sync_btn
+        else:
+            next_action = self.check_links_btn
+        for button in (self.read_creation_btn, self.autofill_btn, self.check_links_btn,
+                       self.create_btn, self.link_only_btn, self.sync_btn):
+            highlight_next_action(button, not self._busy and button is next_action, theme, prominent=True)
         highlight_next_action(self.incomplete_btn, not self._busy and needs_fill, theme)
-        highlight_next_action(self.check_links_btn, not self._busy and bool(self.creation_table.rowCount())
-                              and not needs_fill and not self.create_btn.isEnabled() and not self.sync_btn.isEnabled(),
-                              theme, prominent=True)
         self._style_autofill_tabs(theme, missing)
 
     def _show_creation_detail(self):

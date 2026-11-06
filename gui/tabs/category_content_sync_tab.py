@@ -542,6 +542,7 @@ class CategoryContentSyncTab(QWidget):
         self.source_panel.fetch_started.connect(lambda: self.preview_btn.setEnabled(False))
         self.source_panel.fetch_started.connect(lambda: self.start_btn.setEnabled(False))
         self.source_panel.fetch_started.connect(lambda: self.source_lang_edit.setEnabled(False))
+        self.source_panel.fetch_started.connect(lambda: self._highlight_sync_action(None))
         self.source_panel.fetch_finished.connect(self._category_read_finished)
         self.source_panel.fetch_finished.connect(lambda: self.source_lang_edit.setEnabled(True))
         self.source_panel.fetch_finished.connect(self._refresh_read_language_hint)
@@ -639,6 +640,7 @@ class CategoryContentSyncTab(QWidget):
         worker.failed.connect(panel._on_fetch_titles_failed)
         worker.finished.connect(lambda: self._read_detection_finished(worker, context, request))
         worker.start()
+        self._refresh_start_button_state()
 
     def _choose_read_category(self, candidates):
         box = QMessageBox(self)
@@ -1491,6 +1493,7 @@ class CategoryContentSyncTab(QWidget):
         if fetching:
             self.preview_btn.setEnabled(False)
             self.start_btn.setEnabled(False)
+        self._refresh_start_button_state()
 
     def _zero_addition_rows(self):
         rows = []
@@ -2620,26 +2623,35 @@ class CategoryContentSyncTab(QWidget):
         btn = getattr(self, "start_btn", None)
         if btn is None:
             return
-        allow = bool(self._preview_mode and self._is_preview_signature_actual())
+        running = any(worker and worker.isRunning() for worker in
+                      (self.preview_worker, self.sync_worker, self.source_panel._fetch_worker))
+        ready = bool(not running and self._preview_mode and self._is_preview_signature_actual())
+        allow = ready
         allow = allow and any(self.preview_table.item(row, 6) is not None
                               and self.preview_table.item(row, 6).data(Qt.UserRole + 3) is not None
                               for row in range(self.preview_table.rowCount()))
         try:
-            if self.preview_worker and self.preview_worker.isRunning():
-                allow = False
-            if self.sync_worker and self.sync_worker.isRunning():
-                allow = False
-            if self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning():
-                allow = False
-        except Exception:
-            pass
-        try:
             btn.setEnabled(bool(allow))
         except Exception:
             pass
+        next_action = None
+        if not running:
+            if allow:
+                plans = self._member_plans(only_additional=True)
+                if any(plan['articles'] or plan['subcategories'] for plan in plans.values()):
+                    next_action = self.start_btn
+            elif self.source_panel.manual_list.toPlainText().strip():
+                next_action = self.preview_btn
+            elif self.cat_edit.text().strip():
+                next_action = self.source_panel.replace_list_btn
+            else:
+                next_action = self.read_file_btn
+        self._highlight_sync_action(next_action)
+
+    def _highlight_sync_action(self, next_action):
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
-        highlight_next_action(self.start_btn, allow, theme)
-        highlight_next_action(self.preview_btn, not allow, theme)
+        for button in (self.source_panel.replace_list_btn, self.read_file_btn, self.preview_btn, self.start_btn):
+            highlight_next_action(button, button is next_action, theme, prominent=True)
 
     def _collect_run_config(self) -> Optional[dict]:
         categories = self._load_categories_from_inputs()
@@ -2833,6 +2845,7 @@ class CategoryContentSyncTab(QWidget):
         self.preview_worker.category_done.connect(self._on_preview_category_done)
         self.preview_worker.finished.connect(self._on_preview_finished)
         self.preview_worker.start()
+        self._refresh_start_button_state()
         self.preview_history.refresh()
 
     def start_sync(self):
@@ -2933,6 +2946,7 @@ class CategoryContentSyncTab(QWidget):
         self.sync_worker.member_present.connect(self._apply_member_presence)
         self.sync_worker.finished.connect(self._on_sync_finished)
         self.sync_worker.start()
+        self._refresh_start_button_state()
         self.preview_history.refresh()
 
     @pause_sorting('preview_table')
@@ -3237,6 +3251,7 @@ class CategoryContentSyncTab(QWidget):
         self.preview_worker.category_done.connect(self._on_preview_category_done)
         self.preview_worker.finished.connect(self._on_preview_finished)
         self.preview_worker.start()
+        self._refresh_start_button_state()
         self.preview_history.refresh()
         return True
 
