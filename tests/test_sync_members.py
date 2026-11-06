@@ -483,6 +483,39 @@ class SyncMemberUiTests(unittest.TestCase):
         self.assertEqual(('Статья А', 'Статья Б'), factory.call_args.kwargs['member_plans']['категория:а']['articles'])
         self.sync.sync_worker = None
 
+    def test_run_only_receives_additions_and_resume_omits_completed_pages(self):
+        data = {**scan_row(), 'membership': {'Статья А': True, 'Статья Б': False, 'Категория:Дочерняя': True}}
+        self.load_scan([data])
+        self.parent.current_user, self.parent.current_password = 'User', 'unused'
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryContentSyncWorker') as factory:
+            self.sync.start_sync()
+        plan = factory.call_args.kwargs['member_plans']['категория:а']
+        self.assertEqual(dict(articles=('Статья Б',), subcategories=(), source_category='Category:A'), plan)
+        self.sync.sync_worker = None
+        self.sync._apply_member_presence('категория:а', 'Статья Б')
+        self.assertEqual((), self.sync._member_plans(only_additional=True)['категория:а']['articles'])
+        self.assertEqual(('Статья А', 'Статья Б'), self.sync._member_plans()['категория:а']['articles'])
+
+    def test_rows_with_preview_errors_are_not_treated_as_successful_empty_plans(self):
+        self.load_scan()
+        self.sync._append_preview_row(dict(phase='details', row_key='категория:ошибка', target_title='Категория:Ошибка',
+                                           source_title='', status='error', error='offline'))
+        self.parent.current_user, self.parent.current_password = 'User', 'unused'
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryContentSyncWorker') as factory:
+            self.sync.start_sync()
+        self.assertEqual(['Категория:А'], factory.call_args.kwargs['target_categories'])
+        self.sync.sync_worker = None
+        self.sync._prefill_preview_rows(target_categories=['Категория:А'], target_lang='ru', family='wikipedia')
+        self.sync._append_preview_row(dict(phase='details', row_key='категория:а', target_title='Категория:А',
+                                           source_title='', status='error', error='offline'))
+        self.sync._refresh_start_button_state()
+        self.assertFalse(self.sync.start_btn.isEnabled())
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.QMessageBox'), \
+             patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryContentSyncWorker') as factory:
+            self.sync.start_sync()
+        factory.assert_not_called()
+        self.assertEqual('error', self.sync.preview_table.item(0, 5).data(self.sync._status_code_role()))
+
     def test_additional_view_keeps_already_present_matches_when_excluding_an_addable_page(self):
         data = {**scan_row(), 'membership': {'Статья А': True, 'Статья Б': False, 'Категория:Дочерняя': False}}
         self.load_scan([data])
@@ -889,6 +922,130 @@ class SyncMemberWriteTests(unittest.TestCase):
         self.worker._category_already_exists = Mock(return_value=False)
         self.worker._build_default_summary = Mock(return_value='summary')
 
+    def target(self, title, *, namespace=0):
+        target = Mock()
+        target.title.return_value = title
+        target.exists.return_value, target.isRedirectPage.return_value = True, False
+        target.namespace.return_value.id = namespace
+        target.get.return_value = 'text'
+        return target
+
+    def test_prepared_plan_saves_only_planned_targets_without_source_scan_or_article_wikidata_lookup(self):
+        self.worker.username = self.worker.password = ''
+        self.worker._resolve_source_category_with_retry = Mock(return_value=('Category:A', 'Wikidata'))
+        self.worker._collect_article_members = Mock(side_effect=AssertionError('source scan'))
+        self.worker._collect_subcategory_members = Mock(side_effect=AssertionError('source scan'))
+        self.worker._get_linked_page_title_retry = Mock(side_effect=AssertionError('member Wikidata lookup'))
+        article = self.target('Одна')
+        child = self.target('Категория:Дочерняя', namespace=14)
+        results, progress = [], []
+        self.worker.category_result.connect(results.append)
+        self.worker.member_progress.connect(progress.append)
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site', return_value=Mock()), \
+             patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Page', return_value=article) as pages, \
+             patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Category', return_value=child) as categories, \
+             patch('wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader', side_effect=AssertionError('reader')):
+            self.worker.run()
+        self.assertEqual(2, self.worker.transferred_success_total)
+        self.assertEqual(2, self.worker._save_with_retry.call_count)
+        self.worker._collect_article_members.assert_not_called()
+        self.worker._collect_subcategory_members.assert_not_called()
+        self.worker._get_linked_page_title_retry.assert_not_called()
+        self.assertEqual(1, pages.call_count)
+        self.assertEqual(1, categories.call_count)
+        self.assertEqual('done', results[-1]['status'])
+        self.assertTrue(all(result['total_text'] == '' for result in results))
+        self.assertEqual([0, 1, 2], [item['processed'] for item in progress])
+        self.assertTrue(all(item['total'] == 2 for item in progress))
+
+    def test_empty_prepared_plan_does_not_query_or_log_in_to_either_site(self):
+        self.worker.member_plans = {'категория:а': dict(articles=(), subcategories=())}
+        results = []
+        self.worker.category_result.connect(results.append)
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site') as site:
+            self.worker.run()
+        site.assert_not_called()
+        self.worker._save_with_retry.assert_not_called()
+        self.assertEqual('done_empty', results[-1]['status'])
+
+    def test_prepared_run_only_authenticates_on_the_target_wiki(self):
+        source, target = Mock(), Mock()
+        self.worker._resolve_source_category_with_retry = Mock(return_value=('Category:A', 'Wikidata'))
+        self.worker._transfer_articles = Mock(return_value=dict(success=1, error=0))
+        self.worker._transfer_subcategories = Mock(return_value=dict(success=1, error=0))
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site', side_effect=[source, target]):
+            self.worker.run()
+        target.login.assert_called_once_with(user='User')
+        source.login.assert_not_called()
+
+    def test_empty_categories_in_mixed_plan_are_skipped_without_source_lookup(self):
+        self.worker.username = self.worker.password = ''
+        self.worker.target_categories = ['Категория:Пустая', 'Категория:А']
+        self.worker.member_plans['категория:пустая'] = dict(articles=(), subcategories=())
+        self.worker._resolve_source_category_with_retry = Mock(return_value=('Category:A', 'Wikidata'))
+        self.worker._transfer_articles = Mock(return_value=dict(success=1, error=0))
+        self.worker._transfer_subcategories = Mock(return_value=dict(success=1, error=0))
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site', return_value=Mock()):
+            self.worker.run()
+        self.assertEqual(1, self.worker._resolve_source_category_with_retry.call_count)
+        self.assertEqual('Категория:А', self.worker._resolve_source_category_with_retry.call_args.args[0])
+
+    def test_stale_category_pair_cannot_execute_an_old_member_plan(self):
+        self.worker.username = self.worker.password = ''
+        self.worker._planned_sources = {'категория:а': 'Category:A'}
+        self.worker._resolve_source_category_with_retry = Mock(return_value=('Category:Changed', 'Wikidata'))
+        results = []
+        self.worker.category_result.connect(results.append)
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site', return_value=Mock()):
+            self.worker.run()
+        self.worker._save_with_retry.assert_not_called()
+        self.assertEqual(1, self.worker.error_count)
+        self.assertEqual('error', results[-1]['status'])
+
+    def test_live_duplicate_check_keeps_a_page_added_after_preview_from_being_saved_twice(self):
+        target = self.target('Одна')
+        self.worker._category_already_exists.return_value = True
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Page', return_value=target), \
+             patch('wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader') as reader:
+            stats = self.worker._transfer_articles('Category:A', 'Категория:А', Mock(), Mock(),
+                                                   source_members=[], target_titles=('Одна',), row_key='категория:а')
+        self.assertEqual((0, 1), (stats['success'], stats['already']))
+        reader.assert_not_called()
+        self.worker._save_with_retry.assert_not_called()
+
+    def test_prepared_redirect_target_is_skipped_without_following_it(self):
+        target = self.target('Одна')
+        target.isRedirectPage.return_value = True
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Page', return_value=target):
+            stats = self.worker._transfer_articles('Category:A', 'Категория:А', Mock(), Mock(),
+                                                   source_members=[], target_titles=('Одна',), row_key='категория:а')
+        self.assertEqual(1, stats['skipped'])
+        target.get.assert_not_called()
+        target.getRedirectTarget.assert_not_called()
+        self.worker._save_with_retry.assert_not_called()
+
+    def test_source_page_in_custom_summary_is_resolved_only_for_the_page_being_saved(self):
+        target = self.target('Одна')
+        self.worker.edit_summary = '{source_page} / {source_category}'
+        self.worker._get_linked_page_title_retry = Mock(return_value='Source article')
+        source_site = Mock()
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Page', return_value=target):
+            stats = self.worker._transfer_articles('Category:A', 'Категория:А', source_site, Mock(),
+                                                   source_members=[], target_titles=('Одна',), row_key='категория:а')
+        self.assertEqual(1, stats['success'])
+        self.worker._get_linked_page_title_retry.assert_called_once_with(target, source_site, expected_ns=0)
+        self.assertEqual('Source article / Category:A', self.worker._save_with_retry.call_args.args[2])
+
+    def test_plan_order_is_preserved_and_copied_from_input(self):
+        articles = ['Б', 'А', 'Б']
+        worker = CategoryContentSyncWorker(target_categories=['Категория:А'], username='', password='',
+                    source_lang='en', target_lang='ru', family='wikipedia', process_articles=True,
+                    process_subcategories=False, article_depth=0,
+                    member_plans={'Категория:А': dict(articles=articles, source_category='Category:A')})
+        articles.append('В')
+        self.assertEqual(('Б', 'А'), worker.member_plans['категория:а']['articles'])
+        self.assertEqual('Category:A', worker._planned_sources['категория:а'])
+
     def test_articles_removed_or_added_after_review_are_never_saved(self):
         reader = Mock()
         reader.article_matches.return_value = {'One': 'Одна', 'Removed': 'Убрана', 'New': 'Новая'}
@@ -967,6 +1124,7 @@ class SyncMemberWriteTests(unittest.TestCase):
         self.worker._save_with_retry.assert_not_called()
 
     def test_source_member_read_failure_counts_in_the_final_error_total(self):
+        self.worker.member_plans = None
         self.worker.username, self.worker.password = '', ''
         self.worker.process_subcategories = False
         self.worker._resolve_source_category_with_retry = Mock(return_value=('Category:A', 'Wikidata'))

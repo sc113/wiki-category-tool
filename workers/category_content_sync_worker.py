@@ -850,9 +850,11 @@ class CategoryContentSyncWorker(BaseWorker):
         self.edit_summary = str(edit_summary or "").strip()
         self.category_pairs = {pair.target_title.casefold(): pair for pair in category_pairs}
         self.member_plans = ({str(category).casefold():
-                              {mode: frozenset(_normalize_space(title.replace('_', ' ')) for title in titles)
-                               for mode, titles in plan.items()}
+                              {mode: tuple(dict.fromkeys(_normalize_space(title.replace('_', ' ')) for title in plan.get(mode, ())))
+                               for mode in ('articles', 'subcategories')}
                               for category, plan in member_plans.items()} if member_plans is not None else None)
+        self._planned_sources = {str(category).casefold(): _normalize_space(str(plan.get('source_category') or '').replace('_', ' '))
+                                 for category, plan in (member_plans or {}).items()}
         self.transferred_success_total = 0
         self.error_count = 0
         self._lookup_min_interval = 0.12
@@ -887,6 +889,18 @@ class CategoryContentSyncWorker(BaseWorker):
             )
             return
 
+        if self.member_plans is not None and not any(
+                self.member_plans.get(category.casefold(), {}).get(mode)
+                for category in normalized_targets
+                for mode, enabled in (('articles', self.process_articles), ('subcategories', self.process_subcategories)) if enabled):
+            self.progress.emit(message('sync_plan_empty'))
+            for category in normalized_targets:
+                if self._stop:
+                    break
+                self._emit_category_result(category, row_key=category.casefold(), status='done_empty', transferred=0)
+                self._emit_category_done()
+            return
+
         try:
             source_site = pywikibot.Site(self.source_lang, self.family)
             target_site = pywikibot.Site(self.target_lang, self.family)
@@ -912,17 +926,18 @@ class CategoryContentSyncWorker(BaseWorker):
                     )
                 )
                 return
-            try:
-                source_site.login(user=self.username)
-            except Exception as exc:
-                self.progress.emit(
-                    self._fmt(
-                        "log.sync_worker.source_auth_warning",
-                        site=f"{source_site.code}.{source_site.family.name}",
-                        error_type=type(exc).__name__,
-                        error=exc,
+            if self.member_plans is None:
+                try:
+                    source_site.login(user=self.username)
+                except Exception as exc:
+                    self.progress.emit(
+                        self._fmt(
+                            "log.sync_worker.source_auth_warning",
+                            site=f"{source_site.code}.{source_site.family.name}",
+                            error_type=type(exc).__name__,
+                            error=exc,
+                        )
                     )
-                )
 
         total_requested = len(normalized_targets)
         total_processed_pairs = 0
@@ -953,6 +968,14 @@ class CategoryContentSyncWorker(BaseWorker):
             if self._stop:
                 break
             row_key = target_category_name.casefold()
+            plan = self.member_plans.get(row_key, {}) if self.member_plans is not None else None
+            article_targets = tuple(plan.get('articles', ())) if plan is not None and self.process_articles else ()
+            subcategory_targets = tuple(plan.get('subcategories', ())) if plan is not None and self.process_subcategories else ()
+            if plan is not None and not article_targets and not subcategory_targets:
+                total_processed_pairs += 1
+                self._emit_category_result(target_category_name, row_key=row_key, status='done_empty', transferred=0)
+                self._emit_category_done()
+                continue
             self._emit_category_result(
                 target_category_name,
                 row_key=row_key,
@@ -972,6 +995,14 @@ class CategoryContentSyncWorker(BaseWorker):
             source_category_name, source_method = self._resolve_source_category_with_retry(
                 target_category_name, source_site, target_site
             )
+            expected_source = self._planned_sources.get(row_key)
+            if expected_source and source_category_name and _normalize_space(source_category_name.replace('_', ' ')) != expected_source:
+                total_errors += 1
+                self.error_count = total_errors
+                self.progress.emit(message('sync_plan_source_changed', title=target_category_name))
+                self._emit_category_result(target_category_name, row_key=row_key, status='error', transferred=0)
+                self._emit_category_done()
+                continue
             if not source_category_name:
                 total_failed_source += 1
                 self.progress.emit(
@@ -982,7 +1013,7 @@ class CategoryContentSyncWorker(BaseWorker):
                     row_key=row_key,
                     status="skipped",
                     transferred=0,
-                    total_text="0",
+                    total_text="0" if plan is None else '',
                 )
                 self._emit_category_done()
                 continue
@@ -1004,13 +1035,16 @@ class CategoryContentSyncWorker(BaseWorker):
             article_members: list[pywikibot.Page] = []
             subcategory_members: list[pywikibot.Category] = []
             try:
-                source_cat_obj = pywikibot.Category(source_site, source_category_name)
-                if self.process_articles:
-                    article_members = self._collect_article_members(source_cat_obj)
-                    seen_articles = len(article_members)
-                if self.process_subcategories:
-                    subcategory_members = self._collect_subcategory_members(source_cat_obj)
-                    seen_subcats = len(subcategory_members)
+                if plan is not None:
+                    seen_articles, seen_subcats = len(article_targets), len(subcategory_targets)
+                else:
+                    source_cat_obj = pywikibot.Category(source_site, source_category_name)
+                    if self.process_articles:
+                        article_members = self._collect_article_members(source_cat_obj)
+                        seen_articles = len(article_members)
+                    if self.process_subcategories:
+                        subcategory_members = self._collect_subcategory_members(source_cat_obj)
+                        seen_subcats = len(subcategory_members)
             except Exception as exc:
                 errors_total += 1
                 self.progress.emit(
@@ -1029,6 +1063,9 @@ class CategoryContentSyncWorker(BaseWorker):
             else:
                 total_text = "0"
                 category_total = 0
+            if plan is not None:
+                # Preserve the source totals shown in the prepared preview.
+                total_text = ''
 
             # Сразу обновляем "Всего в категории" до начала обработки элементов.
             self._emit_category_result(
@@ -1046,13 +1083,14 @@ class CategoryContentSyncWorker(BaseWorker):
                 mode="category",
             )
 
-            if self.process_articles:
+            if self.process_articles and (plan is None or article_targets):
                 stats = self._transfer_articles(
                     source_category_name,
                     target_category_name,
                     source_site,
                     target_site,
                     source_members=article_members,
+                    target_titles=article_targets if plan is not None else None,
                     row_key=row_key,
                     processed_offset=category_processed,
                     category_total=category_total,
@@ -1063,13 +1101,14 @@ class CategoryContentSyncWorker(BaseWorker):
                 errors_total += int(stats.get("error", 0))
                 category_processed += seen_articles
 
-            if self.process_subcategories:
+            if self.process_subcategories and (plan is None or subcategory_targets):
                 stats = self._transfer_subcategories(
                     source_category_name,
                     target_category_name,
                     source_site,
                     target_site,
                     source_members=subcategory_members,
+                    target_titles=subcategory_targets if plan is not None else None,
                     row_key=row_key,
                     processed_offset=category_processed,
                     category_total=category_total,
@@ -1441,6 +1480,14 @@ class CategoryContentSyncWorker(BaseWorker):
         return (self.member_plans is None or
                 _normalize_space(title.replace('_', ' ')) in self.member_plans.get(category.casefold(), {}).get(mode, ()))
 
+    def _planned_source_title(self, target_page, source_site, namespace):
+        if '{source_page}' not in self.edit_summary:
+            return ''
+        title = self._get_linked_page_title_retry(target_page, source_site, expected_ns=namespace)
+        if not title:
+            raise ValueError(message('sync_summary_source_missing', title=target_page.title()))
+        return title
+
     def _transfer_articles(
         self,
         source_category_name: str,
@@ -1449,6 +1496,7 @@ class CategoryContentSyncWorker(BaseWorker):
         target_site: pywikibot.Site,
         *,
         source_members: list[pywikibot.Page],
+        target_titles: tuple[str, ...] | None = None,
         row_key: str,
         processed_offset: int = 0,
         category_total: int = 0,
@@ -1462,15 +1510,18 @@ class CategoryContentSyncWorker(BaseWorker):
             )
         )
         try:
-            stats["seen"] = len(source_members)
-            article_count = len(source_members)
-            reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event)
-            try:
-                matches = reader.article_matches([page.title() for page in source_members])
-            finally:
-                reader.close()
+            if target_titles is not None:
+                candidates = [('', title) for title in target_titles]
+            else:
+                reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event)
+                try:
+                    matches = reader.article_matches([page.title() for page in source_members])
+                finally:
+                    reader.close()
+                candidates = [(page.title(), matches.get(page.title())) for page in source_members]
+            stats['seen'] = article_count = len(candidates)
             seen_targets = set()
-            for idx, source_page in enumerate(source_members, start=1):
+            for idx, (source_title, target_page_title) in enumerate(candidates, start=1):
                 if self._stop:
                     break
                 self._emit_member_progress(
@@ -1480,8 +1531,6 @@ class CategoryContentSyncWorker(BaseWorker):
                     total=category_total,
                     mode="articles",
                 )
-                source_title = source_page.title()
-                target_page_title = matches.get(source_title)
                 if not target_page_title:
                     stats["skipped"] += 1
                     self.progress.emit(
@@ -1521,6 +1570,8 @@ class CategoryContentSyncWorker(BaseWorker):
                         )
                         continue
 
+                    if target_titles is not None:
+                        source_title = self._planned_source_title(target_page, source_site, 0)
                     new_text = text.rstrip() + f"\n[[{target_category_name}]]\n"
                     if self.edit_summary:
                         summary = self._build_edit_summary(
@@ -1591,6 +1642,7 @@ class CategoryContentSyncWorker(BaseWorker):
         target_site: pywikibot.Site,
         *,
         source_members: list[pywikibot.Category],
+        target_titles: tuple[str, ...] | None = None,
         row_key: str,
         processed_offset: int = 0,
         category_total: int = 0,
@@ -1604,9 +1656,10 @@ class CategoryContentSyncWorker(BaseWorker):
             )
         )
         try:
-            stats["seen"] = len(source_members)
-            subcat_count = len(source_members)
-            for idx, source_subcat in enumerate(source_members, start=1):
+            candidates = ([(None, title) for title in target_titles] if target_titles is not None
+                          else [(source, None) for source in source_members])
+            stats['seen'] = subcat_count = len(candidates)
+            for idx, (source_subcat, target_subcat_title) in enumerate(candidates, start=1):
                 if self._stop:
                     break
                 self._emit_member_progress(
@@ -1616,23 +1669,24 @@ class CategoryContentSyncWorker(BaseWorker):
                     total=category_total,
                     mode="subcategories",
                 )
-                source_subcat_title = source_subcat.title()
+                source_subcat_title = source_subcat.title() if source_subcat is not None else ''
 
-                if source_subcat.isRedirectPage():
-                    stats['skipped'] += 1
-                    self.progress.emit(self._fmt('log.sync_worker.subcategory_skip_redirect', title=source_subcat_title))
-                    continue
+                if source_subcat is not None:
+                    if source_subcat.isRedirectPage():
+                        stats['skipped'] += 1
+                        self.progress.emit(self._fmt('log.sync_worker.subcategory_skip_redirect', title=source_subcat_title))
+                        continue
 
-                target_subcat_title = self._get_linked_page_title_retry(
-                    source_subcat, target_site, expected_ns=14
-                )
-                if not target_subcat_title:
-                    try:
-                        target_subcat_title = pywikibot.Category(
-                            target_site, source_subcat.title(with_ns=False)
-                        ).title()
-                    except Exception:
-                        target_subcat_title = None
+                    target_subcat_title = self._get_linked_page_title_retry(
+                        source_subcat, target_site, expected_ns=14
+                    )
+                    if not target_subcat_title:
+                        try:
+                            target_subcat_title = pywikibot.Category(
+                                target_site, source_subcat.title(with_ns=False)
+                            ).title()
+                        except Exception:
+                            target_subcat_title = None
 
                 if not target_subcat_title:
                     stats["skipped"] += 1
@@ -1676,6 +1730,8 @@ class CategoryContentSyncWorker(BaseWorker):
                         )
                         continue
 
+                    if target_titles is not None:
+                        source_subcat_title = self._planned_source_title(target_subcat_page, source_site, 14)
                     new_text = text.rstrip() + f"\n[[{target_parent_category_name}]]\n"
                     if self.edit_summary:
                         summary = self._build_edit_summary(

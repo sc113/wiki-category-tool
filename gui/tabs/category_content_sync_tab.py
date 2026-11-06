@@ -1876,14 +1876,20 @@ class CategoryContentSyncTab(QWidget):
         self.preview_table.setItem(row, 7, self._make_table_item('—' if additional is None else str(additional), url='members',
                                                               align=Qt.AlignHCenter | Qt.AlignVCenter, count=True))
 
-    def _member_plans(self):
+    def _member_plans(self, *, only_additional=False):
         plans = {}
         for row in range(self.preview_table.rowCount()):
             item = self.preview_table.item(row, 6)
             data = item.data(Qt.UserRole + 3) if item else None
             if data is not None:
-                plans[self._row_key_for_row(row)] = dict(articles=tuple(data.get('target_articles', ())),
-                                                        subcategories=tuple(data.get('target_categories', ())))
+                membership = data.get('membership', {})
+                plans[self._row_key_for_row(row)] = dict(
+                    articles=tuple(title for title in data.get('target_articles', ())
+                                   if not only_additional or membership.get(title) is not True),
+                    subcategories=tuple(title for title in data.get('target_categories', ())
+                                        if not only_additional or membership.get(title) is not True))
+                if only_additional:
+                    plans[self._row_key_for_row(row)]['source_category'] = data.get('source_title', '')
         return plans
 
     def _apply_member_presence(self, row_key, title):
@@ -2615,6 +2621,9 @@ class CategoryContentSyncTab(QWidget):
         if btn is None:
             return
         allow = bool(self._preview_mode and self._is_preview_signature_actual())
+        allow = allow and any(self.preview_table.item(row, 6) is not None
+                              and self.preview_table.item(row, 6).data(Qt.UserRole + 3) is not None
+                              for row in range(self.preview_table.rowCount()))
         try:
             if self.preview_worker and self.preview_worker.isRunning():
                 allow = False
@@ -2850,7 +2859,9 @@ class CategoryContentSyncTab(QWidget):
         if not config:
             return
 
-        categories = self._categories_from_preview_table()
+        member_plans = self._member_plans(only_additional=True)
+        categories = [category for category in self._categories_from_preview_table()
+                      if category.casefold() in member_plans]
         if not categories:
             QMessageBox.warning(
                 self,
@@ -2911,7 +2922,7 @@ class CategoryContentSyncTab(QWidget):
             edit_summary=config["edit_summary"],
             category_pairs=self._active_transfer_pairs(config["categories"], config["source_lang"],
                                                        config["target_lang"], config["family"]),
-            member_plans=self._member_plans(),
+            member_plans=member_plans,
         )
         self.sync_worker.progress.connect(
             lambda message: log_message(self.sync_log, message, debug)
