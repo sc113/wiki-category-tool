@@ -250,6 +250,15 @@ class RenameTab(QWidget):
             row_loc.addStretch(1)
         except Exception:
             pass
+
+        row_documentation = QHBoxLayout()
+        self.documentation_cb = QCheckBox(self._t('ui.rename_documentation'))
+        self.documentation_cb.setChecked(False)
+        documentation_help = self._t('help.rename.documentation')
+        self.documentation_cb.setToolTip(documentation_help)
+        row_documentation.addWidget(self.documentation_cb)
+        add_info_button(self, row_documentation, documentation_help, inline=True)
+        row_documentation.addStretch(1)
         
         # Кнопки правил (будут прикреплены к правому заголовку)
         btn_show_rules = QPushButton(self._t('ui.show_replacement_rules'))
@@ -335,6 +344,7 @@ class RenameTab(QWidget):
             pass
         transfer_opts_col.addWidget(_wrap(row_p1))
         transfer_opts_col.addWidget(_wrap(row_p2))
+        transfer_opts_col.addWidget(_wrap(row_documentation))
         transfer_opts_col.addWidget(_wrap(row_loc))
         transfer_opts_col.addStretch(1)
         rules_col = QVBoxLayout()
@@ -1089,7 +1099,8 @@ class RenameTab(QWidget):
             self.move_members_cb.isChecked(),
             (self.rename_comment_edit.text() or '').strip(),
             title_regex,
-            self.locatives_cb.isChecked()
+            self.locatives_cb.isChecked(),
+            process_documentation=self.documentation_cb.isChecked(),
         )
         
         # Подключаем сигналы

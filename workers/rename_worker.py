@@ -77,7 +77,8 @@ class RenameWorker(BaseWorker):
     def __init__(self, tsv_path, username, password, lang, family, ns_selection: str | int, 
                  leave_cat_redirect: bool, leave_other_redirect: bool, move_members: bool, 
                  find_in_templates: bool, phase1_enabled: bool, move_category: bool = True,
-                 override_comment: str = '', title_regex: str = '', use_locatives: bool = False):
+                 override_comment: str = '', title_regex: str = '', use_locatives: bool = False,
+                 process_documentation: bool = False):
         """
         Инициализация RenameWorker.
         
@@ -94,6 +95,7 @@ class RenameWorker(BaseWorker):
             find_in_templates: Искать в шаблонах
             phase1_enabled: Включить фазу 1 (прямые ссылки)
             move_category: Переименовывать саму категорию
+            process_documentation: Переносить прямые категории в документации шаблонов и модулей
         """
         super().__init__(username, password, lang, family)
         self.renamed_count = 0
@@ -108,6 +110,7 @@ class RenameWorker(BaseWorker):
         self.move_category = move_category
         self.find_in_templates = find_in_templates
         self.phase1_enabled = phase1_enabled
+        self.process_documentation = bool(process_documentation)
         # Фильтр заголовков (регулярное выражение Python)
         self.title_regex = (title_regex or '').strip()
         try:
@@ -453,7 +456,7 @@ class RenameWorker(BaseWorker):
                         is_category = title_has_ns_prefix(self.family, self.lang, old_name, {14})
 
                     # Если переименовываем категорию и перенос содержимого выключен
-                    if is_category and not (self.move_members and (self.phase1_enabled or self.find_in_templates)):
+                    if is_category and not (self.move_members and (self.phase1_enabled or self.find_in_templates or self.process_documentation)):
                         try:
                             old_full_check = _ensure_title_with_ns(old_name, self.family, self.lang, 14, DEFAULT_EN_NS.get(14, 'Category:'))
                             if not pywikibot.Page(site, old_full_check).exists():
@@ -471,7 +474,7 @@ class RenameWorker(BaseWorker):
                     transfer_enabled = bool(
                         is_category
                         and self.move_members
-                        and (self.phase1_enabled or self.find_in_templates)
+                        and (self.phase1_enabled or self.find_in_templates or self.process_documentation)
                     )
                     
                     # Если переименование категории выключено — пропускаем сам move для категорий
@@ -860,6 +863,7 @@ class RenameWorker(BaseWorker):
                     pass
                 
                 backlog_seen: set[str] = set()
+                documentation_seen: set[str] = set()
                 
                 for title in members_titles:
                     if self._stop:
@@ -885,7 +889,12 @@ class RenameWorker(BaseWorker):
                             ))
                             continue
                         self._debugf('log.rename_worker.member_processing', 'Processing page: {title}', title=page.title())
-                        changes_made = self._process_category_member(site, page, old_cat_full, new_cat_full)
+                        already_processed_doc = title in documentation_seen
+                        documentation = self.process_documentation and self._is_documentation_page(site, page)
+                        changes_made = (0 if already_processed_doc else self._process_category_member(
+                            site, page, old_cat_full, new_cat_full, documentation=documentation))
+                        if documentation:
+                            documentation_seen.add(title)
 
                         # Немедленно запускаем фазу 2 (если включена) и фиксируем были ли изменения
                         phase2_changes = 0
@@ -913,9 +922,13 @@ class RenameWorker(BaseWorker):
                             # Отмечаем как посещённую, чтобы не обрабатывать повторно
                             backlog_seen.add(title)
 
+                        if self.process_documentation and not self._stop:
+                            changes_made += self._process_documentation(
+                                site, page, old_cat_full, new_cat_full, documentation_seen)
+
                         # Если ни фаза 1, ни фаза 2 не внесли изменений — добавим понятную строку в лог
                         try:
-                            if self.error_count == errors_before_member and changes_made == 0 and (not self.find_in_templates or (phase2_changes == 0 and not getattr(self, '_last_template_interactions', False))):
+                            if not already_processed_doc and self.error_count == errors_before_member and changes_made == 0 and (not self.find_in_templates or (phase2_changes == 0 and not getattr(self, '_last_template_interactions', False))):
                                 # Для корректной классификации как «шаблонной» операции
                                 # укажем источник вида «<локальный префикс шаблона>…». Тогда в колонке «Тип» будет ✍️, а не 📝.
                                 if self.find_in_templates:
@@ -981,7 +994,50 @@ class RenameWorker(BaseWorker):
                 error=e,
             ))
 
-    def _process_category_member(self, site: pywikibot.Site, page: pywikibot.Page, old_cat_full: str, new_cat_full: str) -> int:
+    @staticmethod
+    def _documentation_suffixes(site):
+        try:
+            configured = site.doc_subpage or ()
+        except (AttributeError, KeyError):
+            configured = ()
+        if isinstance(configured, str):
+            configured = (configured,)
+        return tuple(dict.fromkeys('/' + suffix.strip().lstrip('/') for suffix in (*configured, '/doc')
+                                   if isinstance(suffix, str) and suffix.strip(' /')))
+
+    def _is_documentation_page(self, site, page):
+        namespace = page.namespace()
+        return (getattr(namespace, 'id', namespace) in (10, 828)
+                and any(page.title().casefold().endswith(suffix.casefold()) for suffix in self._documentation_suffixes(site)))
+
+    def _process_documentation(self, site, page, old_cat_full, new_cat_full, seen):
+        namespace = page.namespace()
+        if (getattr(namespace, 'id', namespace) not in (10, 828)
+                or self._is_documentation_page(site, page) or page.isRedirectPage()):
+            return 0
+        changes = 0
+        for suffix in self._documentation_suffixes(site):
+            if self._stop:
+                break
+            title = page.title() + suffix
+            if title in seen:
+                continue
+            try:
+                documentation = pywikibot.Page(site, title)
+                if not documentation.exists():
+                    continue
+                seen.add(title)
+                seen.add(documentation.title())
+                self._emitf('log.rename_worker.documentation_processing',
+                            'Checking documentation: {title} (for {source})', title=title, source=page.title())
+                changes += self._process_category_member(site, documentation, old_cat_full, new_cat_full, documentation=True)
+            except Exception as error:
+                self._record_error(title, self._tf('log.rename_worker.documentation_error',
+                    'Could not process documentation {title}: {error}', title=title, error=error))
+        return changes
+
+    def _process_category_member(self, site: pywikibot.Site, page: pywikibot.Page, old_cat_full: str, new_cat_full: str,
+                                 *, documentation: bool = False) -> int:
         """
         Обработка одной страницы из категории (только фаза 1).
         
@@ -995,7 +1051,19 @@ class RenameWorker(BaseWorker):
             int: Количество внесенных изменений
         """
         try:
+            if self._stop:
+                return 0
             if not page.exists():
+                return 0
+            if documentation and page.isRedirectPage():
+                self._emitf('log.rename_worker.documentation_redirect',
+                            'Documentation redirect skipped: {title}', title=page.title())
+                return 0
+            if documentation and page.content_model != 'wikitext':
+                self._emitf('log.rename_worker.documentation_non_wikitext',
+                            'Documentation is not wikitext, skipped: {title}', title=page.title())
+                return 0
+            if not self.phase1_enabled and not documentation:
                 return 0
 
             self._debugf('log.rename_worker.phase1_processing', 'Processing page (phase 1): {title}', title=page.title())
@@ -1006,9 +1074,9 @@ class RenameWorker(BaseWorker):
             changes_made = 0
             
             # Фаза 1: Прямые ссылки на категорию
-            if self.phase1_enabled:
+            if self.phase1_enabled or documentation:
                 modified_text, direct_changes = self._replace_category_links_in_text(
-                    modified_text, self.family, self.lang, old_cat_full, new_cat_full
+                    modified_text, self.family, self.lang, old_cat_full, new_cat_full, protect_examples=documentation
                 )
                 changes_made += direct_changes
                 self._debugf('log.rename_worker.phase1_changes', 'Phase 1: {count} changes', count=direct_changes)
@@ -1780,7 +1848,8 @@ class RenameWorker(BaseWorker):
             ))
             return text, 0
 
-    def _replace_category_links_in_text(self, text: str, family: str, lang: str, old_cat_full: str, new_cat_full: str) -> tuple[str, int]:
+    def _replace_category_links_in_text(self, text: str, family: str, lang: str, old_cat_full: str, new_cat_full: str,
+                                        *, protect_examples: bool = False) -> tuple[str, int]:
         """
         Замена прямых ссылок на категорию в тексте.
         
@@ -1848,9 +1917,21 @@ class RenameWorker(BaseWorker):
             return f"[[{new_pref}{new_cat_name}]]"
 
         try:
-            modified_text, count = rx.subn(_repl, modified_text)
+            if protect_examples:
+                from pywikibot import textlib
+                count = 0
+                def replace_documentation_link(match):
+                    nonlocal count
+                    count += 1
+                    return _repl(match)
+                modified_text = textlib.replaceExcept(modified_text, rx, replace_documentation_link,
+                                                       ['comment', 'nowiki', 'pre', 'source', 'syntaxhighlight'])
+            else:
+                modified_text, count = rx.subn(_repl, modified_text)
             changes += count
         except Exception:
+            if protect_examples:
+                raise
             pass
         
         return modified_text, changes
