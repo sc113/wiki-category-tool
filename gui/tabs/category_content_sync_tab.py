@@ -107,6 +107,8 @@ class CategoryContentSyncTab(QWidget):
         self._preview_mode = False
         self._preview_signature = None
         self._running_preview_signature = None
+        self._prepared_scan_cache = None
+        self._prepared_scan_signature = None
         self._preview_row_index: dict[str, int] = {}
         self._preview_cancel_requested = False
         self._sync_cancel_requested = False
@@ -769,6 +771,8 @@ class CategoryContentSyncTab(QWidget):
         self._preview_cancel_requested = False
         self._preview_signature = None
         self._running_preview_signature = None
+        self._prepared_scan_cache = None
+        self._prepared_scan_signature = None
         self._preview_row_index = {}
         self._depth_expanded_categories = []
         self._depth_expanded_base_signature = None
@@ -2810,6 +2814,8 @@ class CategoryContentSyncTab(QWidget):
             article_depth=0,
             category_pairs=self._active_transfer_pairs(config["categories"], config["source_lang"],
                                                        config["target_lang"], config["family"]),
+            cached_members=(self._prepared_scan_cache
+                            if self._prepared_scan_signature == self._running_preview_signature else None),
         )
         self.preview_worker.progress.connect(
             lambda message: log_message(self.sync_log, message, debug)
@@ -3169,6 +3175,42 @@ class CategoryContentSyncTab(QWidget):
         self._set_preview_mode(True)
         self._refresh_start_button_state()
         self.preview_history.reset()
+        return True
+
+    def load_prepared_categories(self, categories, source_lang, *, pairs, scanned_rows, include_subcategories=False):
+        """Carry the first scan through preparation; refresh only target membership."""
+        if not self._can_edit_preview() or (self.source_panel._fetch_worker and self.source_panel._fetch_worker.isRunning()):
+            return False
+        self.load_transfer_categories(categories, source_lang, pairs=pairs)
+        self.subcategories_checkbox.setChecked(include_subcategories)
+        family, target_lang = self.get_current_family(), self.get_current_language()
+        targets = self._normalized_target_categories(categories, family, target_lang)
+        self._prefill_preview_rows(target_categories=targets, target_lang=target_lang, family=family)
+        self._running_preview_signature = self._current_signature()
+        self._prepared_scan_cache = scanned_rows
+        self._prepared_scan_signature = self._running_preview_signature
+        self._set_preview_mode(True)
+        self._init_progress(len(targets))
+        self.start_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.read_file_btn.setEnabled(False)
+        self.log_panel.set_expanded(True)
+        self.preview_worker = CategoryContentSyncPreviewWorker(
+            target_categories=targets, source_lang=source_lang, target_lang=target_lang, family=family,
+            process_articles=True, process_subcategories=include_subcategories, article_depth=0,
+            category_pairs=self._transfer_pairs, cached_members=scanned_rows,
+        )
+        def show_progress(text):
+            self.progress_label.setText(text)
+            self.progress_bar.setFormat(text)
+            log_message(self.sync_log, text, debug)
+        self.preview_worker.progress.connect(show_progress)
+        self.preview_worker.rows_ready.connect(self._append_preview_rows_batch)
+        self.preview_worker.category_done.connect(self._on_preview_category_done)
+        self.preview_worker.finished.connect(self._on_preview_finished)
+        self.preview_worker.start()
+        self.preview_history.refresh()
         return True
 
     def set_auth_data(self, username: str, lang: str, family: str):

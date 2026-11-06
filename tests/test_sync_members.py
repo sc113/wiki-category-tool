@@ -18,7 +18,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 from wiki_cat_tool.core.api_client import APIRequestError
-from wiki_cat_tool.core.category_transfer import scan_count_value
+from wiki_cat_tool.core.category_transfer import CategoryCreationRow, CategoryPair, CategoryTransferReader, scan_count_value
 from wiki_cat_tool.gui.tabs.category_content_sync_tab import CategoryContentSyncTab
 from wiki_cat_tool.gui.tabs.category_transfer_tab import CategoryTransferTab
 from wiki_cat_tool.gui.widgets.category_articles import CategoryArticlesDialog
@@ -180,6 +180,134 @@ class SyncMemberReadingTests(unittest.TestCase):
         close.assert_called_once()
 
 
+class PreparedScanReuseTests(unittest.TestCase):
+    def setUp(self):
+        self.reader = FixtureReader()
+        self.addCleanup(self.reader.close)
+        self.pair = CategoryPair('Category:A', 'Категория:Новая', 'Q42')
+        self.cached = {**scan_row(), 'target_title': '', 'source_categories': ['Category:Child', 'Category:Other']}
+        self.reader.page_data['ru'] = {
+            'Статья А': page('Статья А', ns=0, categories=[dict(title=self.pair.target_title)]),
+            'Статья Б': page('Статья Б', ns=0, categories=[]),
+            'Категория:Дочерняя': page('Категория:Дочерняя'),
+        }
+
+    def worker(self, *, rows=None, pairs=None):
+        pairs = tuple(pairs or (self.pair,))
+        return CategoryContentSyncPreviewWorker(target_categories=[p.target_title for p in pairs],
+                    source_lang='en', target_lang='ru', family='wikipedia', process_articles=True,
+                    process_subcategories=True, article_depth=0, category_pairs=pairs,
+                    cached_members=rows if rows is not None else {self.pair.source_title: self.cached})
+
+    def run_worker(self, worker):
+        rows = []
+        worker.rows_ready.connect(lambda batch: rows.extend(batch))
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader', return_value=self.reader):
+            worker.run()
+        return rows
+
+    def test_completed_scan_is_reused_with_new_category_and_qid_and_only_target_membership_is_read(self):
+        worker = self.worker()
+        with patch.object(self.reader, 'members', side_effect=AssertionError('source reread')), \
+             patch.object(self.reader, 'item_links', side_effect=AssertionError('Wikidata reread')), \
+             patch.object(self.reader, 'transfer_members', side_effect=AssertionError('full rescan')), \
+             patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site', side_effect=AssertionError('site lookup')):
+            rows = self.run_worker(worker)
+        self.assertFalse(worker.failed, worker.failure_message)
+        self.assertEqual((self.pair.source_title, self.pair.target_title, 'Q42'),
+                         (rows[0]['source_title'], rows[0]['target_title'], rows[0]['qid']))
+        self.assertEqual('4+2', rows[0]['count_text'])
+        data = rows[0]['members']
+        self.assertEqual(('1+0', '1+1'), (scan_count_value(data, 'matched'), scan_count_value(data, 'additional')))
+        self.assertEqual([('ru', ['Статья А', 'Статья Б', 'Категория:Дочерняя'])], self.reader.page_calls)
+        self.assertEqual('', self.cached['target_title'])
+
+    def test_newly_prepared_subcategories_are_added_using_cached_source_members(self):
+        child = CategoryPair('Category:Child', 'Категория:Новая дочерняя', 'Q43')
+        self.reader.page_data['ru'][child.target_title] = page(child.target_title, categories=[dict(title=self.pair.target_title)])
+        cached = {**self.cached, 'target_categories': [], 'potential_categories': 0}
+        worker = self.worker(rows={self.pair.source_title: cached, child.source_title: {
+            **self.cached, 'source_title': child.source_title, 'source_categories': [], 'target_articles': [], 'target_categories': []}},
+            pairs=(self.pair, child))
+        with patch.object(self.reader, 'members', side_effect=AssertionError('source reread')):
+            rows = self.run_worker(worker)
+        self.assertFalse(worker.failed, worker.failure_message)
+        self.assertEqual([child.target_title], rows[0]['members']['target_categories'])
+        self.assertEqual('1+1', scan_count_value(rows[0]['members'], 'matched'))
+        self.assertEqual('1+0', scan_count_value(rows[0]['members'], 'additional'))
+
+    def test_only_previously_unscanned_rows_use_full_scan_and_target_reads_are_shared(self):
+        other = CategoryPair('Category:B', 'Категория:Другая', 'Q43')
+        worker = self.worker(pairs=(self.pair, other))
+        new_data = {**self.cached, 'source_title': other.source_title}
+        with patch.object(self.reader, 'transfer_members', return_value=new_data) as scan:
+            rows = self.run_worker(worker)
+        self.assertFalse(worker.failed, worker.failure_message)
+        scan.assert_called_once_with(other.source_title, articles=True, subcategories=True)
+        self.assertEqual(2, len(rows))
+        self.assertEqual(1, len(self.reader.page_calls))
+
+    def test_old_cached_rows_only_fetch_source_subcategory_titles_when_needed(self):
+        cached = {key: value for key, value in self.cached.items() if key != 'source_categories'}
+        worker = self.worker(rows={self.pair.source_title: cached})
+        with patch.object(self.reader, 'members', return_value=['Category:Child']) as members:
+            rows = self.run_worker(worker)
+        self.assertFalse(worker.failed, worker.failure_message)
+        members.assert_called_once_with(self.pair.source_title, 'subcat')
+        self.assertEqual(1, rows[0]['members']['total_categories'])
+
+    def test_cached_scan_honors_article_and_subcategory_modes(self):
+        for articles, subcategories in ((True, False), (False, True)):
+            with self.subTest(articles=articles, subcategories=subcategories):
+                worker = self.worker()
+                worker.process_articles, worker.process_subcategories = articles, subcategories
+                rows = self.run_worker(worker)
+                self.assertFalse(worker.failed, worker.failure_message)
+                data = rows[0]['members']
+                if articles:
+                    self.assertEqual(['Статья А', 'Статья Б'], data['target_articles'])
+                    self.assertNotIn('total_categories', data)
+                    self.assertNotIn('target_categories', data)
+                else:
+                    self.assertEqual([], data['target_articles'])
+                    self.assertEqual(['Категория:Дочерняя'], data['target_categories'])
+
+    def test_target_read_failure_does_not_fall_back_to_rescanning_or_claim_zero_additions(self):
+        worker = self.worker()
+        with patch.object(self.reader, 'pages', side_effect=APIRequestError('offline')), \
+             patch.object(self.reader, 'transfer_members') as scan:
+            rows = self.run_worker(worker)
+        self.assertTrue(worker.failed)
+        self.assertIn('offline', worker.failure_message)
+        self.assertEqual([], rows)
+        scan.assert_not_called()
+
+    def test_stopping_membership_refresh_does_not_emit_a_ready_plan(self):
+        worker = self.worker()
+        def stop(*_args, **_kwargs):
+            self.reader.stop_event.set()
+            return {}
+        with patch.object(self.reader, 'pages', side_effect=stop):
+            rows = self.run_worker(worker)
+        self.assertTrue(worker._stop)
+        self.assertFalse(worker.failed)
+        self.assertEqual([], rows)
+
+    def test_target_category_continuation_is_merged_and_requests_never_follow_redirects(self):
+        reader = CategoryTransferReader('en', 'ru', 'wikipedia', threading.Event())
+        self.addCleanup(reader.close)
+        packets = [dict(query=dict(pages=[page('Статья', ns=0, categories=[dict(title='Категория:Другая')])]),
+                        **{'continue': dict(clcontinue='next')}),
+                   dict(query=dict(pages=[page('Статья', ns=0, categories=[dict(title=self.pair.target_title)])]))]
+        data = {**self.cached, 'target_title': self.pair.target_title, 'target_articles': ['Статья'], 'target_categories': []}
+        with patch.object(reader, 'request', side_effect=packets) as request:
+            result = reader.refresh_member_availability([data])[0]
+        self.assertEqual({'Статья': True}, result['membership'])
+        self.assertEqual(0, result['additional'])
+        self.assertTrue(all(call.args[0] == 'ru' and call.args[1].get('cllimit') == 'max'
+                            and 'redirects' not in call.args[1] for call in request.call_args_list))
+
+
 class SyncMemberUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -203,6 +331,90 @@ class SyncMemberUiTests(unittest.TestCase):
         with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryContentSyncPreviewWorker') as preview:
             self.sync.load_scanned_categories(rows, 'en', include_subcategories=True)
         preview.assert_not_called()
+
+    def test_creation_completion_automatically_reuses_the_first_scan_and_enables_sync(self):
+        scan = CategoryTransferTab(self.parent)
+        tabs = self.parent.tabs = QTabWidget(self.parent)
+        tabs.addTab(scan, 'scan')
+        tabs.addTab(scan.creation_stage, 'prepare')
+        tabs.addTab(self.sync, 'sync')
+        scan.include_subcategories.setChecked(True)
+        cached = {**scan_row(), 'target_title': '', 'source_categories': ['Category:Child', 'Category:Other']}
+        scan._apply_row(cached)
+        scan._set_busy(False)
+        scan.open_links()
+        scan.creation_table.item(0, 1).setText('Категория:Созданная')
+        rows = scan._table_creation_rows()
+        self.assertEqual((CategoryCreationRow('Category:A', 'Категория:Созданная', ''),), rows)
+        scan._creation_rows = scan._write_rows = rows
+        scan._linked_context = scan._preview_context = scan._creation_context()
+        scan._creation_row_results = {'Category:A': dict(status='created', qid='Q42')}
+        scan.create_worker = Mock(failed=False, _stop=False, linked_categories=['Категория:Созданная'],
+                                  saved_edits=0, stats=dict(created=1, exists=0, linked=1, failed=0))
+        reader = FixtureReader()
+        self.addCleanup(reader.close)
+        reader.page_data['ru'] = {'Статья А': page('Статья А', ns=0, categories=[dict(title='Категория:Созданная')]),
+                                  'Статья Б': page('Статья Б', ns=0),
+                                  'Категория:Дочерняя': page('Категория:Дочерняя')}
+        # Preparation owns a snapshot even if the first table is subsequently cleared.
+        scan.clear_scan()
+        with patch.object(scan, '_offer_sync', return_value=True), \
+             patch('wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader', return_value=reader), \
+             patch.object(reader, 'transfer_members', side_effect=AssertionError('full rescan')):
+            scan._creation_finished()
+            self.assertIs(self.sync, tabs.currentWidget())
+            for _ in range(200):
+                QTest.qWait(10)
+                if self.sync.preview_worker is None:
+                    break
+        self.assertIsNone(self.sync.preview_worker)
+        self.assertTrue(self.sync._is_preview_signature_actual())
+        self.assertTrue(self.sync.start_btn.isEnabled())
+        self.assertIsNone(self.sync.sync_worker)
+        self.assertEqual('4+2', self.sync.preview_table.item(0, 3).text())
+        self.assertEqual('Q42', self.sync.preview_table.item(0, 2).text())
+        self.assertEqual(('1+0', '1+1'), (self.sync.preview_table.item(0, 6).text(), self.sync.preview_table.item(0, 7).text()))
+        self.assertEqual(('Статья А', 'Статья Б'), self.sync._member_plans()['категория:созданная']['articles'])
+        self.assertIn('Используем готовое сканирование: 1 из 1', self.sync.sync_log.toPlainText())
+
+    def test_preparation_cache_is_not_used_for_another_language_context(self):
+        scan = CategoryTransferTab(self.parent)
+        self.parent.tabs = QTabWidget(self.parent)
+        self.parent.tabs.addTab(scan, 'scan')
+        self.parent.tabs.addTab(self.sync, 'sync')
+        pair = CategoryPair('Category:A', 'Категория:А', 'Q1')
+        scan._linked_categories, scan._linked_pairs = [pair.target_title], {pair.target_title: pair}
+        scan._linked_context = scan._creation_context()
+        scan._preparation_scan_rows = {'Category:A': scan_row()}
+        scan._preparation_scan_context = ('de', 'ru', 'wikipedia')
+        with patch.object(self.sync, 'load_transfer_categories') as plain, \
+             patch.object(self.sync, 'load_prepared_categories') as cached:
+            scan.open_sync()
+        plain.assert_called_once()
+        cached.assert_not_called()
+
+    def test_failed_target_refresh_leaves_the_transfer_disabled(self):
+        reader = FixtureReader()
+        self.addCleanup(reader.close)
+        pair = CategoryPair('Category:A', 'Категория:А', 'Q1')
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader', return_value=reader), \
+             patch.object(reader, 'pages', side_effect=APIRequestError('offline')):
+            self.assertTrue(self.sync.load_prepared_categories([pair.target_title], 'en', pairs=(pair,),
+                                scanned_rows={'Category:A': {**scan_row(), 'source_categories': []}}, include_subcategories=True))
+            for _ in range(200):
+                QTest.qWait(10)
+                if self.sync.preview_worker is None:
+                    break
+        self.assertIsNone(self.sync.preview_worker)
+        self.assertFalse(self.sync._preview_ready)
+        self.assertFalse(self.sync.start_btn.isEnabled())
+        self.assertIn('offline', self.sync.sync_log.toPlainText())
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryContentSyncPreviewWorker') as preview:
+            self.sync.start_preview()
+        self.assertIn('Category:A', preview.call_args.kwargs['cached_members'])
+        self.sync.preview_worker = None
+        self.sync.source_lang_edit.setText('de')
+        self.assertIsNone(self.sync._prepared_scan_cache)
 
     def test_scan_handoff_reuses_all_lists_and_is_ready_without_another_scan(self):
         self.load_scan()

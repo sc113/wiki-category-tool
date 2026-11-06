@@ -106,6 +106,9 @@ class CategoryTransferTab(QWidget):
         self._linked_categories = []
         self._linked_context = None
         self._linked_pairs = {}
+        self._preparation_scan_rows = {}
+        self._preparation_scan_context = None
+        self._preparation_include_subcategories = False
         self._table_dirty = False
         self._rows_by_title = {}
         self._pending_context_reset = False
@@ -877,7 +880,7 @@ class CategoryTransferTab(QWidget):
             for row in rows:
                 data = {key: value for key, value in row.items()
                         if key not in {'error', 'target_articles', 'total', 'potential', 'membership', 'additional', 'additional_categories',
-                                       'total_categories', 'potential_categories', 'target_categories'}}
+                                       'total_categories', 'potential_categories', 'target_categories', 'source_categories'}}
                 self._apply_row({**data, 'status': 'loaded', 'total': None, 'potential': None})
         finally:
             self.table.setSortingEnabled(sorting)
@@ -1076,6 +1079,8 @@ class CategoryTransferTab(QWidget):
         self._linked_context = None
         self.sync_btn.setEnabled(False)
         if clear_table:
+            self._preparation_scan_rows = {}
+            self._preparation_scan_context = None
             self.creation_table.blockSignals(True)
             self.creation_table.setRowCount(0)
             self.creation_table.blockSignals(False)
@@ -1117,6 +1122,10 @@ class CategoryTransferTab(QWidget):
         self.links_source_lang.setText(self.source_lang.text())
         self.tsv_path.clear()
         self._invalidate_creation()
+        self._preparation_scan_rows = {row['source_title']: dict(row) for row in self._rows()
+                                       if row.get('status') == 'scanned' and 'target_articles' in row}
+        self._preparation_scan_context = self._context()
+        self._preparation_include_subcategories = self.include_subcategories.isChecked()
         self._fill_creation_table(rows)
         self._table_dirty = True
         self._open_links_page()
@@ -1782,11 +1791,18 @@ class CategoryTransferTab(QWidget):
         sync = getattr(self.parent_window, "category_content_sync_tab", None)
         if sync is None:
             return
-        if (sync.sync_worker and sync.sync_worker.isRunning()) or (sync.preview_worker and sync.preview_worker.isRunning()):
+        if (not sync._can_edit_preview()
+                or (sync.source_panel._fetch_worker and sync.source_panel._fetch_worker.isRunning())):
             self._warn("sync_busy")
             return
-        sync.load_transfer_categories(self._linked_categories, self._linked_context[0],
-                                      pairs=tuple(self._linked_pairs.values()))
+        pairs = tuple(self._linked_pairs.values())
+        if self._preparation_scan_rows and self._preparation_scan_context == self._linked_context:
+            if not sync.load_prepared_categories(self._linked_categories, self._linked_context[0], pairs=pairs,
+                                                 scanned_rows=self._preparation_scan_rows,
+                                                 include_subcategories=self._preparation_include_subcategories):
+                return
+        else:
+            sync.load_transfer_categories(self._linked_categories, self._linked_context[0], pairs=pairs)
         self.parent_window.tabs.setCurrentWidget(sync)
 
     def open_scan_sync(self):

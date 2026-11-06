@@ -392,6 +392,7 @@ class CategoryTransferReader:
         self._scan_metadata = {}
         self._scan_articles = {}
         self._scan_subcategories = {}
+        self._scan_source_categories = {}
         self._subcategory_links = {}
         self.include_subcategories = False
         self._scan_errors = {}
@@ -566,6 +567,7 @@ class CategoryTransferReader:
     def pages(self, lang: str, titles: list[str], *, props: str = "info|pageprops|langlinks|categoryinfo",
               resolve_redirects: bool = False) -> dict[str, dict]:
         result = {}
+        processed = 0
         preview = self._preview_activity is not None and self._preview_activity['phase'] == 'check_pages'
         if preview:
             self._preview_total(len(titles))
@@ -576,6 +578,8 @@ class CategoryTransferReader:
             base_params.update(rvprop="content", rvslots="main")
         if "langlinks" in props:
             base_params.update(lllang=self.target_lang, lllimit="max")
+        if 'categories' in props:
+            base_params.update(cllimit='max')
         for batch in self._title_batches(lang, titles, base_params):
             params = {**base_params, "titles": "|".join(batch)}
             aliases = {}
@@ -593,6 +597,8 @@ class CategoryTransferReader:
                         result[title] = dict(page)
                     else:
                         result[title].setdefault("langlinks", []).extend(page.get("langlinks", []))
+                        if 'categories' in props:
+                            result[title].setdefault('categories', []).extend(page.get('categories', []))
                 if not data.get("continue"):
                     break
                 params.update(data["continue"])
@@ -605,6 +611,9 @@ class CategoryTransferReader:
                     result[raw] = result[actual]
             if preview:
                 self._preview_advance(len(batch))
+            if 'categories' in props:
+                processed += len(batch)
+                self.on_activity(dict(phase='membership', checked=processed, total=len(titles)))
         return result
 
     @staticmethod
@@ -1082,6 +1091,7 @@ class CategoryTransferReader:
         """Share category, Wikidata and target-page lookups for a small batch."""
         self._scan_metadata, self._scan_articles, self._scan_errors = {}, {}, {}
         self._scan_subcategories = {}
+        self._scan_source_categories = {}
         titles = [row['source_title'] for row in rows]
         try:
             self.check_stop()
@@ -1096,6 +1106,7 @@ class CategoryTransferReader:
                     members = self.read_article_pages(title)
                     self._scan_articles[title] = [name for name, page in members.items() if page.get('ns') == 0]
                     self._scan_subcategories[title] = [name for name, page in members.items() if page.get('ns') == 14]
+                    self._scan_source_categories[title] = list(self._scan_subcategories[title])
                     articles.update(members)
                 except TransferStopped:
                     raise
@@ -1164,10 +1175,37 @@ class CategoryTransferReader:
         if subcategories:
             members = self.members(source, 'subcat')
             found = list(dict.fromkeys(self.subcategory_matches(members).values()))
-            result.update(total_categories=len(members), potential_categories=len(found), target_categories=found)
+            result.update(total_categories=len(members), potential_categories=len(found), target_categories=found,
+                          source_categories=members)
         result.update(self.member_availability(target_category, result['target_articles'], result.get('target_categories', ())))
         if not subcategories:
             result.pop('additional_categories', None)
+        return result
+
+    def refresh_member_availability(self, rows):
+        """Refresh cached candidates on the target wiki without rereading sources or Wikidata."""
+        titles = list(dict.fromkeys(title for row in rows
+                                   for title in (*row.get('target_articles', ()), *row.get('target_categories', ()))))
+        pages = self.pages(self.target_lang, titles, props='info|categories') if titles else {}
+        page_categories = {page['title']: page.get('categories', ()) for page in pages.values()}
+        result = []
+        for row in rows:
+            self.check_stop()
+            data = dict(row)
+            for key, namespace in (('target_articles', 0), ('target_categories', 14)):
+                if key in data:
+                    data[key] = list(dict.fromkeys(pages[title]['title'] for title in data[key]
+                                                   if self.valid_page(pages.get(title), namespace)))
+            membership = {}
+            for title in (*data.get('target_articles', ()), *data.get('target_categories', ())):
+                membership[title] = any(category['title'] == data['target_title']
+                                        for category in page_categories[title])
+            data.update(membership=membership, potential=len(data.get('target_articles', ())),
+                        additional=sum(not membership[title] for title in data.get('target_articles', ())))
+            if data.get('total_categories') is not None:
+                data.update(potential_categories=len(data.get('target_categories', ())),
+                            additional_categories=sum(not membership[title] for title in data.get('target_categories', ())))
+            result.append(data)
         return result
 
     def _page_matches(self, articles, namespace, cache):
@@ -1194,6 +1232,7 @@ class CategoryTransferReader:
         if error := self._scan_errors.pop(title, None):
             self._scan_articles.pop(title, None)
             self._scan_subcategories.pop(title, None)
+            self._scan_source_categories.pop(title, None)
             self._scan_metadata.pop(title, None)
             raise error
         metadata = self._scan_metadata.pop(title, None)
@@ -1203,11 +1242,12 @@ class CategoryTransferReader:
         result = {**row, **metadata, 'total': total, 'potential': len(found),
                   'target_articles': found, 'status': 'scanned'}
         total_categories, found_categories = self._scan_subcategories.pop(title, (0, []))
+        source_categories = self._scan_source_categories.pop(title, [])
         for key in ('total_categories', 'potential_categories', 'target_categories'):
             result.pop(key, None)
         if self.include_subcategories:
             result.update(total_categories=total_categories, potential_categories=len(found_categories),
-                          target_categories=found_categories)
+                          target_categories=found_categories, source_categories=source_categories)
         result.update(self.member_availability(result.get('target_title', ''), found,
                                                found_categories if self.include_subcategories else ()))
         if not self.include_subcategories:

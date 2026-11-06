@@ -5,6 +5,7 @@ Workers для синхронизации содержимого категор�
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 import time
 import threading
@@ -18,7 +19,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .base_worker import BaseWorker
 from ..core.api_client import WikimediaAPIClient
-from ..core.category_transfer import CategoryPair, CategoryTransferReader, TransferStopped
+from ..core.category_transfer import CategoryPair, CategoryTransferReader, TransferStopped, message
 from ..core.localization import translate_runtime
 from ..core.namespace_manager import get_policy_prefix, strip_ns_prefix
 from ..core.redundant_category_logic import (
@@ -268,6 +269,7 @@ class CategoryContentSyncPreviewWorker(QThread):
         process_subcategories: bool,
         article_depth: int,
         category_pairs: tuple[CategoryPair, ...] = (),
+        cached_members: dict | None = None,
     ):
         super().__init__()
         self.target_categories = list(target_categories or [])
@@ -287,6 +289,7 @@ class CategoryContentSyncPreviewWorker(QThread):
         self.failed = False
         self.failure_message = ""
         self.category_pairs = {pair.target_title.casefold(): pair for pair in category_pairs}
+        self.cached_members = deepcopy(cached_members) if cached_members is not None else None
 
     def request_stop(self):
         self._stop = True
@@ -648,6 +651,75 @@ class CategoryContentSyncPreviewWorker(QThread):
         except Exception as error:
             return {**row, 'status': 'error', 'error': str(error)}
 
+    def _reuse_scan(self, targets):
+        self._member_reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family,
+                                                     self._stop_event, 0.12)
+        reader = self._member_reader
+        reader.on_retry = self.progress.emit
+        reader.on_activity = lambda data: self.progress.emit(message('sync_refresh_members', **data))
+        by_source = {pair.source_title: pair for pair in self.category_pairs.values()}
+        reused = sum(self.cached_members.get(pair.source_title, {}).get('status') == 'scanned'
+                     and 'target_articles' in self.cached_members.get(pair.source_title, {})
+                     for pair in self.category_pairs.values())
+        self.progress.emit(message('sync_reuse_scan', count=reused, total=len(targets)))
+        prepared, errors = [], {}
+        for target in targets:
+            reader.check_stop()
+            pair = self.category_pairs.get(target.casefold())
+            if pair is None:
+                errors[target] = message('pair_changed')
+                continue
+            try:
+                cached = self.cached_members.get(pair.source_title, {})
+                if cached.get('status') == 'scanned' and 'target_articles' in cached:
+                    data = dict(cached)
+                else:
+                    self.progress.emit(message('sync_scan_missing', title=pair.source_title))
+                    data = reader.transfer_members(pair.source_title, articles=self.process_articles,
+                                                    subcategories=self.process_subcategories)
+                data.update(source_title=pair.source_title, target_title=target, qid=pair.qid)
+                if not self.process_articles:
+                    data.update(target_articles=[], total=0, potential=0, additional=0)
+                if self.process_subcategories:
+                    source_categories = data.get('source_categories')
+                    if source_categories is None:
+                        source_categories = reader.members(pair.source_title, 'subcat')
+                    data['target_categories'] = list(dict.fromkeys([
+                        *data.get('target_categories', ()),
+                        *(by_source[title].target_title for title in source_categories if title in by_source),
+                    ]))
+                    data['total_categories'] = len(source_categories)
+                    data['source_categories'] = source_categories
+                else:
+                    for key in ('total_categories', 'potential_categories', 'target_categories', 'additional_categories', 'source_categories'):
+                        data.pop(key, None)
+                prepared.append(data)
+            except TransferStopped:
+                raise
+            except Exception as error:
+                errors[target] = str(error)
+        refreshed = {row['target_title']: row for row in reader.refresh_member_availability(prepared)}
+        source_host = reader.api._build_api_url(self.family, self.source_lang).split('/w/')[0]
+        target_host = reader.api._build_api_url(self.family, self.target_lang).split('/w/')[0]
+        for target in targets:
+            reader.check_stop()
+            pair = self.category_pairs.get(target.casefold())
+            source, qid = (pair.source_title, pair.qid) if pair else ('', '')
+            row = dict(phase='details', row_key=target.casefold(), source_title=source, target_title=target,
+                       source_url=source_host + '/wiki/' + quote(source.replace(' ', '_')) if source else '',
+                       target_url=target_host + '/wiki/' + quote(target.replace(' ', '_')),
+                       qid=qid, qid_url='https://www.wikidata.org/wiki/' + qid if qid else '')
+            if target in errors:
+                row.update(status='error', error=errors[target])
+            else:
+                data = refreshed[target]
+                counts = [str(data.get('total') or 0)] if self.process_articles else []
+                if self.process_subcategories:
+                    counts.append(str(data.get('total_categories') or 0))
+                row.update(status='preview_ready', count_text='+'.join(counts), members=data)
+            self.rows_ready.emit([row])
+            self.category_done.emit()
+
     def _run_preview(self):
         if not self.process_articles and not self.process_subcategories:
             self._set_failure(self._t("log.sync_worker.no_modes_selected"))
@@ -674,6 +746,10 @@ class CategoryContentSyncPreviewWorker(QThread):
         if not normalized_targets:
             self._set_failure(self._t("log.sync_worker.no_valid_targets"))
             self.progress.emit(_t("log.sync_preview.empty_categories"))
+            return
+
+        if self.cached_members is not None:
+            self._reuse_scan(normalized_targets)
             return
 
         try:

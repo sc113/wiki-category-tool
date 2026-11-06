@@ -180,6 +180,7 @@ class SubcategoryScanTests(unittest.TestCase):
         self.assertEqual((2, 2, 1, 1), (result['total'], result['total_categories'], result['potential'], result['potential_categories']))
         self.assertEqual(['Статья А'], result['target_articles'])
         self.assertEqual(['Категория:Дочерняя'], result['target_categories'])
+        self.assertEqual(['Category:Child A', 'Category:Child B'], result['source_categories'])
         self.reader.read_article_pages.assert_called_once_with('Category:Root')
         self.assertNotIn('Категория:Глубже', result['target_categories'])
         self.assertEqual('2+2', scan_count_value(result, 'total'))
