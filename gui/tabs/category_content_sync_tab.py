@@ -501,7 +501,7 @@ class CategoryContentSyncTab(QWidget):
         self.read_file_btn.setProperty('transfer_text_key', 'read_file')
         set_category_button_tooltip(self.read_file_btn, 'read_sync_file', self._stage_t)
         self.read_file_btn.clicked.connect(self._open_sync_category_file)
-        tools.addWidget(self.read_file_btn)
+        self.source_panel.file_row.layout().addWidget(self.read_file_btn)
         self.delete_preview_btn = QPushButton(self._stage_t("delete"))
         set_category_button_tooltip(self.delete_preview_btn, 'delete', self._stage_t)
         set_category_button_tooltip(self.clear_skipped_btn, 'clear_skipped', self._stage_t)
@@ -792,7 +792,7 @@ class CategoryContentSyncTab(QWidget):
         self.view_tabs.setTabEnabled(1, self._preview_mode or self._preview_ready or self.preview_table.rowCount() > 0)
         self.view_tabs.setCurrentIndex(1 if self._preview_mode else 0)
         self.view_tabs.blockSignals(blocked)
-        self.table_tools.show()
+        self.table_tools.setVisible(self._preview_mode)
         self.table_tools.setTitle(self._stage_t('table_tools' if self._preview_mode else 'list_tools'))
         self.delete_preview_btn.setVisible(self._preview_mode)
         self.clear_skipped_btn.setVisible(self._preview_mode)
@@ -3197,6 +3197,22 @@ class CategoryContentSyncTab(QWidget):
         family, target_lang = self.get_current_family(), self.get_current_language()
         targets = self._normalized_target_categories(categories, family, target_lang)
         self._prefill_preview_rows(target_categories=targets, target_lang=target_lang, family=family)
+        source_host = WikimediaAPIClient()._build_api_url(family, source_lang).split('/w/')[0]
+        target_host = WikimediaAPIClient()._build_api_url(family, target_lang).split('/w/')[0]
+        for pair in self._transfer_pairs:
+            data = scanned_rows.get(pair.source_title, {})
+            counts = [data.get('total')]
+            if include_subcategories:
+                counts.append(data.get('total_categories'))
+            row = dict(phase='details', row_key=pair.target_title.casefold(),
+                       source_title=pair.source_title, target_title=pair.target_title,
+                       source_url=source_host + '/wiki/' + quote(pair.source_title.replace(' ', '_')),
+                       target_url=target_host + '/wiki/' + quote(pair.target_title.replace(' ', '_')),
+                       qid=pair.qid, qid_url='https://www.wikidata.org/wiki/' + pair.qid if pair.qid else '',
+                       count_text='+'.join(str(value) if value is not None else '—' for value in counts), status='previewing')
+            if 'target_articles' in data:
+                row['members'] = {**data, 'target_title': pair.target_title}
+            self._append_preview_row(row)
         self._running_preview_signature = self._current_signature()
         self._prepared_scan_cache = scanned_rows
         self._prepared_scan_signature = self._running_preview_signature
@@ -3260,6 +3276,9 @@ class CategoryContentSyncTab(QWidget):
                     )
                 except Exception:
                     pass
+            preparation = getattr(self.parent_window, 'category_transfer_tab', None)
+            if preparation is not None:
+                preparation.open_sync(activate=False)
 
     def changeEvent(self, event):
         try:

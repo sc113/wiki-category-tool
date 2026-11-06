@@ -109,6 +109,7 @@ class CategoryTransferTab(QWidget):
         self._preparation_scan_rows = {}
         self._preparation_scan_context = None
         self._preparation_include_subcategories = False
+        self._sync_applied_state = None
         self._table_dirty = False
         self._rows_by_title = {}
         self._pending_context_reset = False
@@ -1056,7 +1057,11 @@ class CategoryTransferTab(QWidget):
         except Exception as error:
             self._warn("failed", error=error)
             return
+        scan_rows, include_subcategories = self._available_preparation_scan()
         self._invalidate_creation()
+        self._preparation_scan_rows = scan_rows
+        self._preparation_scan_context = self._creation_context()
+        self._preparation_include_subcategories = include_subcategories
         self._fill_creation_table(rows)
         self._table_dirty = True
 
@@ -1074,6 +1079,7 @@ class CategoryTransferTab(QWidget):
         self._linked_categories = []
         self._linked_pairs = {}
         self._linked_context = None
+        self._sync_applied_state = None
         self.sync_btn.setEnabled(False)
         if clear_table:
             self._preparation_scan_rows = {}
@@ -1120,7 +1126,7 @@ class CategoryTransferTab(QWidget):
         self.tsv_path.clear()
         self._invalidate_creation()
         self._preparation_scan_rows = {row['source_title']: dict(row) for row in self._rows()
-                                       if row.get('status') == 'scanned' and 'target_articles' in row}
+                                       if row.get('status') == 'scanned'}
         self._preparation_scan_context = self._context()
         self._preparation_include_subcategories = self.include_subcategories.isChecked()
         self._fill_creation_table(rows)
@@ -1548,6 +1554,7 @@ class CategoryTransferTab(QWidget):
     def preview_creation(self):
         if self._busy or not self._validate_context(creation=True):
             return
+        self._sync_applied_state = None
         try:
             rows = (self._table_creation_rows() if self._table_dirty
                     else read_creation_tsv(self.tsv_path.text().strip(), allow_untranslated=True))
@@ -1795,25 +1802,55 @@ class CategoryTransferTab(QWidget):
         box.exec()
         return box.clickedButton() == yes
 
-    def open_sync(self):
+    def _available_preparation_scan(self):
+        context = self._creation_context()
+        rows, include_subcategories = {}, False
+        if self._preparation_scan_context == context:
+            rows.update(self._preparation_scan_rows)
+            include_subcategories = self._preparation_include_subcategories
+        if self._context() == context:
+            current = {row['source_title']: dict(row) for row in self._rows() if row.get('status') == 'scanned'}
+            if current:
+                for source, data in current.items():
+                    previous = rows.get(source, {})
+                    if ('target_articles' in previous and 'target_articles' not in data
+                            and all(previous.get(key) == data.get(key) for key in
+                                    ('qid', 'total', 'potential', 'total_categories', 'potential_categories'))):
+                        data = {**previous, **data}
+                    rows[source] = data
+                include_subcategories = self.include_subcategories.isChecked()
+        return rows, include_subcategories
+
+    def open_sync(self, *, activate=True):
         if self._busy or not self._linked_categories or self._linked_context != self._creation_context():
-            return
+            return False
         sync = getattr(self.parent_window, "category_content_sync_tab", None)
         if sync is None:
-            return
+            return False
+        pairs = tuple(self._linked_pairs.values())
+        state = (self._linked_context, tuple(self._linked_categories), pairs)
+        if self._sync_applied_state == state:
+            if activate:
+                self.parent_window.tabs.setCurrentWidget(sync)
+            return True
         if (not sync._can_edit_preview()
                 or (sync.source_panel._fetch_worker and sync.source_panel._fetch_worker.isRunning())):
-            self._warn("sync_busy")
-            return
-        pairs = tuple(self._linked_pairs.values())
-        if self._preparation_scan_rows and self._preparation_scan_context == self._linked_context:
+            if activate:
+                self._warn("sync_busy")
+            return False
+        scan_rows, include_subcategories = self._available_preparation_scan()
+        sources = {pair.source_title for pair in pairs}
+        scan_rows = {source: data for source, data in scan_rows.items() if source in sources}
+        if scan_rows:
             if not sync.load_prepared_categories(self._linked_categories, self._linked_context[0], pairs=pairs,
-                                                 scanned_rows=self._preparation_scan_rows,
-                                                 include_subcategories=self._preparation_include_subcategories):
-                return
+                                                 scanned_rows=scan_rows, include_subcategories=include_subcategories):
+                return False
         else:
             sync.load_transfer_categories(self._linked_categories, self._linked_context[0], pairs=pairs)
-        self.parent_window.tabs.setCurrentWidget(sync)
+        self._sync_applied_state = state
+        if activate:
+            self.parent_window.tabs.setCurrentWidget(sync)
+        return True
 
     def open_scan_sync(self):
         if self._busy or not self._scan_sync_rows():
@@ -1981,6 +2018,7 @@ class CategoryTransferTab(QWidget):
         pending = tuple(not self._busy and value for value in (missing if missing is not None else self._preparation_missing_columns()))
         style = (
             'QTabWidget, QTabBar { background: transparent; }'
+            'QTabWidget::tab-bar { left: 10px; }'
             f"QTabWidget::pane {{ background: {base}; border: 1px solid {border}; border-radius: 8px; }}"
             f"QTabBar::tab {{ background: {header}; color: {text}; border: 1px solid {border}; "
             "padding: 6px 10px; border-top-left-radius: 8px; border-top-right-radius: 8px; }"

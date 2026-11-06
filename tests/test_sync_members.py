@@ -393,6 +393,96 @@ class SyncMemberUiTests(unittest.TestCase):
         plain.assert_called_once()
         cached.assert_not_called()
 
+    def test_tsv_preparation_and_sidebar_navigation_reuse_first_scan_without_open_links_button(self):
+        scan = self.parent.category_transfer_tab = CategoryTransferTab(self.parent)
+        tabs = self.parent.tabs = QTabWidget(self.parent)
+        tabs.resize(1280, 900)
+        tabs.addTab(scan, 'scan')
+        tabs.addTab(scan.creation_stage, 'prepare')
+        tabs.addTab(self.sync, 'sync')
+        scan.include_subcategories.setChecked(True)
+        data = {**scan_row(), 'target_title': '', 'source_categories': ['Category:Child', 'Category:Other']}
+        scan._apply_row(data)
+        scan._set_busy(False)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'categories.tsv'
+            path.write_text('Category:A\tКатегория:Связанная\tbody\n', encoding='utf-8')
+            scan.tsv_path.setText(str(path))
+            scan.import_tsv()
+        self.assertEqual(['Статья А', 'Статья Б'], scan._preparation_scan_rows['Category:A']['target_articles'])
+        scan.clear_scan()
+        pair = CategoryPair('Category:A', 'Категория:Связанная', 'Q42')
+        scan._linked_context = scan._creation_context()
+        scan._linked_categories, scan._linked_pairs = [pair.target_title], {pair.target_title: pair}
+        tabs.setCurrentWidget(scan.creation_stage)
+        self.parent.show()
+        self.app.processEvents()
+        reader = FixtureReader()
+        self.addCleanup(reader.close)
+        reader.page_data['ru'] = {'Статья А': page('Статья А', ns=0), 'Статья Б': page('Статья Б', ns=0),
+                                  'Категория:Дочерняя': page('Категория:Дочерняя')}
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader', return_value=reader), \
+             patch.object(reader, 'transfer_members', side_effect=AssertionError('full rescan')), \
+             patch.object(reader, 'members', side_effect=AssertionError('source reread')):
+            tabs.setCurrentWidget(self.sync)
+            self.assertTrue(self.sync._preview_mode)
+            self.assertEqual(1, self.sync.view_tabs.currentIndex())
+            self.assertEqual('4+2', self.sync.preview_table.item(0, 3).text())
+            self.assertEqual('Q42', self.sync.preview_table.item(0, 2).text())
+            for _ in range(200):
+                QTest.qWait(10)
+                if self.sync.preview_worker is None:
+                    break
+        self.assertIsNone(self.sync.preview_worker)
+        self.assertTrue(self.sync._is_preview_signature_actual())
+        self.assertTrue(self.sync.start_btn.isEnabled())
+        self.assertEqual('2+1', self.sync.preview_table.item(0, 7).text())
+        with patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.CategoryContentSyncPreviewWorker') as repeated_preview:
+            self.sync.preview_btn.click()
+        repeated_preview.assert_not_called()
+        item = self.sync.preview_table.item(0, 6)
+        inventory = item.data(Qt.UserRole + 3)
+        self.sync._set_member_inventory(0, {**inventory, 'target_articles': ['Статья А']})
+        with patch.object(self.sync, 'load_prepared_categories') as reload:
+            tabs.setCurrentWidget(scan.creation_stage)
+            tabs.setCurrentWidget(self.sync)
+        reload.assert_not_called()
+        self.assertEqual(('Статья А',), self.sync._member_plans()['категория:связанная']['articles'])
+
+    def test_preparation_started_before_scan_uses_current_scan_at_handoff(self):
+        scan = CategoryTransferTab(self.parent)
+        self.parent.tabs = QTabWidget(self.parent)
+        self.parent.tabs.addTab(scan, 'scan')
+        self.parent.tabs.addTab(self.sync, 'sync')
+        scan._apply_row({**scan_row(), 'target_title': ''})
+        pair = CategoryPair('Category:A', 'Категория:Новая', 'Q42')
+        scan._linked_categories, scan._linked_pairs = [pair.target_title], {pair.target_title: pair}
+        scan._linked_context = scan._creation_context()
+        self.assertEqual({}, scan._preparation_scan_rows)
+        with patch.object(self.sync, 'load_prepared_categories', return_value=True) as load:
+            scan.open_sync()
+        self.assertEqual(['Статья А', 'Статья Б'], load.call_args.kwargs['scanned_rows']['Category:A']['target_articles'])
+
+    def test_reloading_a_report_keeps_matching_preparation_inventory(self):
+        scan = CategoryTransferTab(self.parent)
+        self.parent.tabs = QTabWidget(self.parent)
+        self.parent.tabs.addTab(scan, 'scan')
+        self.parent.tabs.addTab(scan.creation_stage, 'prepare')
+        scan.include_subcategories.setChecked(True)
+        scan._apply_row({**scan_row(), 'additional': 1, 'additional_categories': 1,
+                         'membership': {'Статья А': True, 'Статья Б': False, 'Категория:Дочерняя': False}})
+        scan._set_busy(False)
+        scan.open_links()
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder) / 'report.tsv')
+            with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.QFileDialog.getSaveFileName', return_value=(path, '')):
+                scan.export_report()
+            scan.import_report(path)
+        self.assertNotIn('target_articles', scan._rows()[0])
+        cached, subcategories = scan._available_preparation_scan()
+        self.assertEqual(['Статья А', 'Статья Б'], cached['Category:A']['target_articles'])
+        self.assertTrue(subcategories)
+
     def test_failed_target_refresh_leaves_the_transfer_disabled(self):
         reader = FixtureReader()
         self.addCleanup(reader.close)
