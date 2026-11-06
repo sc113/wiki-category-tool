@@ -270,6 +270,10 @@ class CategoryWorkspaceFrame(QGroupBox):
         row.addWidget(workspace, 1)
 
 
+def category_attention_palette():
+    return '#f0bd57', '#192d36', '#c78d24', '#ffce70', '#dda840'
+
+
 def highlight_next_action(button, active, theme, *, prominent=False):
     active = bool(active and button.isEnabled())
     if (button.property('categoryNextAction') == active and button.property('categoryActionTheme') == theme
@@ -280,9 +284,10 @@ def highlight_next_action(button, active, theme, *, prominent=False):
     button.setProperty('categoryActionProminent', prominent)
     color = {'light': '#287fa3', 'dark': '#72c9f0', 'teal': '#64cad0'}.get(theme, '#64cad0')
     if active and prominent:
-        button.setStyleSheet('QPushButton { background: #f0bd57; color: #192d36; border: 1px solid #c78d24; font-weight: 700; } '
-                            'QPushButton:hover { background: #ffce70; } '
-                            'QPushButton:pressed { background: #dda840; }')
+        background, text, border, hover, pressed = category_attention_palette()
+        button.setStyleSheet(f'QPushButton, QToolButton {{ background: {background}; color: {text}; border: 1px solid {border}; font-weight: 700; }} '
+                            f'QPushButton:hover, QToolButton:hover {{ background: {hover}; }} '
+                            f'QPushButton:pressed, QToolButton:pressed {{ background: {pressed}; }}')
     else:
         button.setStyleSheet(f'QPushButton, QToolButton {{ border: 1px solid {color}; }}' if active else '')
 

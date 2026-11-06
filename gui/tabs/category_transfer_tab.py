@@ -28,7 +28,7 @@ from ...workers.category_transfer_worker import (
 )
 from ..widgets.ui_helpers import category_table_palette, category_table_style, create_spin_control, add_info_button, inc_progress, init_progress, log_message, set_reading_progress, style_transfer_languages
 from ..widgets.shared_panels import FileInputRow
-from ..widgets.category_stage import CategoryLogPanel, CategoryParametersPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, category_menu_button, highlight_next_action, refresh_category_toolbar, set_category_button_tooltip, refresh_category_button_tooltips
+from ..widgets.category_stage import CategoryLogPanel, CategoryParametersPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, category_menu_button, category_attention_palette, highlight_next_action, refresh_category_toolbar, set_category_button_tooltip, refresh_category_button_tooltips
 from ..widgets.category_autofill import title_fill_dialog
 from ..widgets.table_history import TableHistory, table_action, pause_sorting
 from ..widgets.category_plan import category_plan_widget
@@ -596,15 +596,12 @@ class CategoryTransferTab(QWidget):
                                             total=self.table.rowCount(), remaining=len(pending), count=empty_count))
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
         highlight_next_action(self.clear_btn, not busy and empty_count > 0, theme, prominent=True)
-        needs_fill = any((self.creation_table.item(row, 5).data(Qt.UserRole) or '') in {'needs_translation', 'needs_content'}
-                         for row in range(self.creation_table.rowCount()))
         for button, active in ((self.load_btn, not has_scan_rows),
                                (self.scan_btn, has_scan_rows and not scanned), (self.next_btn, scanned and not empty_count),
                                (self.read_creation_btn, not has_creation_rows),
-                               (self.incomplete_btn, needs_fill), (self.autofill_btn, needs_fill),
-                               (self.check_links_btn, has_creation_rows and not needs_fill and not self.create_btn.isEnabled() and not self.sync_btn.isEnabled()),
                                (self.create_btn, self.create_btn.isEnabled()), (self.sync_btn, self.sync_btn.isEnabled())):
             highlight_next_action(button, not busy and active, theme)
+        self._refresh_preparation_guidance()
         self._reindex()
         for name in ("scan_history", "creation_history"):
             history = getattr(self, name, None)
@@ -1202,6 +1199,23 @@ class CategoryTransferTab(QWidget):
         if not self.creation_table.rowCount():
             self.creation_summary.setText(self._t('prepare_start_hint'))
         self.creation_summary.setToolTip(self._t('list_summary', total=self.creation_table.rowCount(), **counts))
+        self._refresh_preparation_guidance()
+
+    def _preparation_missing_columns(self):
+        return tuple(any(self.creation_table.item(row, column) is None
+                         or not self.creation_table.item(row, column).text().strip()
+                         for row in range(self.creation_table.rowCount())) for column in (1, 2))
+
+    def _refresh_preparation_guidance(self):
+        missing = self._preparation_missing_columns()
+        needs_fill = any(missing)
+        theme = getattr(self.parent_window, '_theme_mode', 'teal')
+        highlight_next_action(self.autofill_btn, not self._busy and needs_fill, theme, prominent=True)
+        highlight_next_action(self.incomplete_btn, not self._busy and needs_fill, theme)
+        highlight_next_action(self.check_links_btn, not self._busy and bool(self.creation_table.rowCount())
+                              and not needs_fill and not self.create_btn.isEnabled() and not self.sync_btn.isEnabled(),
+                              theme, prominent=True)
+        self._style_autofill_tabs(theme, missing)
 
     def _show_creation_detail(self):
         row = self.creation_table.currentRow()
@@ -1237,12 +1251,8 @@ class CategoryTransferTab(QWidget):
         start = self.creation_table.currentRow() + 1
         for offset in range(count):
             row = (start + offset) % count
-            status = self.creation_table.item(row, 5)
-            code = status.data(Qt.UserRole)
-            if code == "editing":
-                code = status.data(Qt.UserRole + 1)
             missing_title = not self.creation_table.item(row, 1).text().strip()
-            missing_content = code == "needs_content" and not self.creation_table.item(row, 2).text().strip()
+            missing_content = not self.creation_table.item(row, 2).text().strip()
             if missing_title or missing_content:
                 col = 1 if missing_title else 2
                 item = self.creation_table.item(row, col)
@@ -1946,7 +1956,6 @@ class CategoryTransferTab(QWidget):
     def _apply_table_theme(self):
         self._align_scan_input_captions()
         theme = getattr(self.parent_window, "_theme_mode", "teal")
-        base, _, text, header, _, border, _, selected, _ = category_table_palette(theme)
         for table in (self.table, self.creation_table):
             table.setStyleSheet(category_table_style(theme))
         for source, badge in ((self.source_lang, self.target_label), (self.links_source_lang, self.links_target_label)):
@@ -1954,13 +1963,7 @@ class CategoryTransferTab(QWidget):
         muted = {'light': '#526a7a', 'dark': '#a3b3c5', 'teal': '#91b9c5'}.get(theme, '#91b9c5')
         for label in (self.creation_summary, self.scan_guidance):
             label.setStyleSheet(f'color: {muted}; padding: 2px 0;')
-        self.autofill_tabs.setStyleSheet(
-            'QTabWidget, QTabBar { background: transparent; }'
-            f"QTabWidget::pane {{ background: {base}; border: 1px solid {border}; border-radius: 8px; }}"
-            f"QTabBar::tab {{ background: {header}; color: {text}; border: 1px solid {border}; "
-            "padding: 6px 10px; border-top-left-radius: 8px; border-top-right-radius: 8px; }"
-            f"QTabBar::tab:selected {{ background: {selected}; font-weight: bold; }}"
-        )
+        self._style_autofill_tabs(theme)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 2)
             if item and re.fullmatch(r"Q[1-9][0-9]*", item.text()):
@@ -1972,6 +1975,26 @@ class CategoryTransferTab(QWidget):
                     self._style_wikidata_link(qid)
             item = self.creation_table.item(row, 5)
             self._highlight_incomplete(row, item.data(Qt.UserRole) if item else "editing")
+
+    def _style_autofill_tabs(self, theme, missing=None):
+        base, _, text, header, _, border, _, selected, _ = category_table_palette(theme)
+        pending = tuple(not self._busy and value for value in (missing if missing is not None else self._preparation_missing_columns()))
+        style = (
+            'QTabWidget, QTabBar { background: transparent; }'
+            f"QTabWidget::pane {{ background: {base}; border: 1px solid {border}; border-radius: 8px; }}"
+            f"QTabBar::tab {{ background: {header}; color: {text}; border: 1px solid {border}; "
+            "padding: 6px 10px; border-top-left-radius: 8px; border-top-right-radius: 8px; }"
+            f"QTabBar::tab:selected {{ background: {selected}; font-weight: bold; }}"
+        )
+        background, attention_text, attention_border, hover, _ = category_attention_palette()
+        for index, position in enumerate(('first', 'last')):
+            self.autofill_tabs.widget(index).setProperty('categoryNeedsFill', pending[index])
+            if pending[index]:
+                style += (f'QTabBar::tab:{position} {{ background: {background}; color: {attention_text}; '
+                          f'border: 1px solid {attention_border}; font-weight: bold; }}'
+                          f'QTabBar::tab:{position}:hover {{ background: {hover}; }}')
+        if self.autofill_tabs.styleSheet() != style:
+            self.autofill_tabs.setStyleSheet(style)
 
     def changeEvent(self, event):
         super().changeEvent(event)
