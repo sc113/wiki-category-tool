@@ -2,7 +2,9 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 import os
+import csv
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -16,6 +18,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 from wiki_cat_tool.core.api_client import APIRequestError
+from wiki_cat_tool.core.category_transfer import scan_count_value
 from wiki_cat_tool.gui.tabs.category_content_sync_tab import CategoryContentSyncTab
 from wiki_cat_tool.gui.tabs.category_transfer_tab import CategoryTransferTab
 from wiki_cat_tool.gui.widgets.category_articles import CategoryArticlesDialog
@@ -62,6 +65,20 @@ class SyncMemberReadingTests(unittest.TestCase):
         self.assertEqual((1, 0), (result['potential'], result['additional']))
         self.assertEqual((1, 1), (result['potential_categories'], result['additional_categories']))
         self.assertEqual({'Одна': True, 'Категория:Дочерняя': False}, result['membership'])
+        self.assertEqual('1+0', scan_count_value(result, 'matched'))
+        self.assertEqual('0+1', scan_count_value(result, 'additional'))
+
+    def test_redirect_members_are_never_resolved_to_their_destination_or_matched(self):
+        for namespace, title, destination in ((0, 'Redirect', 'Одна'), (14, 'Category:Redirect', 'Категория:Дочерняя')):
+            kind = 'page' if namespace == 0 else 'subcat'
+            self.reader.graph[('Category:A', kind)] = [title]
+            self.reader.page_data['en'][title] = page(title, ns=namespace, qid='redirect', redirect='')
+            self.reader.links['redirect'] = destination
+        result = self.reader.transfer_members('Category:A', subcategories=True)
+        self.assertEqual([], result['target_articles'])
+        self.assertEqual([], result['target_categories'])
+        self.assertEqual((0, 0), (result['potential'], result['potential_categories']))
+        self.assertFalse(any(lang == 'ru' for lang, _titles in self.reader.page_calls))
 
     def test_source_language_category_read_returns_only_existing_target_analogs(self):
         self.reader.source_lang = 'pt'
@@ -191,7 +208,7 @@ class SyncMemberUiTests(unittest.TestCase):
         self.load_scan()
         self.assertEqual(8, self.sync.preview_table.columnCount())
         self.assertEqual(4, self.sync.preview_table.horizontalHeader().visualIndex(6))
-        self.assertEqual('2+1', self.sync.preview_table.item(0, 6).text())
+        self.assertEqual('—', self.sync.preview_table.item(0, 6).text())
         self.assertEqual('4+2', self.sync.preview_table.item(0, 3).text())
         self.assertTrue(self.sync._is_preview_signature_actual())
         self.assertTrue(self.sync.start_btn.isEnabled())
@@ -240,7 +257,7 @@ class SyncMemberUiTests(unittest.TestCase):
             self.sync._review_members(0)
         self.assertEqual(('Статья Б',), self.sync._member_plans()['категория:а']['articles'])
         self.assertEqual(('Статья А', 'Статья Б'), self.sync._member_plans()['категория:б']['articles'])
-        self.assertEqual('1+1', self.sync.preview_table.item(0, 6).text())
+        self.assertEqual('—', self.sync.preview_table.item(0, 6).text())
         self.sync.preview_history.undo()
         self.assertEqual(('Статья А', 'Статья Б'), self.sync._member_plans()['категория:а']['articles'])
         worker.return_value.request_stop.assert_called()
@@ -269,8 +286,69 @@ class SyncMemberUiTests(unittest.TestCase):
         self.sync._review_members(0, only_additional=True)
         self.assertEqual(['Статья Б', 'Категория:Дочерняя'], seen)
         self.assertEqual(('Статья А',), self.sync._member_plans()['категория:а']['articles'])
-        self.assertEqual('1+1', self.sync.preview_table.item(0, 6).text())
+        self.assertEqual('1+0', self.sync.preview_table.item(0, 6).text())
         self.assertEqual('0+1', self.sync.preview_table.item(0, 7).text())
+
+    def test_scanning_and_sync_show_disjoint_matched_and_addable_counts_and_lists(self):
+        data = {**scan_row(), 'additional': 1, 'additional_categories': 1,
+                'membership': {'Статья А': True, 'Статья Б': False, 'Категория:Дочерняя': False}}
+        scan = CategoryTransferTab(self.parent)
+        scan._apply_row(data)
+        self.load_scan([data])
+        self.assertEqual(('1+0', '1+1'), (scan.table.item(0, 5).text(), scan.table.item(0, 7).text()))
+        self.assertEqual(('1+0', '1+1'), (self.sync.preview_table.item(0, 6).text(), self.sync.preview_table.item(0, 7).text()))
+        self.assertEqual(2, scan._rows()[0]['potential'])
+        for open_dialog in (lambda: scan._scan_cell_clicked(0, 5), lambda: self.sync._open_preview_cell_link(0, 6)):
+            seen = []
+            def inspect():
+                dialog = self.app.activeModalWidget()
+                seen.extend(dialog.articles)
+                dialog.reject()
+            QTimer.singleShot(0, inspect)
+            open_dialog()
+            self.assertEqual(['Статья А'], seen)
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder) / 'categories.tsv')
+            with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.QFileDialog.getSaveFileName', return_value=(path, '')):
+                scan.export_report()
+            with open(path, encoding='utf-8-sig', newline='') as handle:
+                exported = list(csv.reader(handle, delimiter='\t'))
+            self.assertEqual(('1+0', '1+1'), (exported[1][5], exported[1][7]))
+            scan.import_report(path)
+        self.assertEqual(('1+0', '1+1'), (scan.table.item(0, 5).text(), scan.table.item(0, 7).text()))
+        self.assertEqual((2, 1), (scan._rows()[0]['potential'], scan._rows()[0]['potential_categories']))
+
+    def test_imported_report_matched_view_filters_late_membership_results(self):
+        dialog = CategoryArticlesDialog(scan_row(), language='ru', family='wikipedia', translate=self.sync._stage_t,
+                                        parent=self.sync, only_matched=True)
+        dialog.show_membership([('Статья А', True), ('Статья Б', False), ('Категория:Дочерняя', None)])
+        self.assertEqual(('Статья А',), dialog.articles)
+        self.assertEqual(1, dialog.table.rowCount())
+        dialog.close()
+
+    def test_report_from_2_1_keeps_the_old_combined_count_semantics_on_import(self):
+        scan = CategoryTransferTab(self.parent)
+        for header in ('Совпадает', 'Matched'):
+            with self.subTest(header=header), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'old-categories.tsv'
+                with path.open('w', encoding='utf-8-sig', newline='') as handle:
+                    writer = csv.writer(handle, delimiter='\t')
+                    writer.writerow(['Source category', 'Target category', 'Wikidata', 'Depth', 'Total', header, 'Status', 'To add'])
+                    writer.writerow(['Category:A', 'Категория:А', 'Q1', 0, '4+2', '2+1', 'scanned', '1+1'])
+                scan.import_report(str(path))
+                self.assertEqual(('1+0', '1+1'), (scan.table.item(0, 5).text(), scan.table.item(0, 7).text()))
+                self.assertEqual((2, 1), (scan._rows()[0]['potential'], scan._rows()[0]['potential_categories']))
+
+    def test_late_membership_in_editable_matched_view_does_not_exclude_hidden_addable_pages(self):
+        dialog = CategoryArticlesDialog(scan_row(), language='ru', family='wikipedia', translate=self.sync._stage_t,
+                                        parent=self.sync, only_matched=True, editable=True)
+        dialog.show_membership([('Статья А', True), ('Статья Б', False), ('Категория:Дочерняя', False)])
+        self.assertEqual(('Статья А',), dialog.articles)
+        self.assertEqual(('Статья А',), dialog.original_articles)
+        dialog.table.selectRow(0)
+        dialog.remove_btn.click()
+        self.assertEqual({'Статья А'}, set(dialog.original_articles) - set(dialog.articles))
+        dialog.close()
 
     def test_detected_read_language_does_not_reverse_transfer_direction(self):
         self.sync.source_lang_edit.setText('pt')
@@ -402,7 +480,7 @@ class SyncMemberUiTests(unittest.TestCase):
         with patch.object(self.sync, '_review_members') as review, \
              patch('wiki_cat_tool.gui.tabs.category_content_sync_tab.QDesktopServices.openUrl') as browser:
             self.sync._open_preview_cell_link(0, 6)
-        review.assert_called_once_with(0)
+        review.assert_called_once_with(0, only_matched=True)
         browser.assert_not_called()
 
     def test_mode_change_invalidates_member_review_and_start(self):
@@ -481,9 +559,9 @@ class SyncMemberUiTests(unittest.TestCase):
     def test_preview_all_headers_are_sortable_and_counts_sort_numerically(self):
         rows = []
         for name, count in (('Ten', 10), ('Two', 2), ('One', 1)):
-            rows.append({**scan_row(name, name), 'total': count, 'total_categories': 0,
-                         'target_articles': ['Article ' + str(i) for i in range(count)], 'target_categories': [],
-                         'membership': {'Article ' + str(i): False for i in range(count)}})
+            rows.append({**scan_row(name, name), 'total': 2 * count, 'total_categories': 0,
+                         'target_articles': ['Article ' + str(i) for i in range(2 * count)], 'target_categories': [],
+                         'membership': {'Article ' + str(i): i < count for i in range(2 * count)}})
         self.load_scan(rows)
         table = self.sync.preview_table
         self.assertTrue(table.isSortingEnabled())
@@ -586,7 +664,7 @@ class SyncMemberUiTests(unittest.TestCase):
         preview.assert_not_called()
         self.assertIs(self.sync, tabs.currentWidget())
         self.assertEqual(0, scan.creation_table.rowCount())
-        self.assertEqual('2+1', self.sync.preview_table.item(0, 6).text())
+        self.assertEqual('—', self.sync.preview_table.item(0, 6).text())
 
 
 class SyncMemberWriteTests(unittest.TestCase):
@@ -619,7 +697,7 @@ class SyncMemberWriteTests(unittest.TestCase):
         target = Mock(title=Mock(return_value='Категория:Убрана'))
         with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Category', return_value=target):
             stats = self.worker._transfer_subcategories('Category:A', 'Категория:А', Mock(), Mock(),
-                                                        source_members=[Mock(title=Mock(return_value='Category:Removed'))], row_key='категория:а')
+                                                        source_members=[Mock(title=Mock(return_value='Category:Removed'), isRedirectPage=Mock(return_value=False))], row_key='категория:а')
         self.assertEqual(1, stats['skipped'])
         target.get.assert_not_called()
         self.worker._save_with_retry.assert_not_called()
@@ -662,8 +740,19 @@ class SyncMemberWriteTests(unittest.TestCase):
             self.worker._save_with_retry.return_value = saved
             with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Category', return_value=target):
                 self.worker._transfer_subcategories('Category:A', 'Категория:А', Mock(), Mock(),
-                                                    source_members=[Mock(title=Mock(return_value='Category:Child'))], row_key='категория:а')
+                                                    source_members=[Mock(title=Mock(return_value='Category:Child'), isRedirectPage=Mock(return_value=False))], row_key='категория:а')
             self.assertEqual([('категория:а', 'Категория:Дочерняя')] * expected, present)
+
+    def test_source_category_redirect_is_skipped_before_link_lookup_or_fallback(self):
+        self.worker._get_linked_page_title_retry = Mock()
+        source = Mock(title=Mock(return_value='Category:Redirect'), isRedirectPage=Mock(return_value=True))
+        with patch('wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Category') as category_type:
+            stats = self.worker._transfer_subcategories('Category:A', 'Категория:А', Mock(), Mock(),
+                                                        source_members=[source], row_key='категория:а')
+        self.assertEqual((0, 1, 0), (stats['success'], stats['skipped'], stats['error']))
+        self.worker._get_linked_page_title_retry.assert_not_called()
+        category_type.assert_not_called()
+        self.worker._save_with_retry.assert_not_called()
 
     def test_source_member_read_failure_counts_in_the_final_error_total(self):
         self.worker.username, self.worker.password = '', ''

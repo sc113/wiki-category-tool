@@ -133,6 +133,7 @@ class CategoryContentSyncTab(QWidget):
             self.preview_table, allowed=self._can_edit_preview,
             capture_extra=self._capture_preview_history,
             restored=self._restore_preview, language=self._ui_lang,
+            tracked_roles=(Qt.UserRole + 3,),
         )
 
     def _can_edit_preview(self):
@@ -1861,10 +1862,11 @@ class CategoryContentSyncTab(QWidget):
             data['additional'] = sum(not data['membership'].get(title, False) for title in data.get('target_articles', ()))
             if data.get('total_categories') is not None:
                 data['additional_categories'] = sum(not data['membership'].get(title, False) for title in data.get('target_categories', ()))
-        item = self._make_table_item(str(scan_count_value(data, 'potential')), url='members',
+        matched = scan_count_value(data, 'matched')
+        item = self._make_table_item('—' if matched is None else str(matched), url='members',
                                     align=Qt.AlignHCenter | Qt.AlignVCenter, count=True)
         item.setData(Qt.UserRole + 3, data)
-        item.setToolTip(self._stage_t('review_members_tip'))
+        item.setToolTip(self._stage_t('potential'))
         self.preview_table.setItem(row, 6, item)
         additional = scan_count_value(data, 'additional')
         self.preview_table.setItem(row, 7, self._make_table_item('—' if additional is None else str(additional), url='members',
@@ -1896,7 +1898,7 @@ class CategoryContentSyncTab(QWidget):
         self._set_member_inventory(row, {**data, 'membership': membership})
         self._update_clear_skipped_button_state()
 
-    def _review_members(self, row, *, only_additional=False):
+    def _review_members(self, row, *, only_additional=False, only_matched=False):
         item = self.preview_table.item(row, 6)
         data = item.data(Qt.UserRole + 3) if item else None
         if data is None:
@@ -1904,11 +1906,14 @@ class CategoryContentSyncTab(QWidget):
         signature, key = self._preview_signature, self._row_key_for_row(row)
         editable = self._can_edit_preview()
         visible_data = data
-        if only_additional and 'membership' in data:
-            visible_data = {**data, 'target_articles': [title for title in data.get('target_articles', ()) if not data['membership'].get(title)],
-                            'target_categories': [title for title in data.get('target_categories', ()) if not data['membership'].get(title)]}
+        if (only_additional or only_matched) and 'membership' in data:
+            def included(title):
+                return data['membership'].get(title) is True if only_matched else not data['membership'].get(title)
+            visible_data = {**data, 'target_articles': [title for title in data.get('target_articles', ()) if included(title)],
+                            'target_categories': [title for title in data.get('target_categories', ()) if included(title)]}
         dialog = CategoryArticlesDialog(visible_data, language=self.get_current_language(), family=self.get_current_family(),
-                                        translate=self._stage_t, parent=self, editable=editable)
+                                        translate=self._stage_t, parent=self, editable=editable,
+                                        only_additional=only_additional, only_matched=only_matched)
         dialog.table.setStyleSheet(self.preview_table.styleSheet())
         if 'membership' in data:
             shown = set(dialog.articles)
@@ -2046,7 +2051,7 @@ class CategoryContentSyncTab(QWidget):
 
     def _open_preview_cell_link(self, row: int, col: int):
         if col in (6, 7):
-            self._review_members(row, **(dict(only_additional=True) if col == 7 else {}))
+            self._review_members(row, **(dict(only_additional=True) if col == 7 else dict(only_matched=True)))
             return
         try:
             mods = QGuiApplication.keyboardModifiers()

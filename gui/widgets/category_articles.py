@@ -25,7 +25,7 @@ class CategoryMembersTable(QTableWidget):
 
 
 class CategoryArticlesDialog(QDialog):
-    def __init__(self, data, *, language, family, translate, parent=None, editable=False, only_additional=False):
+    def __init__(self, data, *, language, family, translate, parent=None, editable=False, only_additional=False, only_matched=False):
         super().__init__(parent)
         self._t, self.language, self.family = translate, language, family
         self.include_subcategories = data.get('total_categories') is not None
@@ -37,6 +37,7 @@ class CategoryArticlesDialog(QDialog):
         self._membership = {}
         self.editable = editable
         self.only_additional = only_additional
+        self.only_matched = only_matched
         self.has_target = bool(data.get('target_title'))
         count = len(self.articles) if 'target_articles' in data else (data.get('potential') or 0) + (data.get('potential_categories') or 0)
         layout = QVBoxLayout(self)
@@ -96,8 +97,14 @@ class CategoryArticlesDialog(QDialog):
     def show_membership(self, results):
         membership = dict(results)
         self._membership = membership
+        def included(title):
+            present = membership.get(title)
+            return present is True if self.only_matched else not self.only_additional or not present
         if not self.editable:
-            self.articles = tuple(title for title, present in membership.items() if not self.only_additional or not present)
+            self.articles = tuple(title for title in membership if included(title))
+        elif self.only_matched or self.only_additional:
+            self.articles = tuple(title for title in self.articles if included(title))
+            self.original_articles = tuple(title for title in self.original_articles if included(title))
         blocked = self.table.blockSignals(True)
         self.table.setRowCount(len(self.articles))
         for row, title in enumerate(self.articles):

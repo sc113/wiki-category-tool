@@ -1177,6 +1177,9 @@ class CategoryTransferUiTests(unittest.TestCase):
 
     def test_scan_report_round_trip_preserves_counts_and_second_stage_list(self):
         self.add_rows()
+        for data in self.tab._rows():
+            if data['status'] == 'scanned':
+                self.tab._apply_row({**data, 'additional': data['potential']})
         rows = (CategoryCreationRow("Category:Saved", "Категория:Сохранено", "body"),)
         self.tab._fill_creation_table(rows)
         expected = self.tab._rows()

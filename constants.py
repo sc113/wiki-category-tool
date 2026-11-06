@@ -13,13 +13,15 @@
 
 # ===== Версия приложения и URL-адреса =====
 # Keep the numeric release tag compatible with update checks in older builds.
-APP_VERSION = "2.10"
-APP_DISPLAY_VERSION = "2.1"
+APP_VERSION = "2.10.1"
+APP_DISPLAY_VERSION = "2.1.1"
 
 
 def display_app_version(value: str) -> str:
     value = str(value or '').strip().lstrip('vV')
-    return APP_DISPLAY_VERSION if value == APP_VERSION else value
+    if value == APP_VERSION:
+        return APP_DISPLAY_VERSION
+    return '2.1' + value[4:] if value == '2.10' or value.startswith('2.10.') else value
 
 
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'

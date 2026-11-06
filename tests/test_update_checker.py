@@ -15,13 +15,15 @@ from wiki_cat_tool.constants import APP_VERSION, APP_DISPLAY_VERSION, display_ap
 
 class UpdateCheckerTests(unittest.TestCase):
     def test_internal_tag_is_newer_under_both_legacy_comparisons(self):
-        self.assertEqual('2.10', APP_VERSION)
-        self.assertEqual('2.1', APP_DISPLAY_VERSION)
-        for previous in ('2.03', '2.04'):
+        self.assertEqual('2.10.1', APP_VERSION)
+        self.assertEqual('2.1.1', APP_DISPLAY_VERSION)
+        for previous in ('2.03', '2.04', '2.10'):
             self.assertGreater(Version(APP_VERSION), Version(previous))
             self.assertGreater([int(part) for part in APP_VERSION.split('.')],
                                [int(part) for part in previous.split('.')])
         self.assertEqual('2.1', display_app_version('v2.10'))
+        self.assertEqual('2.1.1', display_app_version('v2.10.1'))
+        self.assertEqual('2.1.2', display_app_version('v2.10.2'))
         self.assertEqual('2.03', display_app_version('2.03'))
 
     def test_legacy_patch_versions_sort_before_2_1(self):

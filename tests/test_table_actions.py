@@ -643,7 +643,7 @@ class TableActionTests(unittest.TestCase):
         self.tab.creation_history.redo()
         self.assertEqual(result, [row.content for row in self.tab._table_creation_rows()])
 
-    def test_target_spread_requires_first_category_text_and_does_not_use_a_later_row(self):
+    def test_target_spread_uses_first_readable_category_even_in_the_middle(self):
         rows = (CategoryCreationRow('Category:A', 'Категория:А', 'manual first'),
                 CategoryCreationRow('Category:B', 'Категория:Б', ''),
                 CategoryCreationRow('Category:C', 'Категория:В', ''))
@@ -657,8 +657,45 @@ class TableActionTests(unittest.TestCase):
             self.tab._target_category_missing(2)
             self.tab._source_content_ready(dict(index=1, content='{{Later}}'))
             self.tab._source_content_finished()
-        self.assertEqual(['manual first', '{{Later}}', ''], [row.content for row in self.tab._table_creation_rows()])
-        self.assertIn('Заполнение остальных строк не выполнено', self.tab.log.toPlainText())
+        self.assertEqual(['manual first', '{{Later}}', '{{Later}}'], [row.content for row in self.tab._table_creation_rows()])
+        self.assertIn('заполнено строк: 1', self.tab.log.toPlainText())
+
+    def test_target_spread_skips_blank_titles_and_empty_text_and_preserves_table_order(self):
+        rows = (CategoryCreationRow('Category:A', '', ''),
+                CategoryCreationRow('Category:B', 'Категория:Б', ''),
+                CategoryCreationRow('Category:C', 'Категория:В', ''),
+                CategoryCreationRow('Category:D', 'Категория:Г', ''),
+                CategoryCreationRow('Category:E', 'Категория:Д', 'manual'))
+        self.tab._fill_creation_table(rows)
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory:
+            worker = factory.return_value
+            worker.failed = worker._stop = False
+            worker.stats = dict(loaded=3, failed=0, missing=1)
+            self.tab.load_target_content(spread=True)
+            self.assertEqual(((1, 'Категория:Б'), (2, 'Категория:В'), (3, 'Категория:Г'), (4, 'Категория:Д')),
+                             factory.call_args.kwargs['rows'])
+            self.tab._source_content_ready(dict(index=3, content='{{Later}}'))
+            self.tab._source_content_ready(dict(index=1, content=' '))
+            self.tab._source_content_ready(dict(index=2, content='{{First nonempty}}'))
+            self.tab._target_category_missing(4)
+            self.tab._source_content_finished()
+        self.assertEqual(['{{First nonempty}}', ' ', '{{First nonempty}}', '{{Later}}', 'manual'],
+                         [row.content for row in self.tab._table_creation_rows()])
+        self.tab.creation_history.undo()
+        self.assertEqual(rows, self.tab._table_creation_rows())
+
+    def test_target_spread_reports_when_no_nonempty_text_was_read(self):
+        self.tab._fill_creation_table(tuple(CategoryCreationRow(row.source_title, row.target_title, '') for row in self.rows))
+        with patch('wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTextReadWorker') as factory:
+            worker = factory.return_value
+            worker.failed = worker._stop = False
+            worker.stats = dict(loaded=1, failed=0, missing=1)
+            self.tab.load_target_content(spread=True)
+            self.tab._source_content_ready(dict(index=0, content=''))
+            self.tab._target_category_missing(1)
+            self.tab._source_content_finished()
+        self.assertEqual(['', ''], [row.content for row in self.tab._table_creation_rows()])
+        self.assertIn('Не удалось считать непустой текст', self.tab.log.toPlainText())
 
     def test_stopped_or_failed_target_read_does_not_spread_partial_results(self):
         for stopped in (True, False):

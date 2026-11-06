@@ -34,10 +34,11 @@ class TableHistory(QObject):
 
     def __init__(self, table, *, editable_columns=(), allowed=lambda: True,
                  restored=lambda _extra: None, capture_extra=lambda: None,
-                 language=lambda: 'ru', limit=30):
+                 language=lambda: 'ru', limit=30, tracked_roles=()):
         super().__init__(table)
         self._table = ref(table)
         self.columns = tuple(editable_columns)
+        self.tracked_roles = tuple(tracked_roles)
         self.allowed, self.restored = self._weak_callback(allowed), self._weak_callback(restored)
         self.capture_extra, self.language = self._weak_callback(capture_extra), self._weak_callback(language)
         self.limit = limit
@@ -89,7 +90,8 @@ class TableHistory(QObject):
             rows.append(tuple(cells))
         rows = tuple(rows)
         columns = self.columns or range(self.table.columnCount())
-        key = tuple(tuple(str(items[col].values.get(Qt.DisplayRole, '')) if items[col] else None
+        key = tuple(tuple((str(items[col].values.get(Qt.DisplayRole, '')),
+                           *(items[col].values.get(role) for role in self.tracked_roles)) if items[col] else None
                           for col in columns) for items in rows)
         selection = tuple((r.topRow(), r.leftColumn(), r.bottomRow(), r.rightColumn())
                           for r in self.table.selectedRanges())

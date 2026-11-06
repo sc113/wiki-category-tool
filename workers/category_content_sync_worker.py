@@ -1542,6 +1542,11 @@ class CategoryContentSyncWorker(BaseWorker):
                 )
                 source_subcat_title = source_subcat.title()
 
+                if source_subcat.isRedirectPage():
+                    stats['skipped'] += 1
+                    self.progress.emit(self._fmt('log.sync_worker.subcategory_skip_redirect', title=source_subcat_title))
+                    continue
+
                 target_subcat_title = self._get_linked_page_title_retry(
                     source_subcat, target_site, expected_ns=14
                 )

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from ...core.category_transfer import (
     CategoryCreationRow, CategoryPair, category_action_plan, category_outcome_counts, export_creation_tsv, read_creation_tsv,
     parse_scan_list,
-    parse_scan_count, scan_count_value, scan_available_count,
+    parse_scan_count, scan_count_parts, scan_count_value, scan_available_count,
 )
 from ...core.localization import translate_key
 from ...core.pywikibot_config import apply_pwb_config
@@ -86,6 +86,7 @@ class CategoryTransferTab(QWidget):
         self._target_content_mode = False
         self._spread_target_content = False
         self._target_first_content = None
+        self._target_first_content_index = None
         self._target_missing_rows = set()
         self.create_worker = None
         self.preview_worker = None
@@ -749,7 +750,7 @@ class CategoryTransferTab(QWidget):
             self.table.insertRow(row)
             self._rows_by_title[data["source_title"]] = row
         values = [data["source_title"], data.get("target_title", ""), data.get("qid", ""),
-                  data["depth"], scan_count_value(data, 'total'), scan_count_value(data, 'potential'), self._t(data["status"]),
+                  data["depth"], scan_count_value(data, 'total'), scan_count_value(data, 'matched'), self._t(data["status"]),
                   scan_count_value(data, 'additional')]
         for col, value in enumerate(values):
             item = CategoryCountItem() if col in (4, 5, 7) else QTableWidgetItem()
@@ -760,15 +761,16 @@ class CategoryTransferTab(QWidget):
             if col == 0:
                 item.setData(Qt.UserRole, dict(data))
             elif col in (4, 5, 7):
-                key = {4: 'total', 5: 'potential', 7: 'additional'}[col]
-                count, categories = data.get(key), data.get(key + '_categories') or 0
+                key = {4: 'total', 5: 'matched', 7: 'additional'}[col]
+                count, categories = scan_count_parts(data, key)
+                categories = categories or 0
                 item.setData(Qt.UserRole, (-1, -1, -1) if count is None else (count + categories, count, categories))
             elif col == 2 and re.fullmatch(r"Q[1-9][0-9]*", str(value)):
                 self._style_wikidata_link(item)
             item.setToolTip(str(value or ""))
             if col in (5, 7) and data.get("status") == "scanned":
                 self._style_wikidata_link(item)
-                item.setToolTip(self._t('subpages_hint' if data.get('potential_categories') is not None else 'articles_hint'))
+                item.setToolTip(self._t('potential' if col == 5 else 'additional_column_tip'))
             elif data.get("error"):
                 item.setToolTip(data["error"])
             self.table.setItem(row, col, item)
@@ -911,10 +913,12 @@ class CategoryTransferTab(QWidget):
         try:
             with open(path, "w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.writer(handle, delimiter="\t")
-                writer.writerow([self.table.horizontalHeaderItem(col).text() for col in range(8)])
+                headers = [self.table.horizontalHeaderItem(col).text() for col in range(8)]
+                headers[5] = self._t('matched_report_column')
+                writer.writerow(headers)
                 for row in self._rows():
                     writer.writerow([row["source_title"], row.get("target_title", ""), row.get("qid", ""),
-                                     row["depth"], scan_count_value(row, 'total'), scan_count_value(row, 'potential'), row["status"],
+                                     row["depth"], scan_count_value(row, 'total'), scan_count_value(row, 'matched'), row["status"],
                                      scan_count_value(row, 'additional')])
         except Exception as error:
             self._warn("failed", error=error)
@@ -957,6 +961,10 @@ class CategoryTransferTab(QWidget):
                     rows[-1].update(additional=additional)
                     if additional_categories is not None:
                         rows[-1]['additional_categories'] = additional_categories
+                    if fields_list[0][5].strip().casefold() in {'совпадает (уже в категории)', 'matched (already in category)'}:
+                        rows[-1]['potential'] = potential + additional if potential is not None and additional is not None else None
+                        if potential_categories is not None and additional_categories is not None:
+                            rows[-1]['potential_categories'] = potential_categories + additional_categories
             if not rows:
                 raise ValueError(self._t("tsv_empty"))
         except Exception as error:
@@ -1345,9 +1353,6 @@ class CategoryTransferTab(QWidget):
         if target and not any(row.target_title for row in table_rows):
             self._warn('target_content_titles_required')
             return
-        if spread and not table_rows[0].target_title:
-            self._warn('first_target_content_required')
-            return
         rows = tuple((index, row.target_title if target else row.source_title) for index, row in enumerate(table_rows)
                      if (row.target_title if target else row.source_title)
                      and (spread or not self.source_content_empty.isChecked() or not row.content.strip()))
@@ -1359,6 +1364,7 @@ class CategoryTransferTab(QWidget):
         self._target_content_mode = target
         self._spread_target_content = spread
         self._target_first_content = None
+        self._target_first_content_index = None
         self._target_missing_rows = {index for index, row in enumerate(table_rows) if not row.target_title} if spread else set()
         self._set_busy(True)
         self._invalidate_creation(clear_table=False)
@@ -1384,8 +1390,10 @@ class CategoryTransferTab(QWidget):
             self._target_missing_rows.add(index)
 
     def _source_content_ready(self, payload):
-        if self._spread_target_content and payload['index'] == 0:
+        if (self._spread_target_content and payload['content'].strip()
+                and (self._target_first_content_index is None or payload['index'] < self._target_first_content_index)):
             self._target_first_content = payload['content']
+            self._target_first_content_index = payload['index']
         item = self.creation_table.item(payload["index"], 2)
         if item and (not self._spread_target_content or not item.text().strip()):
             blocked = self.creation_table.blockSignals(True)
@@ -1417,6 +1425,7 @@ class CategoryTransferTab(QWidget):
         self._write_log(status)
         self._target_content_mode = self._spread_target_content = False
         self._target_first_content = None
+        self._target_first_content_index = None
         self._target_missing_rows = set()
         self._set_busy(False)
         if self._content_undo:
@@ -1829,20 +1838,22 @@ class CategoryTransferTab(QWidget):
         if col == 2:
             self._open_category(row, col)
         elif col in (5, 7):
-            self._open_article_matches(row, only_additional=col == 7)
+            self._open_article_matches(row, only_additional=col == 7, only_matched=col == 5)
 
-    def _open_article_matches(self, row, *, only_additional=False):
+    def _open_article_matches(self, row, *, only_additional=False, only_matched=False):
         data = dict(self.table.item(row, 0).data(Qt.UserRole))
         if data.get("status") != "scanned":
             return
-        if only_additional and 'membership' in data:
-            data['target_articles'] = [title for title in data.get('target_articles', ()) if not data['membership'].get(title)]
-            data['target_categories'] = [title for title in data.get('target_categories', ()) if not data['membership'].get(title)]
+        if (only_additional or only_matched) and 'membership' in data:
+            def included(title):
+                return data['membership'].get(title) is True if only_matched else not data['membership'].get(title)
+            data['target_articles'] = [title for title in data.get('target_articles', ()) if included(title)]
+            data['target_categories'] = [title for title in data.get('target_categories', ()) if included(title)]
             shown = set(data['target_articles'] + data['target_categories'])
             data['membership'] = {title: included for title, included in data['membership'].items() if title in shown}
         source, target, family = self._context()
         dialog = CategoryArticlesDialog(data, language=target, family=family, translate=self._t, parent=self,
-                                        only_additional=only_additional)
+                                        only_additional=only_additional, only_matched=only_matched)
         if 'membership' in data:
             dialog.show_membership(data['membership'].items())
         elif 'target_articles' not in data or (data.get("target_title") and dialog.articles):

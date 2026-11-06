@@ -259,11 +259,20 @@ def parse_scan_list(text: str) -> tuple[str, ...]:
     return tuple(titles)
 
 
+def scan_count_parts(row, key):
+    if key == 'matched':
+        counts = []
+        for suffix in ('', '_categories'):
+            found, additional = row.get('potential' + suffix), row.get('additional' + suffix)
+            counts.append(found - additional if found is not None and additional is not None else None)
+        return tuple(counts)
+    return row.get(key), row.get(key + '_categories')
+
+
 def scan_count_value(row, key):
-    value = row.get(key)
+    value, categories = scan_count_parts(row, key)
     if value is None:
         return None
-    categories = row.get(key + '_categories')
     return value if categories is None else f'{value}+{categories}'
 
 
