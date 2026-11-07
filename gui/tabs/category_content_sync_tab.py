@@ -2642,15 +2642,11 @@ class CategoryContentSyncTab(QWidget):
                     next_action = self.start_btn
             elif self.source_panel.manual_list.toPlainText().strip():
                 next_action = self.preview_btn
-            elif self.cat_edit.text().strip():
-                next_action = self.source_panel.replace_list_btn
-            else:
-                next_action = self.read_file_btn
         self._highlight_sync_action(next_action)
 
     def _highlight_sync_action(self, next_action):
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
-        for button in (self.source_panel.replace_list_btn, self.read_file_btn, self.preview_btn, self.start_btn):
+        for button in (self.preview_btn, self.start_btn):
             highlight_next_action(button, button is next_action, theme, prominent=True)
 
     def _collect_run_config(self) -> Optional[dict]:
