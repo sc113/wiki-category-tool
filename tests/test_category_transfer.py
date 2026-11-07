@@ -1630,6 +1630,15 @@ class CategoryTransferUiTests(unittest.TestCase):
 
 
 class TransferAutofillTests(unittest.TestCase):
+    def test_auto_detects_english_decades_without_matching_parts_of_words(self):
+        rows = tuple(CategoryCreationRow('Category:' + title, '', '') for title in (
+            '0s deaths', '100s deaths', '1010s deaths', '1010sword deaths', '1010s deaths in 1012',
+        ))
+        plan = plan_numbered_titles(rows, '', 'Категорія:Померли у {число}-х')
+        self.assertEqual(['number_fill'] * 3 + ['number_unmatched'] * 2, [entry.status for entry in plan])
+        self.assertEqual([f'Категорія:Померли у {number}-х' for number in (0, 100, 1010)],
+                         [entry.target_title for entry in plan[:3]])
+
     def test_auto_detects_english_ordinals_and_converts_to_arabic_or_roman(self):
         rows = tuple(CategoryCreationRow('Category:' + title, '', '')
                      for title in ('1st-century art', '20th-century art', 'XXI-century art'))

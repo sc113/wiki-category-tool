@@ -125,9 +125,16 @@ def parse_title_number(raw: str) -> tuple[int, str]:
     return number, str(number)
 
 
+# Match only the digits of an English decade so an inferred template keeps the s.
+_TITLE_NUMBER_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:[0-9]+(?i:st|nd|rd|th)?(?![A-Za-z0-9])"
+    r"|[0-9]*0(?=(?i:s)(?![A-Za-z0-9])))|\b[IVXLCDM]+\b"
+)
+
+
 def title_number_matches(title: str):
     matches = []
-    for match in re.finditer(r"(?<![A-Za-z0-9])[0-9]+(?i:st|nd|rd|th)?(?![A-Za-z0-9])|\b[IVXLCDM]+\b", title):
+    for match in _TITLE_NUMBER_PATTERN.finditer(title):
         try:
             parse_title_number(match.group())
         except ValueError:

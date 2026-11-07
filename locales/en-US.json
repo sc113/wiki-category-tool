@@ -26,7 +26,7 @@
   "ui.transfer.api_http_error": "HTTP {status}: request failed for {url}.",
   "ui.transfer.number_titles": "Titles from a template…",
   "ui.transfer.number_token": "{{number}}",
-  "ui.transfer.number_help": "Enter a translation with {{number}} or {{roman}}. Numbers, English ordinal suffixes and Roman numerals are recognized in column one automatically. An optional source pattern restricts the series. Ambiguous rows are skipped. The empty-cell setting also applies to titles.",
+  "ui.transfer.number_help": "Enter a translation with {{number}} or {{roman}}. Column one automatically recognizes numbers, English ordinals (20th), decades (1990s), and Roman numerals. An optional source pattern restricts the series. Ambiguous rows are skipped. The empty-cell setting also applies to titles.",
   "ui.transfer.number_source_pattern": "Source pattern",
   "ui.transfer.number_target_template": "Translation template",
   "ui.transfer.number_source_example": "Category:{{number}} establishments in England",
