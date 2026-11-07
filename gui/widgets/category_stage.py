@@ -43,7 +43,7 @@ class CategorySettingsLayout(QGridLayout):
             self.addWidget(control, row, 1)
 
 
-def category_toolbar(source, target, options, translate):
+def category_toolbar(source, target, options, translate, *, swap=None):
     toolbar = QWidget()
     toolbar.setObjectName('categoryStageToolbar')
     layout = QHBoxLayout(toolbar)
@@ -58,13 +58,19 @@ def category_toolbar(source, target, options, translate):
     row.addWidget(source_caption)
     source.setFixedWidth(62)
     row.addWidget(source)
-    target_caption = QLabel(translate('current_lang_caption'))
-    target_caption.setProperty('categoryStageLabelKey', 'current_lang_caption')
+    target_key = 'current_lang_caption' if swap is None else 'preparation_target_lang'
+    target_caption = QLabel(translate(target_key))
+    target_caption.setProperty('categoryStageLabelKey', target_key)
+    if swap is not None:
+        row.addWidget(swap)
     row.addWidget(target_caption)
-    target.setObjectName('targetLangCodeBadge')
-    target.setMinimumWidth(42)
-    target.setMaximumWidth(50)
-    target.setToolTip(translate('current_lang_tip'))
+    if swap is None:
+        target.setObjectName('targetLangCodeBadge')
+        target.setMinimumWidth(42)
+        target.setMaximumWidth(50)
+        target.setToolTip(translate('current_lang_tip'))
+    else:
+        target.setFixedWidth(62)
     row.addWidget(target)
     if options is not None:
         row.addWidget(options)

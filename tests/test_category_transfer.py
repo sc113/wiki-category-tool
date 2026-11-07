@@ -410,7 +410,7 @@ class CategoryTransferReadTests(unittest.TestCase):
         self.assertEqual(2, reader.request.call_count)
         self.assertEqual("1|ru", reader.request.call_args[0][1]["llcontinue"])
 
-    def test_preview_progress_counts_completed_batches_before_table_results(self):
+    def test_preview_emits_completed_rows_while_later_batches_are_still_being_checked(self):
         reader = CategoryTransferReader('en', 'ru', 'wikipedia', threading.Event())
         self.addCleanup(reader.close)
         reader._site_info = {lang: self.reader.site_info(lang) for lang in ('en', 'ru')}
@@ -429,19 +429,31 @@ class CategoryTransferReadTests(unittest.TestCase):
         activities, results = [], []
         reader.on_activity = lambda payload: activities.append((payload, len(results)))
         plan = reader.preview_creation(rows, results.append, check_labels=True)
-        source_progress = [payload for payload, count in activities
-                           if payload['phase'] == 'check_pages' and payload['lang'] == 'en' and 0 < payload['processed'] < 538]
-        self.assertTrue(source_progress)
-        self.assertEqual(50, source_progress[0]['processed'])
-        self.assertTrue(all(payload['count'] == 538 for payload in source_progress))
-        self.assertTrue(all(count == 0 for payload, count in activities if payload in source_progress))
+        source_progress = [(payload['processed'], count) for payload, count in activities
+                           if payload['phase'] == 'check_pages' and payload['lang'] == 'en' and payload['processed']]
+        self.assertEqual((50, 0), source_progress[0])
+        self.assertIn((50, 50), source_progress)
+        self.assertEqual((38, 500), source_progress[-1])
         positions = [(payload['stage'] - 1 + (payload['processed'] / payload['count'] if payload['count'] else 1))
                      / payload['stages'] for payload, _ in activities]
         self.assertEqual(sorted(positions), positions)
         self.assertEqual(1, positions[-1])
-        self.assertEqual(538, activities[-1][0]['processed'])
+        self.assertEqual(538, activities[-1][1])
         self.assertEqual(538, len(plan))
+        self.assertEqual(list(range(len(rows))), [result['index'] for result in results])
         self.assertTrue(all(result['status'] == 'already_linked' for result in plan))
+
+    def test_preview_still_rejects_duplicate_discovered_targets_across_batches(self):
+        reader = self.reader
+        reader.page_data['en'].update({'Category:A': page('Category:A', qid='Q1'),
+                                       'Category:B': page('Category:B', qid='Q1')})
+        reader.page_data['ru']['Категория:А'] = page('Категория:А', qid='Q1')
+        reader.links['Q1'] = 'Категория:А'
+        rows = (CategoryCreationRow('A', '', ''), CategoryCreationRow('B', '', ''))
+        delivered = []
+        with patch.object(reader, '_MAX_PAGE_BATCH', 1), self.assertRaises(ValueError):
+            reader.preview_creation(rows, delivered.append)
+        self.assertEqual([0], [result['index'] for result in delivered])
 
     def test_preview_batch_progress_waits_for_continuation_and_preserves_stop(self):
         reader = CategoryTransferReader('en', 'ru', 'wikipedia', threading.Event())
@@ -1174,6 +1186,71 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.assertNotIn('delay', worker_type.call_args.kwargs)
         self.assertEqual(rows, worker_type.call_args.kwargs["rows"])
         self.tab._set_busy(False)
+
+    def test_preparation_swap_invalidates_checks_and_scan_handoff_restores_scan_languages(self):
+        self.tab.links_source_lang.setText('uk')
+        self.tab.links_target_lang.setText('en')
+        row = CategoryCreationRow('Категорія:Померли у 0-х', 'Category:0s deaths', '')
+        self.tab._fill_creation_table((row,), 'ready_link')
+        self.tab._set_creation_qids(0, 'Q1', 'Q2')
+        self.tab._creation_rows = self.tab._link_only_rows = (row,)
+        self.tab._preview_context = self.tab._creation_context()
+        self.tab._set_busy(False)
+
+        self.tab.swap_links_languages_btn.click()
+        self.assertEqual(('en', 'uk', 'wikipedia'), self.tab._creation_context())
+        self.assertEqual(('en', 'ru', 'wikipedia'), self.tab._context())
+        self.assertEqual((row,), self.tab._table_creation_rows())
+        self.assertIsNone(self.tab._preview_context)
+        self.assertFalse(self.tab.link_only_btn.isEnabled())
+        self.assertEqual(['', ''], [self.tab.creation_table.item(0, col).text() for col in (3, 4)])
+
+        self.tab._apply_row(dict(source_title='Category:Scanned', target_title='Категория:Просканировано',
+                                 depth=0, status='loaded'))
+        self.tab.open_links()
+        self.assertEqual(self.tab._context(), self.tab._creation_context())
+        self.assertEqual('Категория:Просканировано', self.tab._table_creation_rows()[0].target_title)
+
+    def test_preparation_reads_source_url_and_links_in_the_selected_wiki(self):
+        self.tab.update_language('uk')
+        self.tab.links_source_lang.setText('uk')
+        self.tab.links_target_lang.setText('en')
+        self.tab._apply_row(dict(source_title='Category:Independent', depth=0, status='loaded'))
+        url = 'https://uk.wikipedia.org/wiki/Категорія:Персоналії_за_десятиліттям_смерті'
+        row = CategoryCreationRow('Категорія:Померли у 0-х', 'Category:0s deaths', '')
+        module = 'wiki_cat_tool.gui.tabs.category_transfer_tab.'
+        with patch(module + 'QInputDialog.getText', return_value=(url, True)), \
+             patch(module + 'CategoryTransferReadWorker') as reader:
+            self.tab.read_preparation_btn.click()
+        self.assertEqual('Категорія:Персоналії_за_десятиліттям_смерті', reader.call_args.kwargs['category'])
+        self.assertEqual(('uk', 'en'), (reader.call_args.kwargs['source_lang'], reader.call_args.kwargs['target_lang']))
+        self.assertFalse(self.tab.swap_links_languages_btn.isEnabled())
+        self.tab.read_worker = Mock(failed=False, _stop=False, error_count=0, results=[
+            dict(source_title=row.source_title, target_title=row.target_title),
+        ])
+        self.tab._preparation_read_finished()
+        self.assertEqual((row,), self.tab._table_creation_rows())
+        self.assertEqual(['Category:Independent'], [item['source_title'] for item in self.tab._rows()])
+
+        with patch(module + 'CategoryTransferPreviewWorker') as preview:
+            self.tab.preview_creation()
+        self.assertEqual(('uk', 'en'), (preview.call_args.kwargs['source_lang'], preview.call_args.kwargs['target_lang']))
+        self.tab.preview_worker = Mock(failed=False, _stop=False, results=[dict(row=row, status='ready_link')])
+        self.tab._preview_finished()
+        self.parent.current_user = 'user'
+        self.parent.current_password = 'unused'
+        with patch(module + 'apply_pwb_config') as config, patch(module + 'CategoryTransferCreateWorker') as writer, \
+             patch.object(self.tab, '_confirm_creation', return_value=True):
+            self.tab.start_linking_only()
+        config.assert_called_once_with('uk', 'wikipedia')
+        self.assertEqual(('uk', 'en', False), tuple(writer.call_args.kwargs[key]
+                                                   for key in ('source_lang', 'target_lang', 'create_missing')))
+        self.tab._set_busy(False)
+        self.tab._linked_categories = [row.target_title]
+        self.tab._linked_context = self.tab._creation_context()
+        self.tab._set_busy(False)
+        self.assertFalse(self.tab.sync_btn.isEnabled())
+        self.assertFalse(self.tab.open_sync())
 
     def test_scan_report_round_trip_preserves_counts_and_second_stage_list(self):
         self.add_rows()

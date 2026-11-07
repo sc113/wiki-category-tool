@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import re
 
-from PySide6.QtCore import Qt, QUrl, QEvent
+from PySide6.QtCore import Qt, QUrl, QEvent, QSignalBlocker
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence, QShortcut, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGroupBox,
@@ -20,6 +20,7 @@ from ...core.category_transfer import (
     parse_scan_count, scan_count_parts, scan_count_value, scan_available_count,
 )
 from ...core.localization import translate_key
+from ...core.api_client import WikimediaAPIClient
 from ...core.pywikibot_config import apply_pwb_config
 from ...utils import debug, default_create_summary, resolve_project_language
 from ...workers.category_transfer_worker import (
@@ -155,7 +156,9 @@ class CategoryTransferTab(QWidget):
                 self.current_family or getattr(self.parent_window, "current_family", None) or "wikipedia")
 
     def _creation_context(self):
-        return (self.links_source_lang.text().strip().lower(), *self._context()[1:])
+        _, current_target, family = self._context()
+        target = self.links_target_lang.text().strip().lower() or current_target
+        return self.links_source_lang.text().strip().lower(), target, family
 
     def _setup_ui(self):
         stage_layout = QVBoxLayout(self)
@@ -283,8 +286,14 @@ class CategoryTransferTab(QWidget):
         creation_layout = QVBoxLayout(creation_content)
         creation_layout.setContentsMargins(0, 0, 0, 0)
         self.links_source_lang = QLineEdit("en")
-        self.links_target_label = QLabel()
-        creation_toolbar, _context_row = self._toolbar(self.links_source_lang, self.links_target_label, None)
+        self.links_target_lang = QLineEdit()
+        self.swap_links_languages_btn = QPushButton('↔')
+        self.swap_links_languages_btn.setFixedWidth(36)
+        self.swap_links_languages_btn.clicked.connect(self._swap_links_languages)
+        set_category_button_tooltip(self.swap_links_languages_btn, 'swap_languages', self._t)
+        self._refresh_preparation_language_labels()
+        creation_toolbar, _context_row = category_toolbar(self.links_source_lang, self.links_target_lang,
+                                                            None, self._t, swap=self.swap_links_languages_btn)
         self._toolbars = (scan_toolbar, creation_toolbar)
         creation_stage_layout.addWidget(creation_toolbar)
         self.tsv_path = QLineEdit('categories.tsv')
@@ -298,6 +307,7 @@ class CategoryTransferTab(QWidget):
         self.summary_edit.setMinimumWidth(0)
         self.creation_table_tools, edit_actions = self._action_group("table_tools")
         self.read_creation_btn = self._button('read_file', self.import_tsv, edit_actions)
+        self.read_preparation_btn = self._button('read_preparation_category', self.load_preparation_category, edit_actions)
         self.autofill_btn = QToolButton()
         self.autofill_btn.setText(self._t("autofill"))
         self.autofill_btn.setCheckable(True)
@@ -373,7 +383,7 @@ class CategoryTransferTab(QWidget):
         self.creation_summary.setObjectName('categoryListSummary')
         self.creation_summary.setWordWrap(True)
         self.creation_table_toolbar = CategoryTableToolbar(self.creation_summary)
-        self.creation_table = self._table(["source_category", "new_category", "content", "source_wd", "current_wd", "status"], CategoryCreationTable)
+        self.creation_table = self._table(["source_category", "new_category", "content", "source_wd", "preparation_target_wd", "status"], CategoryCreationTable)
         self.creation_table.setObjectName("transferCreationTable")
         self.creation_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         self.creation_table.horizontalHeader().setStretchLastSection(False)
@@ -447,7 +457,8 @@ class CategoryTransferTab(QWidget):
         self.table.horizontalHeader().sortIndicatorChanged.connect(self._reindex)
         self.source_lang.textChanged.connect(self._source_changed)
         self.include_subcategories.toggled.connect(self._scan_subcategories_changed)
-        self.links_source_lang.textChanged.connect(self._links_source_changed)
+        self.links_source_lang.textChanged.connect(self._links_language_changed)
+        self.links_target_lang.textChanged.connect(self._links_language_changed)
         self.root_edit.textChanged.connect(lambda: self._set_busy(self._busy))
         self.scan_report_path.textChanged.connect(lambda: self._set_busy(self._busy))
         self.tsv_path.textChanged.connect(lambda: self._set_busy(self._busy))
@@ -532,8 +543,18 @@ class CategoryTransferTab(QWidget):
         return button
 
     def _refresh_target(self):
-        self.target_label.setText(self._context()[1])
-        self.links_target_label.setText(self.target_label.text())
+        current_target = self._context()[1]
+        self.target_label.setText(current_target)
+        self.links_target_lang.setPlaceholderText(current_target)
+        target = self._creation_context()[1]
+        if target != self._summary_lang and self.summary_edit.text() == default_create_summary(self._summary_lang):
+            self.summary_edit.setText(default_create_summary(target))
+        self._summary_lang = target
+
+    def _refresh_preparation_language_labels(self):
+        self.links_target_lang.setAccessibleName(self._t('preparation_target_lang'))
+        self.links_target_lang.setToolTip(self._t('preparation_target_lang_tip'))
+        self.swap_links_languages_btn.setAccessibleName(self._t('button_swap_languages_tip'))
 
     def _set_busy(self, busy):
         was_busy = self._busy
@@ -543,7 +564,8 @@ class CategoryTransferTab(QWidget):
         for widget in (self.settings, self.scan_root_controls, self.source_lang, self.root_edit, self.load_btn,
                        self.scan_file_row, self.export_scan_btn, self.delete_btn, self.clear_btn, self.clear_all_scan_btn, self.clear_all_creation_btn, self.reset_scan_btn,
                        self.file_controls,
-                       self.read_creation_btn, self.summary_edit, self.links_source_lang,
+                       self.read_creation_btn, self.read_preparation_btn, self.summary_edit,
+                       self.links_source_lang, self.links_target_lang,
                        self.remove_creation_btn, self.export_creation_btn, self.check_links_btn,
                        self.autofill_box, self.autofill_btn):
             widget.setEnabled(not busy)
@@ -568,8 +590,9 @@ class CategoryTransferTab(QWidget):
         self.create_btn.setText(self._t("create"))
         self.link_only_btn.setEnabled(not busy and bool(self._link_only_rows)
                                       and self._preview_context == self._creation_context())
-        self.sync_btn.setEnabled(not busy and bool(self._linked_categories)
-                                 and self._linked_context == self._creation_context())
+        self.sync_btn.setEnabled(self._can_sync_preparation())
+        source, target, _ = self._creation_context()
+        self.swap_links_languages_btn.setEnabled(not busy and bool(source and target and source != target))
         self.stop_btn.setEnabled(busy)
         has_scan_rows = self.table.rowCount() > 0
         has_creation_rows = self.creation_table.rowCount() > 0
@@ -590,7 +613,7 @@ class CategoryTransferTab(QWidget):
         scanned = has_scan_rows and all(row.get('status') == 'scanned' for row in self._rows())
         hint = 'scan_start_hint' if not has_scan_rows else 'scan_review_hint' if scanned else 'scan_resume_hint' if len(pending) < self.table.rowCount() else 'scan_run_hint'
         if busy and self.read_worker is not None:
-            hint = 'loading' if self._read_mode == 'load' else 'scanning'
+            hint = 'loading' if self._read_mode in {'load', 'prepare_load'} else 'scanning'
         elif not busy and empty_count:
             hint = 'scan_cleanup_hint'
         self.scan_guidance.setText(self._t(hint, checked=self.table.rowCount() - len(pending),
@@ -613,8 +636,10 @@ class CategoryTransferTab(QWidget):
 
     def _validate_context(self, *, creation=False):
         source, target, family = self._creation_context() if creation else self._context()
-        if not re.fullmatch(r"[a-z][a-z0-9-]*", source) or source == target:
-            self._warn("different_languages")
+        code_pattern = r"[a-z][a-z0-9-]*"
+        if (not re.fullmatch(code_pattern, source) or source == target
+                or (creation and not re.fullmatch(code_pattern, target))):
+            self._warn("different_preparation_languages" if creation else "different_languages")
             return None
         return source, target, family
 
@@ -781,7 +806,7 @@ class CategoryTransferTab(QWidget):
         self._reindex()
 
     def _read_progress(self, payload):
-        if self._read_mode != 'load':
+        if self._read_mode not in {'load', 'prepare_load'}:
             keys = {'scan_categories': 'scan_batch_categories', 'scan_members': 'scan_batch_members',
                     'scan_links': 'scan_batch_links', 'scan_articles': 'scan_article_packet',
                     'scan_subpages': 'scan_subpage_packet'}
@@ -1067,6 +1092,64 @@ class CategoryTransferTab(QWidget):
         self._fill_creation_table(rows)
         self._table_dirty = True
 
+    def load_preparation_category(self):
+        if self._busy:
+            return
+        context = self._validate_context(creation=True)
+        if context is None:
+            return
+        source, target, family = context
+        category, accepted = QInputDialog.getText(self.creation_stage, self._t('read_preparation_category'),
+                                                   self._t('preparation_category_prompt', lang=source))
+        category = category.strip()
+        if not accepted or not category:
+            return
+        if category.lower().startswith(('https://', 'http://')):
+            url = QUrl(category)
+            host = WikimediaAPIClient._build_host(family, source)
+            path = url.path(QUrl.FullyDecoded)
+            if url.host() != host or not path.startswith('/wiki/') or path == '/wiki/':
+                self._warn('preparation_category_url', host=host)
+                return
+            category = path.removeprefix('/wiki/')
+        worker = CategoryTransferReadWorker(source_lang=source, target_lang=target, family=family,
+                                            category=category, skip_existing_level=0)
+        self.read_worker = worker
+        self._read_mode = 'prepare_load'
+        self._read_count = self._read_total = 0
+        self._set_busy(True)
+        self.bar.setRange(0, 0)
+        self._set_progress(self._t('loading'))
+        worker.read_progress.connect(self._read_progress)
+        worker.progress.connect(self._write_log)
+        worker.retry_wait.connect(self._retry_notice)
+        worker.finished.connect(self._preparation_read_finished)
+        worker.start()
+
+    def _preparation_read_finished(self):
+        worker = self.read_worker
+        self.read_worker = None
+        rows = tuple(CategoryCreationRow(row['source_title'], row.get('target_title', ''), '')
+                     for row in worker.results)
+        if worker.failed:
+            status = self._t('failed', error=worker.failure_message)
+        elif worker._stop or self._pending_context_reset:
+            status = self._t('stopped')
+        else:
+            status = self._t('read_done', count=len(rows), errors=worker.error_count)
+            if rows:
+                self.tsv_path.clear()
+                self._invalidate_creation()
+                self._fill_creation_table(rows)
+                self._table_dirty = True
+        self._set_progress(status)
+        self._write_log(status)
+        self.bar.setRange(0, 1)
+        self.bar.setValue(int(not worker.failed and not worker._stop and not self._pending_context_reset))
+        self._set_busy(False)
+        self._reset_changed_context()
+        worker.deleteLater()
+
     def open_tsv(self):
         if self.tsv_path.text().strip():
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.tsv_path.text().strip()))
@@ -1124,7 +1207,10 @@ class CategoryTransferTab(QWidget):
         # Carry precisely the curated list, including linked and unscanned rows.
         rows = tuple(CategoryCreationRow(row["source_title"], row.get("target_title", ""), "")
                      for row in self._rows())
-        self.links_source_lang.setText(self.source_lang.text())
+        with QSignalBlocker(self.links_source_lang), QSignalBlocker(self.links_target_lang):
+            self.links_source_lang.setText(self.source_lang.text())
+            self.links_target_lang.clear()
+        self._refresh_target()
         self.tsv_path.clear()
         self._invalidate_creation()
         self._preparation_scan_rows = {row['source_title']: dict(row) for row in self._rows()
@@ -1615,8 +1701,10 @@ class CategoryTransferTab(QWidget):
         self.creation_table.setItem(row, 5, status)
         self._set_creation_qids(row, result.get("source_qid", ""), result.get("target_qid", ""))
         self._highlight_incomplete(row, result["status"])
-        self._refresh_creation_summary()
-        self._show_creation_detail()
+        if (row + 1) % 50 == 0 or row + 1 == self.creation_table.rowCount():
+            self._refresh_creation_summary()
+        if self.creation_table.currentRow() == row:
+            self._show_creation_detail()
 
     def _preview_finished(self):
         worker = self.preview_worker
@@ -1685,7 +1773,7 @@ class CategoryTransferTab(QWidget):
             return
         self.creation_history.reset()
         source, target, family = self._creation_context()
-        apply_pwb_config(target, family)
+        apply_pwb_config(*self._context()[1:])
         self._linked_categories = list(self._existing_linked_categories)
         self._linked_context = self._creation_context()
         self._creation_row_results = {}
@@ -1752,7 +1840,7 @@ class CategoryTransferTab(QWidget):
         self._reset_changed_context()
         self.creation_history.reset()
         worker.deleteLater()
-        if self._linked_categories and self._linked_context == self._creation_context():
+        if self._can_sync_preparation():
             if self._offer_sync(len(self._linked_categories)):
                 self.open_sync()
 
@@ -1830,8 +1918,13 @@ class CategoryTransferTab(QWidget):
                 include_subcategories = self.include_subcategories.isChecked()
         return rows, include_subcategories
 
+    def _can_sync_preparation(self):
+        context = self._creation_context()
+        return (not self._busy and bool(self._linked_categories) and self._linked_context == context
+                and context[1:] == self._context()[1:])
+
     def open_sync(self, *, activate=True):
-        if self._busy or not self._linked_categories or self._linked_context != self._creation_context():
+        if not self._can_sync_preparation():
             return False
         sync = getattr(self.parent_window, "category_content_sync_tab", None)
         if sync is None:
@@ -1886,7 +1979,8 @@ class CategoryTransferTab(QWidget):
 
     def open_interwiki(self):
         tab = getattr(self.parent_window, "category_interwiki_tab", None)
-        if self._busy or tab is None or not self.creation_table.rowCount():
+        if (self._busy or tab is None or not self.creation_table.rowCount()
+                or self._creation_context()[1:] != self._context()[1:]):
             return
         if tab.load_pairs(self._table_creation_rows(), self._creation_context()[0]):
             self.parent_window.tabs.setCurrentWidget(tab)
@@ -1955,11 +2049,23 @@ class CategoryTransferTab(QWidget):
             self.article_worker = None
         worker.deleteLater()
 
-    def _links_source_changed(self, *_args):
+    @pause_sorting('creation_table')
+    def _links_language_changed(self, *_args):
         if not self._busy:
+            self._refresh_target()
             self._invalidate_creation(clear_table=False)
+            for row in range(self.creation_table.rowCount()):
+                self._set_creation_qids(row, '', '')
             self._set_busy(False)
-            self.creation_history.reset()
+
+    def _swap_links_languages(self):
+        if self._busy or not self.swap_links_languages_btn.isEnabled():
+            return
+        source, target, _ = self._creation_context()
+        with QSignalBlocker(self.links_source_lang), QSignalBlocker(self.links_target_lang):
+            self.links_source_lang.setText(target)
+            self.links_target_lang.setText(source)
+        self._links_language_changed()
 
     def _open_category(self, row, col):
         if col not in (0, 1, 2):
@@ -1973,7 +2079,6 @@ class CategoryTransferTab(QWidget):
             url = QUrl(f"https://www.wikidata.org/wiki/{value}")
         else:
             from urllib.parse import quote
-            from ...core.api_client import WikimediaAPIClient
             lang = self._context()[0 if col == 0 else 1]
             host = WikimediaAPIClient()._build_api_url(self._context()[2], lang).split("/w/")[0]
             url = QUrl(f"{host}/wiki/{quote(value.replace(' ', '_'))}")
@@ -2004,8 +2109,14 @@ class CategoryTransferTab(QWidget):
         theme = getattr(self.parent_window, "_theme_mode", "teal")
         for table in (self.table, self.creation_table):
             table.setStyleSheet(category_table_style(theme))
-        for source, badge in ((self.source_lang, self.target_label), (self.links_source_lang, self.links_target_label)):
+        for source, badge in ((self.source_lang, self.target_label), (self.links_source_lang, self.links_target_lang)):
             style_transfer_languages(source, badge, theme)
+        draw_icon = getattr(self.parent_window, '_draw_nav_icon', None)
+        if draw_icon:
+            icon = draw_icon('rename', self.parent_window._icon_color(), 18)
+            if not icon.isNull():
+                self.swap_links_languages_btn.setIcon(icon)
+                self.swap_links_languages_btn.setText('')
         muted = {'light': '#526a7a', 'dark': '#a3b3c5', 'teal': '#91b9c5'}.get(theme, '#91b9c5')
         for label in (self.creation_summary, self.scan_guidance):
             label.setStyleSheet(f'color: {muted}; padding: 2px 0;')
@@ -2079,6 +2190,7 @@ class CategoryTransferTab(QWidget):
             self._last_ui_lang = lang
             for toolbar in self._toolbars:
                 refresh_category_toolbar(toolbar, self._t)
+            self._refresh_preparation_language_labels()
             self.log_panel.refresh_localized_texts()
             self.root_edit.setPlaceholderText(self._t('root_placeholder'))
             self.root_edit.setToolTip(self._t('source_root_tip'))
@@ -2157,10 +2269,6 @@ class CategoryTransferTab(QWidget):
 
     def update_language(self, lang):
         if lang != self.current_lang:
-            old_default = default_create_summary(self._summary_lang)
-            if self.summary_edit.text() == old_default:
-                self.summary_edit.setText(default_create_summary(lang))
-            self._summary_lang = lang
             self.current_lang = lang
             self._context_changed()
 

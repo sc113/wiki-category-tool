@@ -386,7 +386,7 @@ class CategoryTransferPreviewWorker(BaseWorker):
         self.reader.on_retry = self._retry_notice
         self.reader.on_activity = self._preview_activity
         self._preview_started = None
-        self._preview_log_stage = None
+        self._preview_logged_steps = set()
         self._preview_percent = 0
 
     def _preview_activity(self, payload):
@@ -410,8 +410,8 @@ class CategoryTransferPreviewWorker(BaseWorker):
             eta = message('check_eta', duration=duration)
         text = message('check_progress', percent=self._preview_percent, step=step,
                        counter=counter, eta=eta)
-        if stage != self._preview_log_stage:
-            self._preview_log_stage = stage
+        if step not in self._preview_logged_steps:
+            self._preview_logged_steps.add(step)
             self.progress.emit(step)
         self.activity.emit({**payload, 'percent': self._preview_percent, 'text': text})
 

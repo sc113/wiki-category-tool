@@ -1014,16 +1014,20 @@ def category_table_style(theme):
 
 
 def style_transfer_languages(source, badge, theme):
-    """The source input and read-only current language used by category sync."""
+    """Style the language input and its editable or read-only counterpart."""
     palettes = {
         'light': ('#18364e', '#ffffff', '#5f93be', '#e6ebf1', '#5d6b79', '#b3beca'),
         'dark': ('#e5edf7', '#1d2430', '#6e7d90', '#313a47', '#c8d4e1', '#6d7b8d'),
         'teal': ('#e8f5ff', '#0f2a3b', '#53a8c0', '#2b3d4f', '#d3e6f4', '#5f7f96'),
     }
     text, background, border, badge_background, badge_text, badge_border = palettes.get(theme, palettes['teal'])
-    source.setStyleSheet(f"QLineEdit {{ min-height: 27px; max-height: 27px; color: {text}; background: {background}; "
-                        f"border: 2px solid {border}; border-radius: 8px; padding: 2px 8px; font-weight: 700; }}")
+    input_style = (f"QLineEdit {{ min-height: 27px; max-height: 27px; color: {text}; background: {background}; "
+                   f"border: 2px solid {border}; border-radius: 8px; padding: 2px 8px; font-weight: 700; }}")
+    source.setStyleSheet(input_style)
     badge.setAlignment(Qt.AlignCenter)
+    if isinstance(badge, QLineEdit):
+        badge.setStyleSheet(input_style)
+        return
     badge.setStyleSheet(f"QLabel {{ min-height: 27px; max-height: 27px; color: {badge_text}; "
                        f"background: {badge_background}; border: 1px solid {badge_border}; "
                        "border-radius: 9px; padding: 2px 8px; font-weight: 700; }")

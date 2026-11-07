@@ -782,7 +782,8 @@ class CategoryTransferReader:
 
     def _preview_creation(self, rows, on_row, *, check_labels=False):
         """Inventory existing pages and links before enabling writes or resuming."""
-        self._preview_stage_count = 9 if check_labels else 8
+        batches = range(0, len(rows), self._MAX_PAGE_BATCH)
+        self._preview_stage_count = 1 + len(batches) * (8 if check_labels else 7)
         self._preview_stage('check_titles', len(rows))
         self._check_distinct_wikis()
         normalized = []
@@ -798,8 +799,17 @@ class CategoryTransferReader:
             normalized.append(CategoryCreationRow(source, target, row.content))
             if (index + 1) % 50 == 0 or index + 1 == len(rows):
                 self._preview_advance(index + 1 - self._preview_activity['processed'])
+        results = []
+        for first_index in batches:
+            batch = normalized[first_index:first_index + self._MAX_PAGE_BATCH]
+            results.extend(self._preview_creation_batch(batch, targets, first_index, on_row, check_labels))
+        return results
+
+    def _preview_creation_batch(self, normalized, all_targets, first_index, on_row, check_labels):
+        sources = [row.source_title for row in normalized]
+        targets = {row.target_title for row in normalized if row.target_title}
         self._preview_stage('check_pages', len(sources), self.source_lang)
-        source_pages = self.pages(self.source_lang, list(sources), props="info|pageprops")
+        source_pages = self.pages(self.source_lang, sources, props="info|pageprops")
         self._preview_stage('check_items', len(sources), self.source_lang)
         self.category_items(self.source_lang, source_pages)
         qids = [page.get("pageprops", {}).get("wikibase_item", "") for page in source_pages.values()]
@@ -814,8 +824,9 @@ class CategoryTransferReader:
             linked = links.get(qid, "")
             if linked:
                 target = self.category_title(linked, self.target_lang)
-                if target in targets:
-                    raise ValueError(message("tsv_duplicate", line=index + 1))
+                if target in all_targets:
+                    raise ValueError(message("tsv_duplicate", line=first_index + index + 1))
+                all_targets.add(target)
                 targets.add(target)
                 normalized[index] = CategoryCreationRow(row.source_title, target, row.content)
         self._preview_stage('check_pages', len(targets), self.target_lang)
@@ -839,7 +850,7 @@ class CategoryTransferReader:
                 self._preview_advance(len(batch))
         entities = {}
         if check_labels:
-            self._preview_stage('check_labels', len(rows))
+            self._preview_stage('check_labels', len(normalized))
             item_ids = list(dict.fromkeys(page.get("pageprops", {}).get("wikibase_item")
                                          for page in (*source_pages.values(), *target_pages.values())
                                          if page.get("pageprops", {}).get("wikibase_item")))
@@ -851,9 +862,9 @@ class CategoryTransferReader:
                                     wikidata=True)
                 entities.update(data.get("entities", {}))
                 self._preview_advance(len(batch))
-        self._preview_stage('check_results', len(rows))
+        self._preview_stage('check_results', len(normalized))
         results = []
-        for index, row in enumerate(normalized):
+        for index, row in enumerate(normalized, start=first_index):
             self.check_stop()
             result = {"index": index, "row": row}
             source = source_pages.get(row.source_title)
@@ -868,7 +879,7 @@ class CategoryTransferReader:
                     result.update(status="needs_translation", detail=message("translation_required"))
                     results.append(result)
                     on_row(result)
-                    self._preview_result_progress(index + 1)
+                    self._preview_result_progress(index - first_index + 1)
                     continue
                 if target and "redirect" in target:
                     raise ValueError(message("target_redirect", title=row.target_title))
@@ -904,7 +915,7 @@ class CategoryTransferReader:
                 result.update(status="error", error=str(error))
             results.append(result)
             on_row(result)
-            self._preview_result_progress(index + 1)
+            self._preview_result_progress(index - first_index + 1)
         return results
 
     def _preview_result_progress(self, checked):
