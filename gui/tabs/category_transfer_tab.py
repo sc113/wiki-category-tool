@@ -38,6 +38,9 @@ from ..widgets.category_text_dialog import CategoryTextDialog
 from ..widgets.category_creation_table import CategoryCandidatesTable, CategoryCreationTable, CategoryCountItem, TransferActionsLayout, TransferAutofillTabs
 
 
+_MISSING_TARGET_TITLE_ROLE = Qt.UserRole + 4
+
+
 class CategoryTextDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         return QPlainTextEdit(parent)
@@ -112,15 +115,18 @@ class CategoryTransferTab(QWidget):
         self._preparation_include_subcategories = False
         self._sync_applied_state = None
         self._table_dirty = False
+        self._preparation_drafts = {}
         self._rows_by_title = {}
         self._pending_context_reset = False
         self._last_ui_lang = getattr(parent, "_ui_lang", "ru")
         self._setup_ui()
+        self._preparation_context = self._creation_context()
         self.scan_history = TableHistory(self.table, allowed=self._history_allowed,
                                          restored=self._restore_scan, language=self._history_language)
         self.creation_history = TableHistory(self.creation_table, editable_columns=(0, 1, 2),
                                              allowed=self._history_allowed,
-                                             restored=self._restore_creation, language=self._history_language)
+                                             restored=self._restore_creation, language=self._history_language,
+                                             capture_extra=self._preparation_input)
         self._content_undo = None
 
     def _history_allowed(self):
@@ -140,7 +146,17 @@ class CategoryTransferTab(QWidget):
         self._apply_table_theme()
         self._set_busy(False)
 
-    def _restore_creation(self, _extra):
+    def _preparation_input(self):
+        return (self.tsv_path.text(), self._preparation_scan_rows, self._preparation_scan_context,
+                self._preparation_include_subcategories)
+
+    def _restore_preparation_input(self, state):
+        path, self._preparation_scan_rows, self._preparation_scan_context, self._preparation_include_subcategories = state
+        with QSignalBlocker(self.tsv_path):
+            self.tsv_path.setText(path)
+
+    def _restore_creation(self, state):
+        self._restore_preparation_input(state)
         self._invalidate_creation(clear_table=False)
         self._apply_table_theme()
         self._set_busy(False)
@@ -1102,7 +1118,7 @@ class CategoryTransferTab(QWidget):
         category, accepted = QInputDialog.getText(self.creation_stage, self._t('read_preparation_category'),
                                                    self._t('preparation_category_prompt', lang=source))
         category = category.strip()
-        if not accepted or not category:
+        if not accepted or not category or self._busy or context != self._creation_context():
             return
         if category.lower().startswith(('https://', 'http://')):
             url = QUrl(category)
@@ -1137,18 +1153,24 @@ class CategoryTransferTab(QWidget):
             status = self._t('stopped')
         else:
             status = self._t('read_done', count=len(rows), errors=worker.error_count)
-            if rows:
-                self.tsv_path.clear()
-                self._invalidate_creation()
-                self._fill_creation_table(rows)
-                self._table_dirty = True
+        self._set_busy(False)
+        if rows and not (worker.failed or worker._stop or self._pending_context_reset):
+            self._replace_preparation_rows(rows)
         self._set_progress(status)
         self._write_log(status)
         self.bar.setRange(0, 1)
         self.bar.setValue(int(not worker.failed and not worker._stop and not self._pending_context_reset))
-        self._set_busy(False)
         self._reset_changed_context()
         worker.deleteLater()
+
+    @table_action('creation_history')
+    def _replace_preparation_rows(self, rows):
+        if rows == self._table_creation_rows():
+            return
+        self.tsv_path.clear()
+        self._invalidate_creation()
+        self._fill_creation_table(rows)
+        self._table_dirty = True
 
     def open_tsv(self):
         if self.tsv_path.text().strip():
@@ -1169,6 +1191,7 @@ class CategoryTransferTab(QWidget):
         if clear_table:
             self._preparation_scan_rows = {}
             self._preparation_scan_context = None
+            self._preparation_include_subcategories = False
             self.creation_table.blockSignals(True)
             self.creation_table.setRowCount(0)
             self.creation_table.blockSignals(False)
@@ -1211,6 +1234,7 @@ class CategoryTransferTab(QWidget):
             self.links_source_lang.setText(self.source_lang.text())
             self.links_target_lang.clear()
         self._refresh_target()
+        self._switch_preparation_draft()
         self.tsv_path.clear()
         self._invalidate_creation()
         self._preparation_scan_rows = {row['source_title']: dict(row) for row in self._rows()
@@ -1296,9 +1320,18 @@ class CategoryTransferTab(QWidget):
         self._refresh_preparation_guidance()
 
     def _preparation_missing_columns(self):
-        return tuple(any(self.creation_table.item(row, column) is None
-                         or not self.creation_table.item(row, column).text().strip()
-                         for row in range(self.creation_table.rowCount())) for column in (1, 2))
+        missing_title = missing_content = False
+        for row in range(self.creation_table.rowCount()):
+            title_item, content_item = (self.creation_table.item(row, col) for col in (1, 2))
+            title = title_item.text().strip() if title_item else ''
+            content = content_item.text().strip() if content_item else ''
+            status = self.creation_table.item(row, 5)
+            missing_title |= not title
+            # A draft needs text only after its current title was checked and found absent.
+            if title and not content and status:
+                missing_content |= (status.data(Qt.UserRole) == 'needs_content'
+                                    or status.data(_MISSING_TARGET_TITLE_ROLE) == title)
+        return missing_title, missing_content
 
     def _refresh_preparation_guidance(self):
         missing = self._preparation_missing_columns()
@@ -1309,11 +1342,13 @@ class CategoryTransferTab(QWidget):
         elif needs_fill:
             next_action = self.autofill_btn
         elif self.create_btn.isEnabled():
-            next_action = self.create_btn
+            next_action = self.create_btn if len(self._creation_rows) > len(self._link_only_rows) else None
         elif self.sync_btn.isEnabled():
             next_action = self.sync_btn
-        else:
+        elif self._preview_context != self._creation_context():
             next_action = self.check_links_btn
+        else:
+            next_action = None
         for button in (self.autofill_btn, self.check_links_btn, self.create_btn, self.sync_btn):
             highlight_next_action(button, not self._busy and button is next_action, theme, prominent=True)
         self._style_autofill_tabs(theme, missing)
@@ -1697,6 +1732,8 @@ class CategoryTransferTab(QWidget):
         status = QTableWidgetItem(self._t(result["status"]))
         status.setFlags(status.flags() & ~Qt.ItemIsEditable)
         status.setData(Qt.UserRole, result["status"])
+        if result['status'] in {'needs_content', 'ready_create'}:
+            status.setData(_MISSING_TARGET_TITLE_ROLE, data.target_title)
         status.setToolTip(result.get("error", result.get("detail", "")))
         self.creation_table.setItem(row, 5, status)
         self._set_creation_qids(row, result.get("source_qid", ""), result.get("target_qid", ""))
@@ -1709,21 +1746,34 @@ class CategoryTransferTab(QWidget):
     def _preview_finished(self):
         worker = self.preview_worker
         self.preview_worker = None
-        if worker.failed or worker._stop:
+        interrupted = worker.failed or worker._stop or self._pending_context_reset
+        if interrupted:
             self._creation_rows = ()
             self._link_only_rows = ()
             self._preview_context = None
-            status = self._t("failed", error=worker.failure_message) if worker.failed else self._t("stopped")
+            checked = 0
             self.creation_table.blockSignals(True)
             try:
                 for row in range(self.creation_table.rowCount()):
                     item = self.creation_table.item(row, 5)
-                    if item and item.data(Qt.UserRole) == "checking":
-                        item.setText(self._t("editing"))
-                        item.setData(Qt.UserRole, "editing")
-                        item.setToolTip("")
+                    if item is None:
+                        continue
+                    if item.data(Qt.UserRole) == 'checking':
+                        code, detail = 'editing', ''
+                    else:
+                        checked += 1
+                        code = 'preview_partial'
+                        detail = self._t('preview_partial_tip', result=item.toolTip() or item.text())
+                    item.setText(self._t(code))
+                    item.setData(Qt.UserRole, code)
+                    item.setData(_MISSING_TARGET_TITLE_ROLE, None)
+                    item.setToolTip(detail)
+                    self._highlight_incomplete(row, code)
             finally:
                 self.creation_table.blockSignals(False)
+            status = self._t('preview_interrupted', checked=checked, total=self.creation_table.rowCount())
+            if worker.failed:
+                status += ' ' + self._t('failed', error=worker.failure_message)
             self._refresh_creation_summary()
             self._show_creation_detail()
         else:
@@ -1743,9 +1793,9 @@ class CategoryTransferTab(QWidget):
                              linked=len(self._existing_linked_categories),
                              drafts=sum(result["status"] in {"needs_translation", "needs_content"} for result in worker.results),
                              errors=sum(result["status"] == "error" for result in worker.results))
-        if not worker.failed and not worker._stop:
+        if not interrupted:
             self.bar.setValue(self.bar.maximum())
-        self._set_progress(self._t("preview_ready") if not worker.failed and not worker._stop else status)
+        self._set_progress(status if interrupted else self._t("preview_ready"))
         self._write_log(status)
         if worker.failed or any(result["status"] == "error" for result in worker.results):
             self.log_toggle.setChecked(True)
@@ -1759,7 +1809,8 @@ class CategoryTransferTab(QWidget):
 
     def start_creation(self, *, link_only=False):
         rows = self._link_only_rows if link_only else self._creation_rows
-        if self._busy or not self.creation_table.rowCount() or not rows or self._preview_context != self._creation_context():
+        context = self._creation_context()
+        if self._busy or not self.creation_table.rowCount() or not rows or self._preview_context != context:
             return
         # Keep the verified data, but execute it in the current visible order.
         positions = {row.source_title: index for index, row in enumerate(self._table_creation_rows())}
@@ -1769,10 +1820,11 @@ class CategoryTransferTab(QWidget):
         if not user or not password:
             self._warn("login_required")
             return
-        if not self._confirm_creation(link_only=link_only):
+        if (not self._confirm_creation(link_only=link_only) or self._busy
+                or context != self._creation_context() or self._preview_context != context):
             return
         self.creation_history.reset()
-        source, target, family = self._creation_context()
+        source, target, family = context
         apply_pwb_config(*self._context()[1:])
         self._linked_categories = list(self._existing_linked_categories)
         self._linked_context = self._creation_context()
@@ -2049,13 +2101,30 @@ class CategoryTransferTab(QWidget):
             self.article_worker = None
         worker.deleteLater()
 
-    @pause_sorting('creation_table')
+    def _switch_preparation_draft(self):
+        context = self._creation_context()
+        if context == self._preparation_context:
+            return False
+        rows, template, state = self._table_creation_rows(), self.title_template_edit.text(), self._preparation_input()
+        if rows or template or state[0] or state[1]:
+            self._preparation_drafts[self._preparation_context] = (rows, template, state)
+        self._preparation_context = context
+        rows, template, state = self._preparation_drafts.pop(context, ((), '', ('', {}, None, False)))
+        self._invalidate_creation()
+        self._restore_preparation_input(state)
+        self.title_template_edit.setText(template)
+        self._fill_creation_table(rows)
+        self._table_dirty = bool(rows)
+        self._show_creation_detail()
+        return True
+
     def _links_language_changed(self, *_args):
         if not self._busy:
             self._refresh_target()
-            self._invalidate_creation(clear_table=False)
-            for row in range(self.creation_table.rowCount()):
-                self._set_creation_qids(row, '', '')
+            if self._switch_preparation_draft():
+                self.bar.setRange(0, 1)
+                self.bar.setValue(0)
+                self._set_progress(self._t('ready'))
             self._set_busy(False)
 
     def _swap_links_languages(self):
@@ -2286,7 +2355,8 @@ class CategoryTransferTab(QWidget):
             self.stop()
         else:
             self.table.setRowCount(0)
-            self._invalidate_creation(clear_table=False)
+            if not self._switch_preparation_draft():
+                self._invalidate_creation(clear_table=False)
             self._set_busy(False)
             self.scan_history.reset()
 
@@ -2294,7 +2364,8 @@ class CategoryTransferTab(QWidget):
         if self._pending_context_reset:
             self._pending_context_reset = False
             self.table.setRowCount(0)
-            self._invalidate_creation(clear_table=False)
+            if not self._switch_preparation_draft():
+                self._invalidate_creation(clear_table=False)
             self._linked_categories = []
             self._set_busy(False)
             self.scan_history.reset()

@@ -1161,25 +1161,29 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.assertTrue(self.tab.create_btn.isEnabled())
         self.assertTrue(self.tab.sync_btn.isEnabled())
 
-    def test_changing_creation_language_or_global_target_preserves_input_but_invalidates_writes(self):
+    def test_changing_creation_language_or_profile_loads_a_separate_draft(self):
         rows = (CategoryCreationRow("Category:Saved", "Категория:Сохранено", "saved body"),)
         self.tab._fill_creation_table(rows, "ready_create")
         self.tab._creation_rows = rows
         self.tab._preview_context = self.tab._creation_context()
         self.tab.links_source_lang.setText("de")
-        self.assertEqual(rows, self.tab._table_creation_rows())
+        self.assertEqual((), self.tab._table_creation_rows())
         self.assertFalse(self.tab.create_btn.isEnabled())
         self.assertEqual("en", self.tab.source_lang.text())
-        self.tab.update_language("uk")
+        self.tab.links_source_lang.setText("en")
         self.assertEqual(rows, self.tab._table_creation_rows())
-        self.assertEqual(("de", "uk", "wikipedia"), self.tab._creation_context())
+        self.tab.update_language("uk")
+        self.assertEqual((), self.tab._table_creation_rows())
+        self.assertEqual(("en", "uk", "wikipedia"), self.tab._creation_context())
+        self.tab.update_language("ru")
+        self.assertEqual(rows, self.tab._table_creation_rows())
         self.assertEqual("editing", self.tab.creation_table.item(0, 5).data(Qt.UserRole))
 
     def test_preview_uses_creation_page_language_and_automatic_request_timing(self):
         rows = (CategoryCreationRow("Kategorie:A", "Категория:А", "body"),)
+        self.tab.links_source_lang.setText("de")
         self.tab._fill_creation_table(rows)
         self.tab._table_dirty = True
-        self.tab.links_source_lang.setText("de")
         with patch("wiki_cat_tool.gui.tabs.category_transfer_tab.CategoryTransferPreviewWorker") as worker_type:
             self.tab.preview_creation()
         self.assertEqual("de", worker_type.call_args.kwargs["source_lang"])
@@ -1200,9 +1204,11 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.tab.swap_links_languages_btn.click()
         self.assertEqual(('en', 'uk', 'wikipedia'), self.tab._creation_context())
         self.assertEqual(('en', 'ru', 'wikipedia'), self.tab._context())
-        self.assertEqual((row,), self.tab._table_creation_rows())
+        self.assertEqual((), self.tab._table_creation_rows())
         self.assertIsNone(self.tab._preview_context)
         self.assertFalse(self.tab.link_only_btn.isEnabled())
+        self.tab.swap_links_languages_btn.click()
+        self.assertEqual((row,), self.tab._table_creation_rows())
         self.assertEqual(['', ''], [self.tab.creation_table.item(0, col).text() for col in (3, 4)])
 
         self.tab._apply_row(dict(source_title='Category:Scanned', target_title='Категория:Просканировано',
@@ -1251,6 +1257,62 @@ class CategoryTransferUiTests(unittest.TestCase):
         self.tab._set_busy(False)
         self.assertFalse(self.tab.sync_btn.isEnabled())
         self.assertFalse(self.tab.open_sync())
+
+    def test_category_read_is_undoable_with_its_previous_file_and_scan_context(self):
+        old = CategoryCreationRow('Category:Old', 'Категория:Старая', 'old text')
+        new = CategoryCreationRow('Category:New', 'Категория:Новая', '')
+        self.tab.tsv_path.setText('old.tsv')
+        self.tab._preparation_scan_rows = {old.source_title: {'total': 1}}
+        self.tab._preparation_scan_context = self.tab._creation_context()
+        self.tab._fill_creation_table((old,))
+        self.tab._set_busy(True)
+        self.tab.read_worker = Mock(failed=False, _stop=False, error_count=0, results=[
+            dict(source_title=new.source_title, target_title=new.target_title),
+        ])
+        self.tab._preparation_read_finished()
+        self.assertEqual((new,), self.tab._table_creation_rows())
+        self.assertTrue(self.tab.creation_history.undo_action.isEnabled())
+        self.tab.creation_history.undo()
+        self.assertEqual((old,), self.tab._table_creation_rows())
+        self.assertEqual('old.tsv', self.tab.tsv_path.text())
+        self.assertEqual({old.source_title: {'total': 1}}, self.tab._preparation_scan_rows)
+        self.assertEqual(self.tab._creation_context(), self.tab._preparation_scan_context)
+        self.tab.creation_history.redo()
+        self.assertEqual((new,), self.tab._table_creation_rows())
+        self.assertEqual('', self.tab.tsv_path.text())
+        self.assertEqual({}, self.tab._preparation_scan_rows)
+
+    def test_content_guidance_uses_the_verified_target_title(self):
+        rows = (CategoryCreationRow('Category:Existing', 'Категория:Существующая', ''),
+                CategoryCreationRow('Category:Missing', 'Категория:Отсутствующая', ''))
+        self.tab._fill_creation_table(rows, 'checking')
+        self.tab._set_busy(True)
+        result = dict(index=0, row=rows[0], status='ready_link')
+        self.tab._preview_result(result)
+        self.assertEqual((False, False), self.tab._preparation_missing_columns())
+        missing = dict(index=1, row=rows[1], status='needs_content')
+        self.tab._preview_result(missing)
+        self.tab._preview_context = self.tab._creation_context()
+        self.tab.preview_worker = Mock(failed=False, _stop=False, results=[result, missing])
+        self.tab._preview_finished()
+        self.assertEqual((False, True), self.tab._preparation_missing_columns())
+        self.tab.creation_table.item(1, 1).setText('Категория:Другое название')
+        self.assertEqual((False, False), self.tab._preparation_missing_columns())
+
+    def test_stopped_preview_marks_partial_results_and_reports_count(self):
+        rows = (CategoryCreationRow('Category:A', 'Категория:А', ''),
+                CategoryCreationRow('Category:B', 'Категория:Б', ''))
+        self.tab._fill_creation_table(rows, 'checking')
+        self.tab._set_busy(True)
+        self.tab.bar.setRange(0, 100)
+        self.tab.bar.setValue(60)
+        self.tab._preview_result(dict(index=0, row=rows[0], status='ready_link'))
+        self.tab.preview_worker = Mock(failed=False, _stop=True, results=[])
+        self.tab._preview_finished()
+        self.assertIn('Проверка прервана. Проверено 1 из 2', self.tab.bar.text())
+        self.assertEqual(['preview_partial', 'editing'],
+                         [self.tab.creation_table.item(i, 5).data(Qt.UserRole) for i in range(2)])
+        self.assertFalse(self.tab.link_only_btn.isEnabled())
 
     def test_scan_report_round_trip_preserves_counts_and_second_stage_list(self):
         self.add_rows()
