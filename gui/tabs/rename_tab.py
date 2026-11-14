@@ -159,10 +159,13 @@ class RenameTab(QWidget):
         add_info_button(self, row_p2, lambda: self._t('help.rename.phase2'), inline=True)
         row_p2.addStretch(1)
 
-        # Опция: Локативы
+        # Дополнительный поиск при категоризации через шаблоны
         row_loc = QHBoxLayout()
+        row_loc.setContentsMargins(16, 0, 0, 0)
         self.locatives_cb = QCheckBox(self._t('ui.locative_changes_main'))
         self.locatives_cb.setChecked(False)
+        self.locatives_cb.setEnabled(self.find_in_templates_cb.isChecked())
+        self.find_in_templates_cb.toggled.connect(self.locatives_cb.setEnabled)
         row_loc.addWidget(self.locatives_cb)
         add_info_button(self, row_loc, lambda: self._t('help.rename.locative'), inline=True)
         row_loc.addStretch(1)
@@ -257,8 +260,8 @@ class RenameTab(QWidget):
             pass
         transfer_opts_col.addWidget(_wrap(row_p1))
         transfer_opts_col.addWidget(_wrap(row_p2))
-        transfer_opts_col.addWidget(_wrap(row_documentation))
         transfer_opts_col.addWidget(_wrap(row_loc))
+        transfer_opts_col.addWidget(_wrap(row_documentation))
         transfer_opts_col.addStretch(1)
         rules_col = QVBoxLayout()
         rules_col.setSpacing(4)
@@ -1020,7 +1023,7 @@ class RenameTab(QWidget):
             self.move_members_cb.isChecked(),
             (self.rename_comment_edit.text() or '').strip(),
             title_regex,
-            self.locatives_cb.isChecked(),
+            self.find_in_templates_cb.isChecked() and self.locatives_cb.isChecked(),
             process_documentation=self.documentation_cb.isChecked(),
         )
         
