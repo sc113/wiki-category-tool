@@ -15,7 +15,62 @@ from ..constants import REQUEST_HEADERS
 from ..core.api_client import APIRequestError, WikimediaAPIClient
 from ..core.localization import translate_runtime
 from ..core.category_tree import walk_subcategories
-from ..core.category_transfer import CategoryTransferReader, CategoryPair
+from ..core.category_transfer import CategoryTransferReader, CategoryPair, TransferStopped
+
+
+class CategoryMapFetchWorker(QThread):
+    """Read all direct members of the source categories in TSV order."""
+
+    progress = Signal(str)
+    category_done = Signal()
+    result_ready = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, categories, *, lang, family):
+        super().__init__()
+        self.categories = categories
+        self.lang = lang
+        self.family = family
+        self._stop_event = threading.Event()
+
+    def request_stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        reader = CategoryTransferReader(self.lang, self.lang, self.family, self._stop_event)
+        reader.on_retry = self.progress.emit
+        try:
+            found = {}
+            read = set()
+            for index, name in enumerate(self.categories, 1):
+                reader.check_stop()
+                category = reader.category_title(name, self.lang)
+                if category in read:
+                    self.category_done.emit()
+                    continue
+                read.add(category)
+                self.progress.emit(translate_runtime('ui.source.map_reading').format(
+                    index=index, total=len(self.categories), category=category))
+                params = {'action': 'query', 'list': 'categorymembers', 'cmtitle': category,
+                          'cmlimit': 'max'}
+                while True:
+                    response = reader.request(self.lang, params)
+                    found.update((page['title'], None)
+                                 for page in response.get('query', {}).get('categorymembers', []))
+                    continuation = response.get('continue')
+                    if not continuation:
+                        break
+                    params.update(continuation)
+                self.category_done.emit()
+            reader.check_stop()
+            self.result_ready.emit(list(found))
+        except TransferStopped:
+            pass
+        except Exception as exc:
+            if not self._stop_event.is_set():
+                self.failed.emit(translate_runtime('ui.source.api_error').format(error=exc))
+        finally:
+            reader.close()
 
 
 class CategoryLanguageProbeWorker(QThread):

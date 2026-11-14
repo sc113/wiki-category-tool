@@ -49,6 +49,7 @@ The overview includes scanning, preparation, and interwiki linking. Scanning cou
 - Read page or category contents and export them to UTF-8 TSV files.
 - Replace existing pages or create missing pages in bulk from TSV input.
 - Rename pages and optionally move direct category links and template-based categorization.
+- Replace one category with multiple categories from a TSV, with configurable sort keys.
 - Preview and remove redundant broad categories when more precise categories are present.
 - Remove duplicate target categories using a one-column TSV list.
 - Synchronize articles and subcategories between language editions using Wikidata sitelinks and fallback matching.
@@ -128,6 +129,18 @@ A one-column file enables duplicate-category cleanup mode:
 CategoryToDeduplicate
 ```
 
+### Replace categories
+
+Use a TSV with no header row: the source category goes in the first column, followed by one or more replacement categories. The category namespace prefix is optional.
+
+```tsv
+Old category	New category	Another category|Sort key
+```
+
+- **Read pages from TSV** — loads the direct members of categories in the first column and removes duplicate page titles. Also available under **Redundant categories**.
+- **Carry over the sort key** — off by default. A key specified after `|` in a replacement cell takes priority; `Category name|` sets an empty key.
+- **Reason** — appended after a dash in the edit summary. Existing replacement categories are not duplicated.
+
 ## Application sections
 
 - **Overview** — session information, interface settings, updates, statistics, and history.
@@ -136,6 +149,7 @@ CategoryToDeduplicate
 - **Create** — create only pages that do not already exist.
 - **Rename** — rename pages and transfer category membership, including categories stored in template parameters.
 - **Redundant categories** — preview and remove broad or duplicate categories.
+- **Replace categories** — preview a map and apply it to selected pages.
 - **Category transfer** — category scanning, preparation, content synchronization. Use each stage independently or carry lists through the sequence. A separate Interwiki linking tab handles existing category pages.
 
 ### Category transfer

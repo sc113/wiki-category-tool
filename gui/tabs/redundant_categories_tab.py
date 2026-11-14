@@ -3,14 +3,16 @@
 Вкладка удаления избыточных категорий.
 """
 
+import csv
+
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QToolButton, QTextEdit, QGroupBox, QProgressBar, QMessageBox,
     QSizePolicy
 )
 
+from ...core.category_replacement import read_category_first_column
 from ...core.pywikibot_config import apply_pwb_config
 from ...core.localization import translate_key
 from ...core.redundant_category_logic import (
@@ -25,11 +27,13 @@ from ...utils import (
     resolve_project_language,
 )
 from ...workers.redundant_category_worker import RedundantCategoryWorker
+from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace
+from ..widgets.category_creation_table import TransferActionsLayout, TransferToolbarLayout
 from ..widgets.shared_panels import CategorySourcePanel, TsvPreviewPanel
 from ..widgets.ui_helpers import (
-    add_info_button, pick_file, open_from_edit, create_log_wrap,
-        tsv_preview_from_path, init_progress, inc_progress,
-    log_message, set_start_stop_ratio, is_default_summary, check_tsv_format
+    add_info_button, pick_file, open_from_edit,
+    tsv_preview_from_path, init_progress, inc_progress,
+    log_message, is_default_summary, check_tsv_format
 )
 
 
@@ -103,6 +107,7 @@ class RedundantCategoriesTab(QWidget):
                 '<b>Or load list from file</b>',
             ),
             file_caption=self._t('ui.file_txt', 'File (.txt):'),
+            compact=True,
         )
         self.redundant_ns_combo = self.source_panel.ns_combo
         self.manual_list = self.source_panel.manual_list
@@ -112,6 +117,7 @@ class RedundantCategoriesTab(QWidget):
         try:
             # Блок 1: сжимается вместе с блоком 2 раньше лога.
             self.source_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+            self.source_panel.setMinimumWidth(260)
         except Exception:
             pass
         main_layout.addWidget(self.source_panel, 3)
@@ -121,13 +127,6 @@ class RedundantCategoriesTab(QWidget):
         try:
             right_layout.setContentsMargins(6, 0, 0, 0)
             right_layout.setSpacing(8)
-        except Exception:
-            pass
-
-        content_row = QHBoxLayout()
-        try:
-            content_row.setContentsMargins(0, 0, 0, 0)
-            content_row.setSpacing(8)
         except Exception:
             pass
 
@@ -196,49 +195,22 @@ class RedundantCategoriesTab(QWidget):
         self.preview_titles = self.preview_panel.titles_edit
         self.preview_rest = self.preview_panel.content_edit
         preview_layout.addWidget(self.preview_panel, 1)
-        content_row.addWidget(preview_wrap, 6)
 
-        log_wrap = QWidget()
-        log_layout = QVBoxLayout(log_wrap)
-        try:
-            log_layout.setContentsMargins(6, 0, 0, 0)
-        except Exception:
-            pass
-        try:
-            # Блок 3 (лог) держим читаемым дольше остальных.
-            log_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            log_wrap.setMinimumWidth(200)
-        except Exception:
-            pass
         self.run_log = QTextEdit()
         self.run_log.setReadOnly(True)
-        mono_font = QFont('Consolas', 9)
-        if not mono_font.exactMatch():
-            mono_font = QFont('Courier New', 9)
-        mono_font.setFixedPitch(True)
-        self.run_log.setFont(mono_font)
-
-        wrapped_log = create_log_wrap(self, self.run_log, with_header=True)
-
-        def _clear_all():
-            self._reset_preview_state(clear_preview=True, clear_log=True)
-
-        wrapped_log.clear_button.clicked.connect(_clear_all)
-
-        log_layout.addWidget(wrapped_log, 1)
-        content_row.addWidget(log_wrap, 5)
-        try:
-            content_row.setStretch(0, 6)
-            content_row.setStretch(1, 5)
-        except Exception:
-            pass
-        try:
-            content_row.setStretch(0, 1)
-            content_row.setStretch(1, 1)
-        except Exception:
-            pass
-
-        right_layout.addLayout(content_row, 1)
+        self.log_panel = CategoryLogPanel(self.run_log, lambda key: self._t(f'ui.transfer.{key}', key))
+        self.fetch_map_btn = QPushButton()
+        self.fetch_map_btn.setObjectName('sourceActionButton')
+        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
+        toolbar = TransferToolbarLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(6)
+        toolbar.addWidget(self.fetch_map_btn)
+        toolbar.addWidget(self.log_panel.toggle)
+        right_layout.addLayout(toolbar)
+        workspace = CategoryWorkspace(preview_wrap, minimum_log_width=160)
+        workspace.set_log_panel(self.log_panel)
+        right_layout.addWidget(workspace, 1)
 
         comments_group = QGroupBox(self._t('ui.cleanup.comments_group', 'Edit summaries'))
         comments_layout = QVBoxLayout(comments_group)
@@ -283,7 +255,9 @@ class RedundantCategoriesTab(QWidget):
 
         right_layout.addWidget(comments_group)
 
-        controls_row = QHBoxLayout()
+        controls_row = TransferActionsLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(6)
         self.progress_label = QLabel(self._t('ui.processed_counter_initial', 'Processed 0/0'))
         try:
             self.progress_label.setVisible(False)
@@ -307,22 +281,24 @@ class RedundantCategoriesTab(QWidget):
             pass
         progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress_bar)
-        controls_row.addWidget(progress_wrap, 1)
+        right_layout.addWidget(progress_wrap)
 
         self.preview_btn = QPushButton(self._t('ui.preview', 'Preview'))
+        self.preview_btn.setObjectName('sourceActionButton')
         self.preview_btn.clicked.connect(self.preview_pairs)
         controls_row.addWidget(self.preview_btn)
 
-        self.start_btn = QPushButton(self._t('ui.cleanup.start_removal', 'Start removal'))
+        self.start_btn = QPushButton(self._t('ui.cleanup.remove', 'Remove'))
+        self.start_btn.setObjectName('sourceActionButton')
         self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self.start_run)
         controls_row.addWidget(self.start_btn)
 
         self.stop_btn = QPushButton(self._t('ui.stop', 'Stop'))
+        self.stop_btn.setObjectName('sourceActionButton')
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_run)
         controls_row.addWidget(self.stop_btn)
-        set_start_stop_ratio(self.start_btn, self.stop_btn, 3)
 
         right_layout.addLayout(controls_row)
 
@@ -335,7 +311,42 @@ class RedundantCategoriesTab(QWidget):
             pass
         self.source_panel.set_log_widget(self.run_log)
         self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
+        self.source_panel.fetch_started.connect(self._on_source_fetch_started)
+        self.source_panel.fetch_finished.connect(self._on_source_fetch_finished)
+        self.refresh_localized_texts()
         self._set_action_mode_preview()
+
+    def refresh_localized_texts(self):
+        self.source_panel.refresh_localized_texts()
+        self.log_panel.refresh_localized_texts()
+        if self.source_panel._fetch_active_button is not self.fetch_map_btn:
+            self.fetch_map_btn.setText(self._t('ui.source.fetch_map', 'Read pages from TSV'))
+            self.fetch_map_btn.setToolTip(self._t('ui.source.fetch_map_tip', ''))
+
+    def fetch_map_pages(self):
+        if self.source_panel._is_fetch_stop_button(self.fetch_map_btn):
+            self.source_panel.stop_fetch_titles()
+            return
+        try:
+            categories = read_category_first_column(self.categories_path_edit.text().strip())
+            if not categories:
+                raise ValueError(self._t('ui.source.empty_first_column', 'The first column is empty.'))
+        except (OSError, ValueError, csv.Error) as exc:
+            QMessageBox.warning(self, self._t('ui.error', 'Error'), str(exc))
+            return
+        self.source_panel.fetch_map_titles(categories, self.fetch_map_btn)
+
+    def _on_source_fetch_started(self):
+        self.log_panel.set_expanded(True)
+        self.preview_btn.setEnabled(False)
+        self.start_btn.setEnabled(False)
+        self.fetch_map_btn.setEnabled(False)
+
+    def _on_source_fetch_finished(self):
+        self.preview_btn.setEnabled(True)
+        self.start_btn.setEnabled(self._preview_ready)
+        self.fetch_map_btn.setEnabled(True)
+        self.refresh_localized_texts()
 
     def _set_action_mode_preview(self):
         self._preview_ready = False
@@ -360,26 +371,12 @@ class RedundantCategoriesTab(QWidget):
         worker = getattr(self, 'rcworker', None)
         if worker and worker.isRunning():
             return
-        self._reset_preview_state(clear_preview=True, clear_log=False)
-
-    def _reset_preview_state(self, *, clear_preview: bool, clear_log: bool):
-        if clear_preview:
-            try:
-                self.preview_panel.clear()
-            except Exception:
-                pass
-        if clear_log:
-            try:
-                self.run_log.clear()
-            except Exception:
-                pass
-        init_progress(self.progress_label, self.progress_bar, 0)
-        self.stop_btn.setEnabled(False)
+        self.preview_panel.clear()
         self._set_action_mode_preview()
 
     def preview_pairs(self):
         worker = getattr(self, 'rcworker', None)
-        if worker and worker.isRunning():
+        if self.source_panel._fetch_worker is not None or (worker and worker.isRunning()):
             return
         self._set_action_mode_preview()
 
@@ -414,6 +411,10 @@ class RedundantCategoriesTab(QWidget):
             self._set_action_mode_preview()
 
     def start_run(self):
+        if self.source_panel._fetch_worker is not None or (
+            self.rcworker is not None and self.rcworker.isRunning()
+        ):
+            return
         if not self._preview_ready:
             QMessageBox.warning(
                 self,
@@ -483,6 +484,11 @@ class RedundantCategoriesTab(QWidget):
 
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.fetch_map_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
+        self.source_panel.setEnabled(False)
+        self.categories_path_edit.setReadOnly(True)
+        self.log_panel.set_expanded(True)
         self.run_log.clear()
         init_progress(self.progress_label, self.progress_bar, len(titles))
         mode_name = 'dedupe' if detected_mode == REDUNDANT_MODE_DEDUP else 'pairs'
@@ -547,6 +553,10 @@ class RedundantCategoriesTab(QWidget):
 
     def _on_run_finished(self):
         self.stop_btn.setEnabled(False)
+        self.fetch_map_btn.setEnabled(True)
+        self.preview_btn.setEnabled(True)
+        self.source_panel.setEnabled(True)
+        self.categories_path_edit.setReadOnly(False)
         if self._preview_ready:
             self._set_action_mode_run()
         else:

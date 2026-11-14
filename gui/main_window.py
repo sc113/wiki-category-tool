@@ -87,12 +87,14 @@ class MainWindow(QMainWindow):
         8: ('ui.transfer.recon_title', 'ui.transfer.subtitle'),
         9: ('ui.transfer.links_title', 'ui.transfer.links_subtitle'),
         10: ('ui.transfer.interwiki_title', 'ui.transfer.interwiki_subtitle'),
+        11: ('ui.cat_replace.title', 'ui.cat_replace.subtitle'),
     }
     _NAV_ITEMS = [
         (1, 'ui.read', 'read'),
         (2, 'ui.replace', 'replace'),
         (3, 'ui.create', 'create'),
         (4, 'ui.rename', 'rename'),
+        (11, 'ui.cat_replace.title', 'replace'),
         (5, 'ui.redundant_categories', 'cleanup'),
         (10, 'ui.transfer.nav_interwiki', 'sync'),
     ]
@@ -188,6 +190,8 @@ class MainWindow(QMainWindow):
             'create_edits_total': 0,
             'rename_edits_total': 0,
             'cleanup_edits_total': 0,
+            'category_replace_runs': 0,
+            'category_replace_edits_total': 0,
             'sync_edits_total': 0,
             'transfer_scan_runs': 0,
             'transfer_scan_categories_total': 0,
@@ -223,6 +227,7 @@ class MainWindow(QMainWindow):
         self.create_tab = None
         self.rename_tab = None
         self.redundant_categories_tab = None
+        self.category_replacement_tab = None
         self.category_content_sync_tab = None
         self.category_transfer_tab = None
         self.category_interwiki_tab = None
@@ -724,7 +729,7 @@ class MainWindow(QMainWindow):
         try:
             show_updates = bool(index == 7)
             self.header_update_btn.setVisible(show_updates)
-            show_prefix = bool(index in (1, 2, 3, 4, 5, 6, 8))
+            show_prefix = bool(index in (1, 2, 3, 4, 5, 6, 8, 11))
             if hasattr(self, 'header_prefix_host') and self.header_prefix_host is not None:
                 self.header_prefix_host.setVisible(show_prefix)
             if show_prefix:
@@ -752,6 +757,7 @@ class MainWindow(QMainWindow):
             5: 'help.cleanup.source',
             6: 'help.sync.main',
             8: 'help.transfer.scan',
+            11: 'help.cleanup.source',
         }
         key = key_map.get(int(index), '')
         if not key:
@@ -1244,7 +1250,8 @@ class MainWindow(QMainWindow):
             pass
         self._update_header_for_tab(self.tabs.currentIndex() if hasattr(self, 'tabs') else -1)
         self._apply_widget_text_translation()
-        for name in ('category_transfer_tab', 'category_interwiki_tab', 'category_content_sync_tab'):
+        for name in ('category_transfer_tab', 'category_interwiki_tab', 'category_content_sync_tab',
+                     'redundant_categories_tab', 'category_replacement_tab'):
             tab = getattr(self, name, None)
             if tab is not None and hasattr(tab, 'refresh_localized_texts'):
                 tab.refresh_localized_texts()
@@ -3135,6 +3142,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.category_transfer_tab, self._t('ui.transfer.recon_title'))
         self.tabs.addTab(self.category_transfer_tab.creation_stage, self._t('ui.transfer.links_title'))
         self.tabs.addTab(self.category_interwiki_tab, self._t('ui.transfer.interwiki_title'))
+        self.tabs.addTab(self.category_replacement_tab, self._t('ui.cat_replace.title'))
         try:
             self.tabs.setCurrentIndex(0)
         except Exception:
@@ -3182,6 +3190,7 @@ class MainWindow(QMainWindow):
         from .tabs.create_tab import CreateTab
         from .tabs.rename_tab import RenameTab
         from .tabs.redundant_categories_tab import RedundantCategoriesTab
+        from .tabs.category_replacement_tab import CategoryReplacementTab
         from .tabs.category_content_sync_tab import CategoryContentSyncTab
         from .tabs.category_transfer_tab import CategoryTransferTab
         from .tabs.category_interwiki_tab import CategoryInterwikiTab
@@ -3193,6 +3202,7 @@ class MainWindow(QMainWindow):
         self.create_tab = CreateTab(self)
         self.rename_tab = RenameTab(self)
         self.redundant_categories_tab = RedundantCategoriesTab(self)
+        self.category_replacement_tab = CategoryReplacementTab(self)
         self.category_content_sync_tab = CategoryContentSyncTab(self)
         self.category_transfer_tab = CategoryTransferTab(self)
         self.category_interwiki_tab = CategoryInterwikiTab(self)
@@ -3206,6 +3216,7 @@ class MainWindow(QMainWindow):
             self.create_tab,
             self.rename_tab,
             self.redundant_categories_tab,
+            self.category_replacement_tab,
             self.category_content_sync_tab,
             self.category_transfer_tab,
             self.category_interwiki_tab,
@@ -3267,6 +3278,7 @@ class MainWindow(QMainWindow):
             self.create_tab,
             self.rename_tab,
             self.redundant_categories_tab,
+            self.category_replacement_tab,
             self.category_content_sync_tab,
         ):
             try:
@@ -3434,7 +3446,7 @@ class MainWindow(QMainWindow):
         try:
             # Вкладки: 0=Авторизация, 1=Чтение, 2=Перезапись, 3=Создание,
             # 4=Переименование, 5=Удаление избыточных категорий, 6=Синхронизация категорий
-            if index in (1, 2, 3, 4, 5, 6):
+            if index in (1, 2, 3, 4, 5, 6, 11):
                 fam = self.current_family or 'wikipedia'
                 lang = self.current_lang or 'ru'
                 force_needed = False
@@ -3518,6 +3530,7 @@ class MainWindow(QMainWindow):
                 getattr(self, 'create_tab', None),
                 getattr(self, 'rename_tab', None),
                 getattr(self, 'redundant_categories_tab', None),
+                getattr(self, 'category_replacement_tab', None),
                 getattr(self, 'category_content_sync_tab', None),
                 getattr(self, 'category_transfer_tab', None),
                 getattr(self, 'category_interwiki_tab', None),
@@ -3572,7 +3585,7 @@ class MainWindow(QMainWindow):
                 self._operation_stats['edit_pages_total'] = int(
                     self._operation_stats.get('edit_pages_total', 0) + count_val
                 )
-            elif op_key in {'transfer_scan', 'transfer_prepare', 'interwiki'}:
+            elif op_key in {'transfer_scan', 'transfer_prepare', 'interwiki', 'category_replace'}:
                 runs_key = f'{op_key}_runs'
                 total_key = (f'{op_key}_categories_total' if op_key == 'transfer_scan'
                              else f'{op_key}_edits_total')
@@ -3631,6 +3644,7 @@ class MainWindow(QMainWindow):
             (self.create_tab, 'ns_combo_create'),
             (self.rename_tab, 'rename_ns_combo'),
             (self.redundant_categories_tab, 'redundant_ns_combo'),
+            (getattr(self.category_replacement_tab, 'source_panel', None), 'ns_combo'),
             (self.category_content_sync_tab, 'sync_ns_combo'),
             (self.category_transfer_tab, 'scan_ns_combo'),
         ]
@@ -3847,6 +3861,9 @@ class MainWindow(QMainWindow):
             ('create', self.create_tab, 'cworker'),
             ('rename', self.rename_tab, 'mrworker'),
             ('redundant', self.redundant_categories_tab, 'rcworker'),
+            ('redundant_read', getattr(self.redundant_categories_tab, 'source_panel', None), '_fetch_worker'),
+            ('category_replace', self.category_replacement_tab, 'worker'),
+            ('category_replace_read', getattr(self.category_replacement_tab, 'source_panel', None), '_fetch_worker'),
             ('sync', self.category_content_sync_tab, 'sync_worker'),
             ('sync_preview', self.category_content_sync_tab, 'preview_worker'),
             ('sync_read', getattr(self.category_content_sync_tab, 'source_panel', None), '_fetch_worker'),

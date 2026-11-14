@@ -44,12 +44,14 @@ class OperationStatisticsTests(unittest.TestCase):
         MainWindow.record_operation(window, 'transfer_scan', 12)
         MainWindow.record_operation(window, 'transfer_prepare', 3)
         MainWindow.record_operation(window, 'interwiki', 1)
+        MainWindow.record_operation(window, 'category_replace', 2)
         self.assertEqual(12, window._operation_stats['transfer_scan_categories_total'])
         self.assertEqual(3, window._operation_stats['transfer_prepare_edits_total'])
         self.assertEqual(1, window._operation_stats['interwiki_edits_total'])
-        self.assertEqual(11, window._operation_stats['edit_pages_total'])
-        self.assertEqual(3, window._save_ui_settings.call_count)
-        self.assertEqual(['transfer_scan', 'transfer_prepare', 'interwiki'],
+        self.assertEqual(2, window._operation_stats['category_replace_edits_total'])
+        self.assertEqual(13, window._operation_stats['edit_pages_total'])
+        self.assertEqual(4, window._save_ui_settings.call_count)
+        self.assertEqual(['transfer_scan', 'transfer_prepare', 'interwiki', 'category_replace'],
                          [row['op'] for row in window._operation_history])
         MainWindow.reset_operation_stats(window)
         self.assertFalse(any(window._operation_stats.values()))
@@ -79,7 +81,7 @@ class OperationStatisticsTests(unittest.TestCase):
         tab.update_stats(stats, history)
         self.assertEqual('Preparation', tab._bar_title_labels['transfer_prepare'].text())
         self.assertIn('Preparation: +3', tab.history_list.item(1).text())
-        self.assertEqual(8, len(tab._operation_values))
+        self.assertEqual(9, len(tab._operation_values))
 
     def test_stopped_scan_counts_only_successes_from_this_worker(self):
         tab = CategoryTransferTab(self.parent)

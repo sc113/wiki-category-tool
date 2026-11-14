@@ -18,8 +18,8 @@ from ...constants import PREFIX_TOOLTIP, REQUEST_HEADERS
 from ...core.api_client import REQUEST_SESSION, _rate_wait
 from ...core.localization import translate_key
 from ...utils import debug
-from ...workers.category_fetch_worker import CategoryFetchWorker
-from .ui_helpers import add_info_button, pick_file, open_from_edit, log_message, reading_progress_text, set_reading_progress, create_spin_control
+from ...workers.category_fetch_worker import CategoryFetchWorker, CategoryMapFetchWorker
+from .ui_helpers import add_info_button, pick_file, open_from_edit, log_message, reading_progress_text, set_reading_progress, create_spin_control, init_progress, inc_progress
 
 
 _GROUP_STYLE = (
@@ -93,7 +93,7 @@ class CategoryReadControls(QWidget):
 
     def __init__(self, *, translate, category_section_label, category_placeholder,
                  on_read, on_append, on_petscan, help_text,
-                 modes=('categories_only', 'non_categories_only', 'both'), parent=None):
+                 modes=('categories_only', 'non_categories_only', 'both'), compact=False, parent=None):
         super().__init__(parent)
         self._t = translate
         self.help_text = help_text
@@ -218,10 +218,20 @@ class CategoryReadControls(QWidget):
         self.append_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.open_petscan_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         buttons_layout.addWidget(self.replace_list_btn, 1)
-        buttons_layout.addWidget(self.append_list_btn, 1)
-        buttons_layout.addWidget(self.open_petscan_btn, 1)
-        buttons_layout.addSpacing(6)
-        buttons_layout.addWidget(self.fetch_mode_combo, 1)
+        buttons_layout.addWidget(self.append_list_btn, 0 if compact else 1)
+        if compact:
+            buttons_layout.setContentsMargins(0, 0, 8, 0)
+            mode_row = QHBoxLayout()
+            mode_row.setContentsMargins(0, 0, 8, 0)
+            mode_row.setSpacing(4)
+            self.fetch_mode_combo.setMinimumWidth(104)
+            mode_row.addWidget(self.fetch_mode_combo, 1)
+            mode_row.addWidget(self.open_petscan_btn, 0)
+            category_fetch_layout.addLayout(mode_row, 2, 0, 1, 5)
+        else:
+            buttons_layout.addWidget(self.open_petscan_btn, 1)
+            buttons_layout.addSpacing(6)
+            buttons_layout.addWidget(self.fetch_mode_combo, 1)
         self.equalize_buttons()
         labels = {'categories_only': 'ui.source.fetch_mode.categories_only',
                   'non_categories_only': 'ui.source.fetch_mode.non_categories_only_alt',
@@ -262,12 +272,14 @@ class CategorySourcePanel(QGroupBox):
         file_caption: str = '',
         default_input_path: str = '',
         file_pattern='*.txt',
+        compact=False,
     ):
         self.parent_window = parent_window or parent
         super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
         self.file_pattern = file_pattern
+        self._compact = compact
         self._fetch_worker = None
         self._fetch_base_text = ''
         self._fetch_append_mode = False
@@ -346,7 +358,7 @@ class CategorySourcePanel(QGroupBox):
                 )
                 for i in range(self.fetch_mode_combo.count())
             ) + 48
-            self.fetch_mode_combo.setMinimumWidth(max(136, popup_width))
+            self.fetch_mode_combo.setMinimumWidth(104 if self._compact else max(136, popup_width))
             self.fetch_mode_combo.setMaximumWidth(16777215)
             self.fetch_mode_combo.view().setMinimumWidth(popup_width)
         except Exception:
@@ -445,7 +457,8 @@ class CategorySourcePanel(QGroupBox):
             category_placeholder=category_placeholder,
             on_read=self.fetch_selected_mode_replace, on_append=self.fetch_selected_mode_append,
             on_petscan=self.open_petscan_in_browser,
-            help_text=lambda: self._t('help.category.read_controls', ''), parent=self,
+            help_text=lambda: self._t('help.category.read_controls', ''),
+            compact=self._compact, parent=self,
         )
         for name in ('cat_edit', 'depth_spin', 'depth_plus_btn', 'depth_minus_btn',
                      'replace_list_btn', 'append_list_btn', 'open_petscan_btn', 'fetch_mode_combo'):
@@ -457,7 +470,7 @@ class CategorySourcePanel(QGroupBox):
         self.manual_list = QTextEdit()
         self.manual_list.setProperty('_wct_skip_text_translation', True)
         self.manual_list.setPlaceholderText(manual_placeholder)
-        self.manual_list.setMinimumHeight(220)
+        self.manual_list.setMinimumHeight(62 if self._compact else 220)
         layout.addWidget(self.manual_list, 1)
         self.list_edit = self.manual_list
         try:
@@ -961,6 +974,36 @@ class CategorySourcePanel(QGroupBox):
         worker.finished.connect(self._on_fetch_titles_finished)
         self._fetch_worker = worker
         worker.start()
+
+    def fetch_map_titles(self, categories, trigger_button):
+        """Replace the working list after the complete first-column read."""
+        if self._fetch_worker is not None:
+            return
+        worker = CategoryMapFetchWorker(categories, lang=self.get_current_language(),
+                                        family=self.get_current_family())
+        worker.progress.connect(self._log)
+        worker.failed.connect(self._on_fetch_titles_failed)
+        worker.result_ready.connect(self._on_map_titles_ready)
+        worker.category_done.connect(self._on_map_category_done)
+        worker.finished.connect(self._on_fetch_titles_finished)
+        self._fetch_worker = worker
+        self.fetch_started.emit()
+        self._activate_fetch_stop_button(trigger_button)
+        self._set_fetch_controls_enabled(False)
+        self._capture_fetch_progress_state()
+        init_progress(self._fetch_progress_label_widget, self._fetch_progress_bar_widget, len(categories))
+        worker.start()
+
+    def _on_map_category_done(self):
+        inc_progress(self._fetch_progress_label_widget, self._fetch_progress_bar_widget)
+
+    def _on_map_titles_ready(self, titles):
+        if self._fetch_stop_requested:
+            return
+        self._log(self._t('ui.source.map_read_result', 'Fetched {count} unique pages.').format(count=len(titles)))
+        if titles:
+            self.in_path.clear()
+            self.manual_list.setPlainText('\n'.join(titles))
 
     def _on_fetch_titles_partial(self, titles: list[str], _stats: dict[str, int]) -> None:
         normalized_titles = [

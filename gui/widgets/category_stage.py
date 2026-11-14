@@ -424,11 +424,12 @@ class CategoryParametersPanel(QScrollArea):
 class CategoryWorkspace(QSplitter):
     """The same table/log arrangement for every independent stage."""
 
-    def __init__(self, content, parent=None):
+    def __init__(self, content, parent=None, *, minimum_log_width=240, log_fraction=.4):
         super().__init__(Qt.Horizontal, parent)
         self.setObjectName('categoryStageWorkspace')
         self.log_panel = None
-        self._log_fraction = .4
+        self._minimum_log_width = minimum_log_width
+        self._log_fraction = log_fraction
         self.setStyleSheet('QSplitter#categoryStageWorkspace::handle { background: transparent; }')
         self.setChildrenCollapsible(False)
         self.setHandleWidth(6)
@@ -451,7 +452,8 @@ class CategoryWorkspace(QSplitter):
             return
         if self.log_panel.expanded:
             self.log_panel.show()
-            width = max(240, min(int(self.width() * self._log_fraction), max(240, self.width() - 280)))
+            width = max(self._minimum_log_width, min(int(self.width() * self._log_fraction),
+                        self.width() - 280))
             self.setSizes([max(1, self.width() - width), width])
         else:
             if self.log_panel.isVisible() and self.sizes()[1] > 0:
