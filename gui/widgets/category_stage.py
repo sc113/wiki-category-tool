@@ -481,8 +481,15 @@ def category_map_layout(tab, source_panel, source_action):
     columns = QHBoxLayout(content)
     columns.setContentsMargins(0, 0, 0, 0)
     columns.setSpacing(8)
-    source_panel.layout().addSpacing(4)
-    source_panel.layout().addWidget(source_action, 0, Qt.AlignLeft)
+    source_layout = source_panel.layout()
+    source_layout.addSpacing(6)
+    source_label = QLabel(source_panel._t(
+        'ui.source.fetch_map_section', '<b>Or collect all source category members:</b>',
+    ))
+    source_label.setWordWrap(True)
+    source_label.setBuddy(source_action)
+    source_layout.addWidget(source_label)
+    source_layout.addWidget(source_action, 0, Qt.AlignLeft)
     columns.addWidget(source_panel, 1)
     scroll.setWidget(content)
     scroll.viewport().setAutoFillBackground(False)

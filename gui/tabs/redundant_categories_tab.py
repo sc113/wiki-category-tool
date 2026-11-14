@@ -81,7 +81,7 @@ class RedundantCategoriesTab(QWidget):
             group_title=self._t('ui.pages_source', 'Pages source'),
             category_section_label=self._t(
                 'ui.cleanup.fetch_category_content',
-                '<b>Fetch category contents</b>',
+                '<b>Fetch category contents:</b>',
             ),
             category_placeholder=self._t(
                 'ui.root_category_name',
@@ -89,7 +89,7 @@ class RedundantCategoriesTab(QWidget):
             ),
             manual_label=self._t(
                 'ui.cleanup.list_of_pages_to_process',
-                '<b>List of pages to process</b>',
+                '<b>List of pages to process:</b>',
             ),
             manual_placeholder=self._t(
                 'ui.page_list_one_per_line',
@@ -97,7 +97,7 @@ class RedundantCategoriesTab(QWidget):
             ),
             file_section_label=self._t(
                 'ui.cleanup.or_load_list_from_file',
-                '<b>Or load list from file</b>',
+                '<b>Or load list from file:</b>',
             ),
             file_caption=self._t('ui.file_txt', 'File (.txt):'),
         )
@@ -267,7 +267,7 @@ class RedundantCategoriesTab(QWidget):
         self.pairs_file_row.refresh_localized_texts()
         self.pairs_file_row.caption.setText(self._t('ui.category_pairs_tsv', 'Category pairs (.tsv):'))
         if self.source_panel._fetch_active_button is not self.fetch_map_btn:
-            self.fetch_map_btn.setText(self._t('ui.source.fetch_map', 'Members from TSV'))
+            self.fetch_map_btn.setText(self._t('ui.source.fetch_map', 'Collect'))
             self.fetch_map_btn.setToolTip(self._t('ui.source.fetch_map_tip', ''))
 
     def fetch_map_pages(self):

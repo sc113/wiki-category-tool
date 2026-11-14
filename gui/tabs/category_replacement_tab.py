@@ -38,6 +38,9 @@ class CategoryReplacementTab(QWidget):
             self, parent_window=self.parent_window,
             group_title=self._t('ui.pages_source'),
             help_text=self._t('help.cleanup.source'),
+            category_section_label=self._t('ui.cleanup.fetch_category_content'),
+            manual_label=self._t('ui.cleanup.list_of_pages_to_process'),
+            file_section_label=self._t('ui.cleanup.or_load_list_from_file'),
         )
         self.source_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.fetch_map_btn = QPushButton()
