@@ -15,7 +15,7 @@ import os
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QSizePolicy, QProgressBar,
     QMessageBox, QCheckBox, QGroupBox, QGraphicsOpacityEffect
 )
@@ -257,7 +257,6 @@ class RenameTab(QWidget):
         transfer_opts_layout.addLayout(row_p1)
         transfer_opts_layout.addLayout(row_documentation)
         transfer_opts_layout.addLayout(row_p2)
-        transfer_opts_layout.addSpacing(6)
 
         template_group = QGroupBox(self._t('ui.template_replacement_settings'))
         template_layout = QVBoxLayout(template_group)
@@ -272,18 +271,19 @@ class RenameTab(QWidget):
         rules_row.addStretch(1)
         template_layout.addSpacing(4)
         template_layout.addLayout(rules_row)
-        transfer_opts_layout.addWidget(template_group)
 
-        # Две рамки в одну строку
-        opts_row = QHBoxLayout()
-        try:
-            opts_row.setContentsMargins(0, 0, 0, 0)
-            opts_row.setSpacing(12)
-        except Exception:
-            pass
-        opts_row.addWidget(rename_opts_group, 4)
-        opts_row.addWidget(transfer_opts_group, 5)
-        v.addLayout(opts_row)
+        self._options_panel = QWidget()
+        options_grid = QGridLayout(self._options_panel)
+        options_grid.setContentsMargins(0, 0, 0, 0)
+        options_grid.setSpacing(12)
+        options_grid.setColumnStretch(0, 1)
+        options_grid.setColumnStretch(1, 1)
+        options_grid.addWidget(rename_opts_group, 0, 0)
+        options_grid.addWidget(transfer_opts_group, 0, 1)
+        options_grid.addWidget(template_group, 1, 0, 1, 2)
+        self._option_groups = (rename_opts_group, transfer_opts_group, template_group)
+        self._options_panel.installEventFilter(self)
+        v.addWidget(self._options_panel)
 
         # Комментарий к правке — перенесён вниз (между фильтром и прогрессом)
         self.rename_comment_edit = QLineEdit()
@@ -563,6 +563,22 @@ class RenameTab(QWidget):
                 self._last_theme_mode = current_theme
                 self._apply_rename_log_tree_theme()
             self._schedule_rename_log_autofit()
+
+    def eventFilter(self, watched, event):
+        if (watched is getattr(self, '_options_panel', None)
+                and event.type() in (QEvent.Resize, QEvent.LayoutRequest)):
+            layout = watched.layout()
+            needed = sum(group.minimumSizeHint().width() for group in self._option_groups)
+            fits = watched.width() >= needed + 2 * layout.horizontalSpacing()
+            template_group = self._option_groups[-1]
+            row, *_ = layout.getItemPosition(layout.indexOf(template_group))
+            if fits and row == 1:
+                layout.addWidget(template_group, 0, 2)
+                layout.setColumnStretch(2, 1)
+            elif not fits and row == 0:
+                layout.addWidget(template_group, 1, 0, 1, 2)
+                layout.setColumnStretch(2, 0)
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         try:
