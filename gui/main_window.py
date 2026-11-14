@@ -1897,10 +1897,6 @@ class MainWindow(QMainWindow):
             QLabel {
                 color: #d6edf0;
             }
-            QLabel#mutedParenText {
-                color: #8fb5ba;
-                font-size: 11px;
-            }
             QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTreeWidget, QTableWidget, QListWidget {
                 border-radius: 8px;
                 border: 1px solid rgba(111, 201, 208, 0.36);
@@ -2415,9 +2411,6 @@ class MainWindow(QMainWindow):
             QToolButton#miniResetButton:hover {
                 background: rgba(62, 72, 84, 0.96);
             }
-            QLabel#mutedParenText {
-                color: #9faab7;
-            }
             QSpinBox#depthSpin::up-button,
             QSpinBox#depthSpin::down-button {
                 border-left: 1px solid rgba(131, 143, 156, 0.5);
@@ -2774,10 +2767,6 @@ class MainWindow(QMainWindow):
             }
             QLabel {
                 color: #2a485d;
-            }
-            QLabel#mutedParenText {
-                color: #6f8798;
-                font-size: 11px;
             }
             QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTreeWidget, QTableWidget, QListWidget {
                 border-radius: 8px;

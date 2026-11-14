@@ -15,7 +15,7 @@ import os
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
+    QWidget, QBoxLayout, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QSizePolicy, QProgressBar,
     QMessageBox, QCheckBox, QGroupBox
 )
@@ -129,45 +129,13 @@ class RenameTab(QWidget):
         
         v.addLayout(h)
         
-        # Опции в две колонки
-        # Подсказки для опций переноса
-        phase1_help = translate_key('help.rename.phase1', ui_lang, '')
-        phase2_help = translate_key('help.rename.phase2', ui_lang, '')
-        locative_help = translate_key('help.rename.locative', ui_lang, '')
-        
         # Первая опция: прямые ссылки
         row_p1 = QHBoxLayout()
-        phase1_main_label = translate_key(
-            'ui.transfer_plain_main',
-            ui_lang,
-            'Direct transfer',
-        )
-        phase1_mode_label = translate_key(
-            'ui.transfer_plain_hint',
-            ui_lang,
-            '(categories in plain text)',
-        )
-        self.phase1_enabled_cb = QCheckBox(phase1_main_label)
+        self.phase1_enabled_cb = QCheckBox(self._t('ui.transfer_plain_main'))
         self.phase1_enabled_cb.setChecked(True)
-        try:
-            self.phase1_enabled_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        except Exception:
-            pass
         row_p1.addWidget(self.phase1_enabled_cb)
-        self.phase1_mode_hint = QLabel(phase1_mode_label)
-        self.phase1_mode_hint.setObjectName('mutedParenText')
-        try:
-            if not self.phase1_mode_hint.text().startswith(' '):
-                self.phase1_mode_hint.setText(' ' + self.phase1_mode_hint.text())
-            self.phase1_mode_hint.setStyleSheet('color: rgba(148, 166, 183, 0.78); font-size: 11px;')
-        except Exception:
-            pass
-        row_p1.addWidget(self.phase1_mode_hint)
-        add_info_button(self, row_p1, phase1_help, inline=True)
-        try:
-            row_p1.addStretch(1)
-        except Exception:
-            pass
+        add_info_button(self, row_p1, lambda: self._t('help.rename.phase1'), inline=True)
+        row_p1.addStretch(1)
         
         # Опция: переименовывать саму категорию
         row_move_cat = QHBoxLayout()
@@ -185,79 +153,26 @@ class RenameTab(QWidget):
         
         # Вторая опция: параметры шаблонов
         row_p2 = QHBoxLayout()
-        phase2_main_label = translate_key(
-            'ui.transfer_template_main',
-            ui_lang,
-            'Template-based categorization',
-        )
-        phase2_mode_label = translate_key(
-            'ui.transfer_template_hint',
-            ui_lang,
-            '(category name in template params)',
-        )
-        self.find_in_templates_cb = QCheckBox(phase2_main_label)
-        self.find_in_templates_cb.setChecked(True)
-        try:
-            self.find_in_templates_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        except Exception:
-            pass
+        self.find_in_templates_cb = QCheckBox(self._t('ui.transfer_template_main'))
+        self.find_in_templates_cb.setChecked(False)
         row_p2.addWidget(self.find_in_templates_cb)
-        self.phase2_mode_hint = QLabel(phase2_mode_label)
-        self.phase2_mode_hint.setObjectName('mutedParenText')
-        try:
-            if not self.phase2_mode_hint.text().startswith(' '):
-                self.phase2_mode_hint.setText(' ' + self.phase2_mode_hint.text())
-            self.phase2_mode_hint.setStyleSheet('color: rgba(148, 166, 183, 0.78); font-size: 11px;')
-        except Exception:
-            pass
-        row_p2.addWidget(self.phase2_mode_hint)
-        add_info_button(self, row_p2, phase2_help, inline=True)
-        try:
-            row_p2.addStretch(1)
-        except Exception:
-            pass
+        add_info_button(self, row_p2, lambda: self._t('help.rename.phase2'), inline=True)
+        row_p2.addStretch(1)
 
         # Опция: Локативы
         row_loc = QHBoxLayout()
-        locative_main_label = translate_key(
-            'ui.locative_changes_main',
-            ui_lang,
-            'Geocase inflection changes in parameters',
-        )
-        locative_mode_label = translate_key(
-            'ui.locative_changes_mode',
-            ui_lang,
-            '(manual mode)'
-        )
-        self.locatives_cb = QCheckBox(locative_main_label)
+        self.locatives_cb = QCheckBox(self._t('ui.locative_changes_main'))
         self.locatives_cb.setChecked(False)
-        try:
-            self.locatives_cb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        except Exception:
-            pass
         row_loc.addWidget(self.locatives_cb)
-        self.locatives_mode_hint = QLabel(locative_mode_label)
-        self.locatives_mode_hint.setObjectName('mutedParenText')
-        try:
-            if not self.locatives_mode_hint.text().startswith(' '):
-                self.locatives_mode_hint.setText(' ' + self.locatives_mode_hint.text())
-            self.locatives_mode_hint.setStyleSheet('color: rgba(148, 166, 183, 0.78); font-size: 11px;')
-        except Exception:
-            pass
-        row_loc.addWidget(self.locatives_mode_hint)
-        add_info_button(self, row_loc, locative_help, inline=True)
-        try:
-            row_loc.addStretch(1)
-        except Exception:
-            pass
+        add_info_button(self, row_loc, lambda: self._t('help.rename.locative'), inline=True)
+        row_loc.addStretch(1)
 
         row_documentation = QHBoxLayout()
         self.documentation_cb = QCheckBox(self._t('ui.rename_documentation'))
         self.documentation_cb.setChecked(False)
-        documentation_help = self._t('help.rename.documentation')
-        self.documentation_cb.setToolTip(documentation_help)
+        self.documentation_cb.setToolTip(self._t('help.rename.documentation'))
         row_documentation.addWidget(self.documentation_cb)
-        add_info_button(self, row_documentation, documentation_help, inline=True)
+        add_info_button(self, row_documentation, lambda: self._t('help.rename.documentation'), inline=True)
         row_documentation.addStretch(1)
         
         # Кнопки правил (будут прикреплены к правому заголовку)
@@ -321,6 +236,7 @@ class RenameTab(QWidget):
         row_redirect_other.addStretch(1)
         rename_opts_layout.addWidget(_wrap(row_redirect_cat))
         rename_opts_layout.addWidget(_wrap(row_redirect_other))
+        rename_opts_layout.addStretch(1)
 
         # Рамка «Перенос содержимого категорий»
         transfer_opts_group = QGroupBox(self._t('ui.transfer_category_content'))
@@ -330,12 +246,9 @@ class RenameTab(QWidget):
             transfer_opts_layout.setSpacing(2)
         except Exception:
             pass
-        transfer_body = QHBoxLayout()
-        try:
-            transfer_body.setContentsMargins(0, 0, 0, 0)
-            transfer_body.setSpacing(8)
-        except Exception:
-            pass
+        self._transfer_body = QBoxLayout(QBoxLayout.LeftToRight)
+        self._transfer_body.setContentsMargins(0, 0, 0, 0)
+        self._transfer_body.setSpacing(8)
         transfer_opts_col = QVBoxLayout()
         try:
             transfer_opts_col.setContentsMargins(0, 0, 0, 0)
@@ -348,17 +261,14 @@ class RenameTab(QWidget):
         transfer_opts_col.addWidget(_wrap(row_loc))
         transfer_opts_col.addStretch(1)
         rules_col = QVBoxLayout()
-        try:
-            rules_col.setContentsMargins(0, 0, 0, 0)
-            rules_col.setSpacing(4)
-        except Exception:
-            pass
+        rules_col.setSpacing(4)
         rules_col.addWidget(btn_show_rules)
         rules_col.addWidget(btn_clear_rules)
         rules_col.addStretch(1)
-        transfer_body.addLayout(transfer_opts_col, 1)
-        transfer_body.addLayout(rules_col, 0)
-        transfer_opts_layout.addLayout(transfer_body)
+        self._transfer_body.addLayout(transfer_opts_col, 1)
+        self._transfer_body.addLayout(rules_col)
+        transfer_opts_layout.addLayout(self._transfer_body)
+        transfer_opts_group.installEventFilter(self)
 
         # Две рамки в одну строку
         opts_row = QHBoxLayout()
@@ -649,6 +559,17 @@ class RenameTab(QWidget):
                 self._last_theme_mode = current_theme
                 self._apply_rename_log_tree_theme()
             self._schedule_rename_log_autofit()
+
+    def eventFilter(self, watched, event):
+        if (hasattr(self, '_transfer_body') and watched is self._transfer_body.parentWidget()
+                and event.type() in (QEvent.Resize, QEvent.LayoutRequest, QEvent.Show)):
+            option_width = self._transfer_body.itemAt(0).minimumSize().width()
+            rules_width = self._transfer_body.itemAt(1).minimumSize().width()
+            margins = watched.layout().contentsMargins()
+            width = watched.contentsRect().width() - margins.left() - margins.right()
+            compact = width < option_width + rules_width + self._transfer_body.spacing()
+            self._transfer_body.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         try:
