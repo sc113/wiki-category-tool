@@ -15,7 +15,7 @@ import os
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QWidget, QBoxLayout, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QSizePolicy, QProgressBar,
     QMessageBox, QCheckBox, QGroupBox, QGraphicsOpacityEffect
 )
@@ -185,7 +185,7 @@ class RenameTab(QWidget):
         add_info_button(self, row_documentation, lambda: self._t('help.rename.documentation'), inline=True)
         row_documentation.addStretch(1)
         
-        # Кнопки правил (будут прикреплены к правому заголовку)
+        # Правила замен в параметрах шаблонов
         btn_show_rules = QPushButton(self._t('ui.show_replacement_rules'))
         btn_clear_rules = QPushButton(self._t('ui.clear_replacement_rules'))
         
@@ -255,29 +255,24 @@ class RenameTab(QWidget):
             transfer_opts_layout.setSpacing(2)
         except Exception:
             pass
-        self._transfer_body = QBoxLayout(QBoxLayout.LeftToRight)
-        self._transfer_body.setContentsMargins(0, 0, 0, 0)
-        self._transfer_body.setSpacing(8)
-        transfer_opts_col = QVBoxLayout()
-        try:
-            transfer_opts_col.setContentsMargins(0, 0, 0, 0)
-            transfer_opts_col.setSpacing(2)
-        except Exception:
-            pass
-        transfer_opts_col.addWidget(_wrap(row_p1))
-        transfer_opts_col.addWidget(_wrap(row_p2))
-        transfer_opts_col.addWidget(_wrap(row_loc))
-        transfer_opts_col.addWidget(_wrap(row_documentation))
-        transfer_opts_col.addStretch(1)
-        rules_col = QVBoxLayout()
-        rules_col.setSpacing(4)
-        rules_col.addWidget(btn_show_rules)
-        rules_col.addWidget(btn_clear_rules)
-        rules_col.addStretch(1)
-        self._transfer_body.addLayout(transfer_opts_col, 1)
-        self._transfer_body.addLayout(rules_col)
-        transfer_opts_layout.addLayout(self._transfer_body)
-        transfer_opts_group.installEventFilter(self)
+        transfer_opts_layout.addLayout(row_p1)
+        transfer_opts_layout.addLayout(row_documentation)
+
+        template_group = QGroupBox(self._t('ui.template_replacement_settings'))
+        template_layout = QVBoxLayout(template_group)
+        template_layout.setContentsMargins(8, 6, 8, 8)
+        template_layout.setSpacing(2)
+        template_layout.addLayout(row_p2)
+        template_layout.addLayout(row_loc)
+
+        rules_row = QHBoxLayout()
+        rules_row.setSpacing(4)
+        rules_row.addWidget(btn_show_rules)
+        rules_row.addWidget(btn_clear_rules)
+        rules_row.addStretch(1)
+        template_layout.addSpacing(4)
+        template_layout.addLayout(rules_row)
+        transfer_opts_layout.addWidget(template_group)
 
         # Две рамки в одну строку
         opts_row = QHBoxLayout()
@@ -568,17 +563,6 @@ class RenameTab(QWidget):
                 self._last_theme_mode = current_theme
                 self._apply_rename_log_tree_theme()
             self._schedule_rename_log_autofit()
-
-    def eventFilter(self, watched, event):
-        if (hasattr(self, '_transfer_body') and watched is self._transfer_body.parentWidget()
-                and event.type() in (QEvent.Resize, QEvent.LayoutRequest, QEvent.Show)):
-            option_width = self._transfer_body.itemAt(0).minimumSize().width()
-            rules_width = self._transfer_body.itemAt(1).minimumSize().width()
-            margins = watched.layout().contentsMargins()
-            width = watched.contentsRect().width() - margins.left() - margins.right()
-            compact = width < option_width + rules_width + self._transfer_body.spacing()
-            self._transfer_body.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
-        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         try:
