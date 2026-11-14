@@ -12,16 +12,19 @@
 """
 
 # ===== Версия приложения и URL-адреса =====
-# Keep the numeric release tag compatible with update checks in older builds.
-APP_VERSION = "2.10.1"
-APP_DISPLAY_VERSION = "2.1.1"
+APP_VERSION = "2.2"
+APP_DISPLAY_VERSION = APP_VERSION
+
+# Tags published before the switch to ordinary major.minor[.patch] versions.
+_LEGACY_RELEASE_TAGS = {
+    '2.10': '2.1',
+    '2.10.1': '2.1.1',
+}
 
 
 def display_app_version(value: str) -> str:
     value = str(value or '').strip().lstrip('vV')
-    if value == APP_VERSION:
-        return APP_DISPLAY_VERSION
-    return '2.1' + value[4:] if value == '2.10' or value.startswith('2.10.') else value
+    return _LEGACY_RELEASE_TAGS.get(value, value)
 
 
 RELEASES_URL = 'https://github.com/sc113/wiki-category-tool/releases'

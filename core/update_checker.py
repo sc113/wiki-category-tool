@@ -10,7 +10,7 @@ import re
 import requests
 from packaging import version
 from typing import Optional, Tuple
-from ..constants import APP_VERSION, GITHUB_API_RELEASES, REQUEST_HEADERS
+from ..constants import APP_VERSION, GITHUB_API_RELEASES, REQUEST_HEADERS, display_app_version
 from .localization import translate_runtime
 
 
@@ -27,8 +27,8 @@ def _fmt(key: str, **kwargs) -> str:
 
 
 def parse_app_version(value: str) -> version.Version:
-    """Keep legacy 2.03/2.04 patch releases below the new 2.1 series."""
-    value = str(value or '').strip().lstrip('vV')
+    """Compare published legacy tags and current versions in release order."""
+    value = display_app_version(value)
     legacy = re.fullmatch(r'(\d+)\.0(\d+)', value)
     if legacy:
         value = f'{legacy[1]}.0.{int(legacy[2])}'

@@ -2,7 +2,7 @@
 
 > ## [In Russian](README.md)
 
-[![Latest release](https://img.shields.io/github/v/release/sc113/wiki-category-tool?display_name=tag&sort=semver)](https://github.com/sc113/wiki-category-tool/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/sc113/wiki-category-tool?display_name=release&sort=date)](https://github.com/sc113/wiki-category-tool/releases/latest)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 
