@@ -161,7 +161,6 @@ class RenameTab(QWidget):
 
         # Дополнительный поиск при категоризации через шаблоны
         row_loc = QHBoxLayout()
-        row_loc.setContentsMargins(16, 0, 0, 0)
         self.locatives_cb = QCheckBox(self._t('ui.locative_changes_main'))
         self.locatives_cb.setChecked(False)
         locatives_opacity = QGraphicsOpacityEffect(self.locatives_cb)
@@ -257,12 +256,13 @@ class RenameTab(QWidget):
             pass
         transfer_opts_layout.addLayout(row_p1)
         transfer_opts_layout.addLayout(row_documentation)
+        transfer_opts_layout.addLayout(row_p2)
+        transfer_opts_layout.addSpacing(6)
 
         template_group = QGroupBox(self._t('ui.template_replacement_settings'))
         template_layout = QVBoxLayout(template_group)
         template_layout.setContentsMargins(8, 6, 8, 8)
         template_layout.setSpacing(2)
-        template_layout.addLayout(row_p2)
         template_layout.addLayout(row_loc)
 
         rules_row = QHBoxLayout()
