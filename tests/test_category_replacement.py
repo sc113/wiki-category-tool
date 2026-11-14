@@ -190,6 +190,7 @@ class CategoryReplacementUiTests(unittest.TestCase):
         for tab in (CategoryReplacementTab(parent), RedundantCategoriesTab(parent)):
             self.assertTrue(tab.log_panel.isHidden())
             self.assertEqual('Members from TSV', tab.fetch_map_btn.text())
+            self.assertTrue(tab.source_panel.isAncestorOf(tab.fetch_map_btn))
             tab.log_panel.toggle.click()
             self.assertFalse(tab.log_panel.isHidden())
             tab.log_panel.toggle.click()
