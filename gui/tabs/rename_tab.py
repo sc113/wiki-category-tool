@@ -17,7 +17,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QBoxLayout, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QPushButton, QToolButton, QSizePolicy, QProgressBar,
-    QMessageBox, QCheckBox, QGroupBox
+    QMessageBox, QCheckBox, QGroupBox, QGraphicsOpacityEffect
 )
 from PySide6.QtCore import Qt, Signal, QUrl, QEvent, QTimer
 from PySide6.QtGui import QBrush, QColor, QDesktopServices
@@ -164,8 +164,15 @@ class RenameTab(QWidget):
         row_loc.setContentsMargins(16, 0, 0, 0)
         self.locatives_cb = QCheckBox(self._t('ui.locative_changes_main'))
         self.locatives_cb.setChecked(False)
-        self.locatives_cb.setEnabled(self.find_in_templates_cb.isChecked())
-        self.find_in_templates_cb.toggled.connect(self.locatives_cb.setEnabled)
+        locatives_opacity = QGraphicsOpacityEffect(self.locatives_cb)
+        self.locatives_cb.setGraphicsEffect(locatives_opacity)
+
+        def update_locative_option(templates_enabled):
+            self.locatives_cb.setEnabled(templates_enabled)
+            locatives_opacity.setOpacity(1.0 if templates_enabled else 0.48)
+
+        update_locative_option(self.find_in_templates_cb.isChecked())
+        self.find_in_templates_cb.toggled.connect(update_locative_option)
         row_loc.addWidget(self.locatives_cb)
         add_info_button(self, row_loc, lambda: self._t('help.rename.locative'), inline=True)
         row_loc.addStretch(1)
@@ -239,7 +246,6 @@ class RenameTab(QWidget):
         row_redirect_other.addStretch(1)
         rename_opts_layout.addWidget(_wrap(row_redirect_cat))
         rename_opts_layout.addWidget(_wrap(row_redirect_other))
-        rename_opts_layout.addStretch(1)
 
         # Рамка «Перенос содержимого категорий»
         transfer_opts_group = QGroupBox(self._t('ui.transfer_category_content'))
