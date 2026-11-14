@@ -76,17 +76,17 @@ class MainWindow(QMainWindow):
     _msgbox_i18n_installed = False
     _msgbox_i18n_owner = None
     _TAB_META = {
-        0: ('ui.main.tab.auth.tag', 'ui.authentication', 'ui.main.tab.auth.subtitle'),
-        1: ('ui.main.tab.read.tag', 'ui.main.tab.read.title', 'ui.main.tab.read.subtitle'),
-        2: ('ui.main.tab.replace.tag', 'ui.bulk_replace', 'ui.main.tab.replace.subtitle'),
-        3: ('ui.main.tab.create.tag', 'ui.bulk_create', 'ui.main.tab.create.subtitle'),
-        4: ('ui.main.tab.rename.tag', 'ui.main.tab.rename.title', 'ui.main.tab.rename.subtitle'),
-        5: ('ui.main.tab.cleanup.tag', 'ui.main.tab.cleanup.title', 'ui.main.tab.cleanup.subtitle'),
-        6: ('ui.transfer.nav_sync', 'ui.transfer.sync_title', 'ui.transfer.sync_subtitle'),
-        7: ('ui.main.tab.overview.tag', 'ui.overview', 'ui.main.tab.overview.subtitle'),
-        8: ('ui.transfer.nav_recon', 'ui.transfer.recon_title', 'ui.transfer.subtitle'),
-        9: ('ui.transfer.nav_links', 'ui.transfer.links_title', 'ui.transfer.links_subtitle'),
-        10: ('ui.transfer.nav_interwiki', 'ui.transfer.interwiki_title', 'ui.transfer.interwiki_subtitle'),
+        0: ('ui.authentication', 'ui.main.tab.auth.subtitle'),
+        1: ('ui.main.tab.read.title', 'ui.main.tab.read.subtitle'),
+        2: ('ui.bulk_replace', 'ui.main.tab.replace.subtitle'),
+        3: ('ui.bulk_create', 'ui.main.tab.create.subtitle'),
+        4: ('ui.main.tab.rename.title', 'ui.main.tab.rename.subtitle'),
+        5: ('ui.main.tab.cleanup.title', 'ui.main.tab.cleanup.subtitle'),
+        6: ('ui.transfer.sync_title', 'ui.transfer.sync_subtitle'),
+        7: ('ui.overview', 'ui.main.tab.overview.subtitle'),
+        8: ('ui.transfer.recon_title', 'ui.transfer.subtitle'),
+        9: ('ui.transfer.links_title', 'ui.transfer.links_subtitle'),
+        10: ('ui.transfer.interwiki_title', 'ui.transfer.interwiki_subtitle'),
     }
     _NAV_ITEMS = [
         (1, 'ui.read', 'read'),
@@ -380,19 +380,20 @@ class MainWindow(QMainWindow):
         self.content_frame.setObjectName('contentFrame')
         content_layout = QVBoxLayout(self.content_frame)
         try:
-            content_layout.setContentsMargins(14, 6, 14, 10)
+            content_layout.setContentsMargins(14, 10, 14, 10)
             content_layout.setSpacing(4)
         except Exception:
             pass
 
-        self.page_tag = QLabel('BOOT')
-        self.page_tag.setObjectName('headerTag')
         self.page_title = QLabel(self._t('ui.main.starting_app'))
         self.page_title.setObjectName('headerTitle')
         self.page_title.setWordWrap(True)
+        self.page_title.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.page_subtitle = QLabel(self._t('ui.main.loading_modules_tabs'))
         self.page_subtitle.setObjectName('headerSubtitle')
         self.page_subtitle.setWordWrap(True)
+        self.page_subtitle.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.page_subtitle.setIndent(0)
 
         self.header_prefix_host = QWidget(self.content_frame)
         self.header_prefix_host.setObjectName('headerPrefixHost')
@@ -406,10 +407,14 @@ class MainWindow(QMainWindow):
             translate_key('ui.prefixes', self._ui_lang, 'Prefixes:')
         )
         self.header_prefix_label.setObjectName('headerPrefixLabel')
+        self.header_prefix_label.setStyleSheet('font-size: 12px;')
         header_prefix_layout.addWidget(self.header_prefix_label)
         self.header_ns_combo = QComboBox(self.header_prefix_host)
         self.header_ns_combo.setObjectName('headerPrefixCombo')
         self.header_ns_combo.setEditable(False)
+        self.header_ns_combo.setStyleSheet(
+            'QComboBox { min-height: 19px; max-height: 19px; font-size: 12px; }'
+        )
         try:
             self.header_ns_combo.setMinimumWidth(170)
             self.header_ns_combo.setMaximumWidth(240)
@@ -452,8 +457,10 @@ class MainWindow(QMainWindow):
         header_actions_layout.addWidget(self.header_prefix_host, 0, Qt.AlignTop | Qt.AlignRight)
         header_actions_layout.addWidget(self.header_update_btn, 0, Qt.AlignTop | Qt.AlignRight)
 
-        content_layout.addWidget(self.page_tag)
-        content_layout.addWidget(self.page_title)
+        page_header = QVBoxLayout()
+        page_header.setContentsMargins(0, 0, 0, 0)
+        page_header.setSpacing(6)
+        page_header.addWidget(self.page_title)
         subtitle_row = QHBoxLayout()
         try:
             subtitle_row.setContentsMargins(0, 0, 0, 0)
@@ -462,7 +469,8 @@ class MainWindow(QMainWindow):
             pass
         subtitle_row.addWidget(self.page_subtitle, 1)
         subtitle_row.addWidget(self.header_actions_host, 0, Qt.AlignTop | Qt.AlignRight)
-        content_layout.addLayout(subtitle_row)
+        page_header.addLayout(subtitle_row)
+        content_layout.addLayout(page_header)
 
         self.tabs = QTabWidget(self.content_frame)
         self.tabs.setObjectName('contentTabs')
@@ -708,20 +716,11 @@ class MainWindow(QMainWindow):
             pass
 
     def _update_header_for_tab(self, index: int):
-        tag, title, subtitle = self._tab_meta_map().get(
-            index,
-            (
-                self._t('ui.main.tab.boot.tag'),
-                self._t('ui.main.starting_app'),
-                self._t('ui.main.loading_modules_tabs'),
-            )
+        title_key, subtitle_key = self._TAB_META.get(
+            index, ('ui.main.starting_app', 'ui.main.loading_modules_tabs')
         )
-        try:
-            self.page_tag.setText(tag)
-            self.page_title.setText(title)
-            self.page_subtitle.setText(subtitle)
-        except Exception:
-            pass
+        self.page_title.setText(self._t(title_key))
+        self.page_subtitle.setText(self._t(subtitle_key))
         try:
             show_updates = bool(index == 7)
             self.header_update_btn.setVisible(show_updates)
@@ -1030,16 +1029,6 @@ class MainWindow(QMainWindow):
             'dark': 'midnight dark',
         }.get(mode, 'light')
 
-    def _tab_meta_map(self) -> dict[int, tuple[str, str, str]]:
-        meta = {}
-        for index, (tag_key, title_key, subtitle_key) in self._TAB_META.items():
-            meta[index] = (
-                self._t(tag_key),
-                self._t(title_key),
-                self._t(subtitle_key),
-            )
-        return meta
-
     def _nav_title(self, text_key: str) -> str:
         return self._t(text_key)
 
@@ -1201,9 +1190,11 @@ class MainWindow(QMainWindow):
             pass
 
     def _normalize_line_edit_alignment(self):
-        """Держит все QLineEdit с левым выравниванием и левым началом текста."""
+        """Выравнивает обычные текстовые поля по левому краю."""
         try:
             for edit in self.findChildren(QLineEdit):
+                if edit.property('_wct_center_text'):
+                    continue
                 try:
                     edit.setAlignment(Qt.AlignLeft)
                 except Exception:
@@ -1732,12 +1723,6 @@ class MainWindow(QMainWindow):
             #contentFrame {
                 background: transparent;
             }
-            #headerTag {
-                font-size: 12px;
-                color: #a3d9de;
-                font-weight: 700;
-                letter-spacing: 2px;
-            }
             #headerTitle {
                 font-size: 30px;
                 color: #f2fcff;
@@ -1748,7 +1733,7 @@ class MainWindow(QMainWindow):
             #headerSubtitle {
                 color: #8dadb2;
                 font-size: 12px;
-                padding: 0;
+                padding: 6px 0;
                 margin: 0;
             }
             QTabWidget::pane {
@@ -2619,12 +2604,6 @@ class MainWindow(QMainWindow):
             #contentFrame {
                 background: transparent;
             }
-            #headerTag {
-                font-size: 12px;
-                color: #5a7f9d;
-                font-weight: 700;
-                letter-spacing: 2px;
-            }
             #headerTitle {
                 font-size: 30px;
                 color: #21445f;
@@ -2635,7 +2614,7 @@ class MainWindow(QMainWindow):
             #headerSubtitle {
                 color: #7a92a2;
                 font-size: 12px;
-                padding: 0;
+                padding: 6px 0;
                 margin: 0;
             }
             QTabWidget::pane {

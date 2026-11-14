@@ -44,6 +44,10 @@ class CategorySettingsLayout(QGridLayout):
 
 
 def category_toolbar(source, target, options, translate, *, swap=None):
+    for language_code in (source, target):
+        language_code.setProperty('_wct_center_text', True)
+        language_code.setAlignment(Qt.AlignCenter)
+
     toolbar = QWidget()
     toolbar.setObjectName('categoryStageToolbar')
     layout = QHBoxLayout(toolbar)
