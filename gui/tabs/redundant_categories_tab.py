@@ -70,8 +70,6 @@ class RedundantCategoriesTab(QWidget):
         return resolve_project_language(self.parent_window, 'ru')
 
     def setup_ui(self):
-        main_layout = category_map_layout(self)
-
         source_help = self._t('help.cleanup.source', '')
         pairs_help = self._t('help.cleanup.pairs', '')
         summary_help = self._t('help.cleanup.summary', '')
@@ -109,7 +107,10 @@ class RedundantCategoriesTab(QWidget):
         self.in_path = self.source_panel.in_path
         self.file_edit = self.source_panel.file_edit
         self.source_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        main_layout.addWidget(self.source_panel, 1)
+        self.fetch_map_btn = QPushButton()
+        self.fetch_map_btn.setObjectName('sourceActionButton')
+        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
+        main_layout = category_map_layout(self, self.source_panel, self.fetch_map_btn)
 
         right_side = QWidget()
         right_layout = QVBoxLayout(right_side)
@@ -140,14 +141,9 @@ class RedundantCategoriesTab(QWidget):
             left_stretch=1,
             right_stretch=1,
         )
-        self.fetch_map_btn = QPushButton()
-        self.fetch_map_btn.setObjectName('sourceActionButton')
-        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
         self.categories_path_edit = QLineEdit('categories.tsv')
         self.categories_path_edit.textChanged.connect(self._on_pairs_path_changed)
-        self.pairs_file_row = FileInputRow(
-            self, '', self.categories_path_edit, trailing_button=self.fetch_map_btn,
-        )
+        self.pairs_file_row = FileInputRow(self, '', self.categories_path_edit)
         pairs_row = QHBoxLayout()
         pairs_row.addWidget(self.pairs_file_row, 1)
         add_info_button(self, pairs_row, pairs_help, inline=True)
@@ -271,7 +267,7 @@ class RedundantCategoriesTab(QWidget):
         self.pairs_file_row.refresh_localized_texts()
         self.pairs_file_row.caption.setText(self._t('ui.category_pairs_tsv', 'Category pairs (.tsv):'))
         if self.source_panel._fetch_active_button is not self.fetch_map_btn:
-            self.fetch_map_btn.setText(self._t('ui.source.fetch_map', 'Source category members'))
+            self.fetch_map_btn.setText(self._t('ui.source.fetch_map', 'Members from TSV'))
             self.fetch_map_btn.setToolTip(self._t('ui.source.fetch_map_tip', ''))
 
     def fetch_map_pages(self):
@@ -292,19 +288,14 @@ class RedundantCategoriesTab(QWidget):
         self.preview_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.fetch_map_btn.setEnabled(False)
-        self._set_file_controls_enabled(False)
+        self.pairs_file_row.setEnabled(False)
 
     def _on_source_fetch_finished(self):
         self.preview_btn.setEnabled(True)
         self.start_btn.setEnabled(self._preview_ready)
         self.fetch_map_btn.setEnabled(True)
-        self._set_file_controls_enabled(True)
+        self.pairs_file_row.setEnabled(True)
         self.refresh_localized_texts()
-
-    def _set_file_controls_enabled(self, enabled):
-        self.categories_path_edit.setEnabled(enabled)
-        self.pairs_file_row.open_btn.setEnabled(enabled)
-        self.pairs_file_row.browse_btn.setEnabled(enabled)
 
     def _set_action_mode_preview(self):
         self._preview_ready = False
@@ -445,7 +436,7 @@ class RedundantCategoriesTab(QWidget):
         self.fetch_map_btn.setEnabled(False)
         self.preview_btn.setEnabled(False)
         self.source_panel.setEnabled(False)
-        self._set_file_controls_enabled(False)
+        self.pairs_file_row.setEnabled(False)
         self.log_panel.set_expanded(True)
         self.run_log.clear()
         init_progress(self.progress_label, self.progress_bar, len(titles))
@@ -514,7 +505,7 @@ class RedundantCategoriesTab(QWidget):
         self.fetch_map_btn.setEnabled(True)
         self.preview_btn.setEnabled(True)
         self.source_panel.setEnabled(True)
-        self._set_file_controls_enabled(True)
+        self.pairs_file_row.setEnabled(True)
         if self._preview_ready:
             self._set_action_mode_run()
         else:

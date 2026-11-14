@@ -462,19 +462,31 @@ class CategoryWorkspace(QSplitter):
             self.setSizes([max(1, self.width()), 0])
 
 
-def category_map_layout(tab):
+def category_map_layout(tab, source_panel, source_action):
     """Keep the source controls in one row and scroll the page if it cannot fit."""
     outer = QVBoxLayout(tab)
     outer.setContentsMargins(0, 0, 0, 0)
     scroll = QScrollArea(tab)
     scroll.setObjectName('categoryMapScroll')
-    scroll.setStyleSheet('QScrollArea#categoryMapScroll { background: transparent; border: none; }')
+    scroll.setFrameShape(QFrame.NoFrame)
     scroll.setWidgetResizable(True)
     outer.addWidget(scroll)
+    scroll.viewport().setObjectName('categoryMapViewport')
     content = QWidget()
-    content.setAutoFillBackground(False)
+    content.setObjectName('categoryMapContent')
+    scroll.setStyleSheet(
+        'QScrollArea#categoryMapScroll, QWidget#categoryMapViewport, QWidget#categoryMapContent '
+        '{ background: transparent; }'
+    )
     columns = QHBoxLayout(content)
     columns.setContentsMargins(0, 0, 0, 0)
     columns.setSpacing(8)
+    left = QVBoxLayout()
+    left.setSpacing(6)
+    left.addWidget(source_panel, 1)
+    left.addWidget(source_action, 0, Qt.AlignLeft)
+    columns.addLayout(left, 1)
     scroll.setWidget(content)
+    scroll.viewport().setAutoFillBackground(False)
+    content.setAutoFillBackground(False)
     return columns

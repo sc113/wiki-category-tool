@@ -34,14 +34,16 @@ class CategoryReplacementTab(QWidget):
         return translate_key(key, getattr(self.parent_window, '_ui_lang', 'ru'), fallback)
 
     def _build_ui(self):
-        layout = category_map_layout(self)
         self.source_panel = CategorySourcePanel(
             self, parent_window=self.parent_window,
             group_title=self._t('ui.pages_source'),
             help_text=self._t('help.cleanup.source'),
         )
         self.source_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        layout.addWidget(self.source_panel, 1)
+        self.fetch_map_btn = QPushButton()
+        self.fetch_map_btn.setObjectName('sourceActionButton')
+        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
+        layout = category_map_layout(self, self.source_panel, self.fetch_map_btn)
 
         work = QWidget()
         main = QVBoxLayout(work)
@@ -60,15 +62,9 @@ class CategoryReplacementTab(QWidget):
         toolbar.addWidget(self.log_panel.toggle)
         main.addLayout(toolbar)
 
-        self.fetch_map_btn = QPushButton()
-        self.fetch_map_btn.setObjectName('sourceActionButton')
-        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
-
         self.map_path_edit = QLineEdit('category-replacements.tsv')
         self.map_path_edit.textChanged.connect(self._clear_preview)
-        self.map_file_row = FileInputRow(
-            self, '', self.map_path_edit, editor_menu=True, trailing_button=self.fetch_map_btn,
-        )
+        self.map_file_row = FileInputRow(self, '', self.map_path_edit, editor_menu=True)
         file_layout = QHBoxLayout()
         file_layout.addWidget(self.map_file_row, 1)
         self.map_help_btn = add_info_button(self, file_layout,
@@ -145,8 +141,7 @@ class CategoryReplacementTab(QWidget):
     def _update_actions(self):
         busy = self.worker is not None
         self.source_panel.setEnabled(not busy)
-        for control in (self.map_path_edit, self.map_file_row.open_btn, self.map_file_row.browse_btn):
-            control.setEnabled(not busy and not self._fetching)
+        self.map_file_row.setEnabled(not busy and not self._fetching)
         self.preview_btn.setEnabled(not busy and not self._fetching)
         self.start_btn.setEnabled(not busy and not self._fetching and self._rules is not None)
         self.stop_btn.setEnabled(busy)

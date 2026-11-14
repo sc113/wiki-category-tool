@@ -34,24 +34,16 @@ _FETCH_MODE_BOTH = 'both'
 class FileInputRow(QWidget):
     """The shared caption/path/browse/open row used by file-based tools."""
 
-    def __init__(self, owner, caption, path_edit, *, pattern='*.tsv', editor_menu=False,
-                 trailing_button=None):
+    def __init__(self, owner, caption, path_edit, *, pattern='*.tsv', editor_menu=False):
         super().__init__(owner)
         self.owner = owner
         self.path_edit = path_edit
         self.pattern = pattern
         self.on_open = lambda: open_from_edit(owner, path_edit)
         self.open_tooltip_key = 'ui.transfer.button_open_file_tip'
-        row = QHBoxLayout()
+        row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
-        if trailing_button is None:
-            self.setLayout(row)
-        else:
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(4)
-            layout.addLayout(row)
         self.caption = QLabel(caption)
         row.addWidget(self.caption)
         path_edit.setMinimumWidth(0)
@@ -68,15 +60,7 @@ class FileInputRow(QWidget):
         self.open_btn = QPushButton()
         self.open_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self.open_btn.clicked.connect(self.on_open)
-        if trailing_button is None:
-            row.addWidget(self.open_btn)
-        else:
-            actions = QHBoxLayout()
-            actions.setSpacing(6)
-            actions.addWidget(self.open_btn)
-            actions.addWidget(trailing_button)
-            actions.addStretch(1)
-            layout.addLayout(actions)
+        row.addWidget(self.open_btn)
         path_edit.returnPressed.connect(self.on_open)
         if editor_menu:
             path_edit.setContextMenuPolicy(Qt.CustomContextMenu)

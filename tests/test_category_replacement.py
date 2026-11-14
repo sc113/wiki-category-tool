@@ -10,7 +10,9 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import QPoint
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 from pywikibot.site import Namespace
 
 from wiki_cat_tool.core.category_replacement import (
@@ -156,12 +158,38 @@ class CategoryReplacementUiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_map_scroll_area_inherits_the_window_background(self):
+        parent = QWidget()
+        parent._ui_lang = 'en'
+        background = QColor('#123747')
+        palette = parent.palette()
+        palette.setColor(QPalette.Window, QColor('#efefef'))
+        parent.setPalette(palette)
+        parent.setStyleSheet('QWidget#renderBackground { background: #123747; }')
+        parent.setObjectName('renderBackground')
+        for cls in (CategoryReplacementTab, RedundantCategoriesTab):
+            tab = cls(parent)
+            tab.resize(1100, 640)
+            area = tab.findChild(QScrollArea, 'categoryMapScroll')
+            parent.resize(tab.size())
+            parent.show()
+            tab.show()
+            self.app.processEvents()
+            # The gap between the two columns must show the parent background.
+            point = area.widget().mapTo(parent, QPoint(tab.source_panel.width() + 4, 85))
+            pixmap = parent.grab()
+            pixel = point * pixmap.devicePixelRatio()
+            self.assertEqual(background, pixmap.toImage().pixelColor(pixel))
+            tab.hide()
+            tab.deleteLater()
+        parent.hide()
+
     def test_default_sort_key_setting_and_logs(self):
         parent = QWidget()
         parent._ui_lang = 'en'
         for tab in (CategoryReplacementTab(parent), RedundantCategoriesTab(parent)):
             self.assertTrue(tab.log_panel.isHidden())
-            self.assertEqual('Source category members', tab.fetch_map_btn.text())
+            self.assertEqual('Members from TSV', tab.fetch_map_btn.text())
             tab.log_panel.toggle.click()
             self.assertFalse(tab.log_panel.isHidden())
             tab.log_panel.toggle.click()
