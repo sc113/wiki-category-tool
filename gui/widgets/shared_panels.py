@@ -34,16 +34,24 @@ _FETCH_MODE_BOTH = 'both'
 class FileInputRow(QWidget):
     """The shared caption/path/browse/open row used by file-based tools."""
 
-    def __init__(self, owner, caption, path_edit, *, pattern='*.tsv', editor_menu=False):
+    def __init__(self, owner, caption, path_edit, *, pattern='*.tsv', editor_menu=False,
+                 trailing_button=None):
         super().__init__(owner)
         self.owner = owner
         self.path_edit = path_edit
         self.pattern = pattern
         self.on_open = lambda: open_from_edit(owner, path_edit)
         self.open_tooltip_key = 'ui.transfer.button_open_file_tip'
-        row = QHBoxLayout(self)
+        row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
+        if trailing_button is None:
+            self.setLayout(row)
+        else:
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(4)
+            layout.addLayout(row)
         self.caption = QLabel(caption)
         row.addWidget(self.caption)
         path_edit.setMinimumWidth(0)
@@ -60,7 +68,15 @@ class FileInputRow(QWidget):
         self.open_btn = QPushButton()
         self.open_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self.open_btn.clicked.connect(self.on_open)
-        row.addWidget(self.open_btn)
+        if trailing_button is None:
+            row.addWidget(self.open_btn)
+        else:
+            actions = QHBoxLayout()
+            actions.setSpacing(6)
+            actions.addWidget(self.open_btn)
+            actions.addWidget(trailing_button)
+            actions.addStretch(1)
+            layout.addLayout(actions)
         path_edit.returnPressed.connect(self.on_open)
         if editor_menu:
             path_edit.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -93,7 +109,7 @@ class CategoryReadControls(QWidget):
 
     def __init__(self, *, translate, category_section_label, category_placeholder,
                  on_read, on_append, on_petscan, help_text,
-                 modes=('categories_only', 'non_categories_only', 'both'), compact=False, parent=None):
+                 modes=('categories_only', 'non_categories_only', 'both'), parent=None):
         super().__init__(parent)
         self._t = translate
         self.help_text = help_text
@@ -218,20 +234,10 @@ class CategoryReadControls(QWidget):
         self.append_list_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.open_petscan_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         buttons_layout.addWidget(self.replace_list_btn, 1)
-        buttons_layout.addWidget(self.append_list_btn, 0 if compact else 1)
-        if compact:
-            buttons_layout.setContentsMargins(0, 0, 8, 0)
-            mode_row = QHBoxLayout()
-            mode_row.setContentsMargins(0, 0, 8, 0)
-            mode_row.setSpacing(4)
-            self.fetch_mode_combo.setMinimumWidth(104)
-            mode_row.addWidget(self.fetch_mode_combo, 1)
-            mode_row.addWidget(self.open_petscan_btn, 0)
-            category_fetch_layout.addLayout(mode_row, 2, 0, 1, 5)
-        else:
-            buttons_layout.addWidget(self.open_petscan_btn, 1)
-            buttons_layout.addSpacing(6)
-            buttons_layout.addWidget(self.fetch_mode_combo, 1)
+        buttons_layout.addWidget(self.append_list_btn, 1)
+        buttons_layout.addWidget(self.open_petscan_btn, 1)
+        buttons_layout.addSpacing(6)
+        buttons_layout.addWidget(self.fetch_mode_combo, 1)
         self.equalize_buttons()
         labels = {'categories_only': 'ui.source.fetch_mode.categories_only',
                   'non_categories_only': 'ui.source.fetch_mode.non_categories_only_alt',
@@ -272,14 +278,12 @@ class CategorySourcePanel(QGroupBox):
         file_caption: str = '',
         default_input_path: str = '',
         file_pattern='*.txt',
-        compact=False,
     ):
         self.parent_window = parent_window or parent
         super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
         self.file_pattern = file_pattern
-        self._compact = compact
         self._fetch_worker = None
         self._fetch_base_text = ''
         self._fetch_append_mode = False
@@ -358,7 +362,7 @@ class CategorySourcePanel(QGroupBox):
                 )
                 for i in range(self.fetch_mode_combo.count())
             ) + 48
-            self.fetch_mode_combo.setMinimumWidth(104 if self._compact else max(136, popup_width))
+            self.fetch_mode_combo.setMinimumWidth(max(136, popup_width))
             self.fetch_mode_combo.setMaximumWidth(16777215)
             self.fetch_mode_combo.view().setMinimumWidth(popup_width)
         except Exception:
@@ -457,8 +461,7 @@ class CategorySourcePanel(QGroupBox):
             category_placeholder=category_placeholder,
             on_read=self.fetch_selected_mode_replace, on_append=self.fetch_selected_mode_append,
             on_petscan=self.open_petscan_in_browser,
-            help_text=lambda: self._t('help.category.read_controls', ''),
-            compact=self._compact, parent=self,
+            help_text=lambda: self._t('help.category.read_controls', ''), parent=self,
         )
         for name in ('cat_edit', 'depth_spin', 'depth_plus_btn', 'depth_minus_btn',
                      'replace_list_btn', 'append_list_btn', 'open_petscan_btn', 'fetch_mode_combo'):
@@ -470,7 +473,7 @@ class CategorySourcePanel(QGroupBox):
         self.manual_list = QTextEdit()
         self.manual_list.setProperty('_wct_skip_text_translation', True)
         self.manual_list.setPlaceholderText(manual_placeholder)
-        self.manual_list.setMinimumHeight(62 if self._compact else 220)
+        self.manual_list.setMinimumHeight(220)
         layout.addWidget(self.manual_list, 1)
         self.list_edit = self.manual_list
         try:

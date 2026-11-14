@@ -13,8 +13,8 @@ from ...core.localization import translate_key
 from ...core.pywikibot_config import apply_pwb_config
 from ...utils import debug
 from ...workers.category_replacement_worker import CategoryReplacementWorker
-from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace
-from ..widgets.category_creation_table import TransferActionsLayout, TransferToolbarLayout
+from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace, category_map_layout
+from ..widgets.category_creation_table import TransferActionsLayout
 from ..widgets.shared_panels import CategorySourcePanel, FileInputRow, TsvPreviewPanel
 from ..widgets.ui_helpers import add_info_button, inc_progress, init_progress, log_message
 
@@ -34,17 +34,13 @@ class CategoryReplacementTab(QWidget):
         return translate_key(key, getattr(self.parent_window, '_ui_lang', 'ru'), fallback)
 
     def _build_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout = category_map_layout(self)
         self.source_panel = CategorySourcePanel(
             self, parent_window=self.parent_window,
             group_title=self._t('ui.pages_source'),
             help_text=self._t('help.cleanup.source'),
-            compact=True,
         )
-        self.source_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-        self.source_panel.setMinimumWidth(260)
+        self.source_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout.addWidget(self.source_panel, 1)
 
         work = QWidget()
@@ -57,33 +53,34 @@ class CategoryReplacementTab(QWidget):
         self.run_log.setReadOnly(True)
         self.run_log.setProperty('_wct_skip_log_translation', True)
         self.log_panel = CategoryLogPanel(self.run_log, lambda key: self._t(f'ui.transfer.{key}', key))
-        toolbar = TransferToolbarLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(6)
-        self.fetch_map_btn = QPushButton()
-        self.fetch_map_btn.setObjectName('sourceActionButton')
-        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
-        toolbar.addWidget(self.fetch_map_btn)
+        toolbar = QHBoxLayout()
+        self.sort_key_check = QCheckBox()
+        toolbar.addWidget(self.sort_key_check)
+        toolbar.addStretch(1)
         toolbar.addWidget(self.log_panel.toggle)
         main.addLayout(toolbar)
 
+        self.fetch_map_btn = QPushButton()
+        self.fetch_map_btn.setObjectName('sourceActionButton')
+        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
+
         self.map_path_edit = QLineEdit('category-replacements.tsv')
         self.map_path_edit.textChanged.connect(self._clear_preview)
-        self.map_file_row = FileInputRow(self, '', self.map_path_edit, editor_menu=True)
+        self.map_file_row = FileInputRow(
+            self, '', self.map_path_edit, editor_menu=True, trailing_button=self.fetch_map_btn,
+        )
         file_layout = QHBoxLayout()
         file_layout.addWidget(self.map_file_row, 1)
         self.map_help_btn = add_info_button(self, file_layout,
                                            lambda: self._t('help.cat_replace.map'), inline=True)
+        main.addLayout(file_layout)
         self.preview_panel = TsvPreviewPanel(self, header_text=self._t('ui.cat_replace.map_title'))
-        self.preview_panel.add_top_layout(file_layout)
         workspace = CategoryWorkspace(self.preview_panel, minimum_log_width=160)
         workspace.set_log_panel(self.log_panel)
         main.addWidget(workspace, 1)
 
         self.summary_group = QGroupBox()
         options_layout = QVBoxLayout(self.summary_group)
-        self.sort_key_check = QCheckBox()
-        options_layout.addWidget(self.sort_key_check)
         reason_row = QHBoxLayout()
         self.reason_label = QLabel()
         self.reason_edit = QLineEdit()
@@ -148,11 +145,13 @@ class CategoryReplacementTab(QWidget):
     def _update_actions(self):
         busy = self.worker is not None
         self.source_panel.setEnabled(not busy)
-        self.map_file_row.setEnabled(not busy and not self._fetching)
+        for control in (self.map_path_edit, self.map_file_row.open_btn, self.map_file_row.browse_btn):
+            control.setEnabled(not busy and not self._fetching)
         self.preview_btn.setEnabled(not busy and not self._fetching)
         self.start_btn.setEnabled(not busy and not self._fetching and self._rules is not None)
         self.stop_btn.setEnabled(busy)
         self.summary_group.setEnabled(not busy)
+        self.sort_key_check.setEnabled(not busy)
         if self.source_panel._fetch_active_button is not self.fetch_map_btn:
             self.fetch_map_btn.setEnabled(not busy and not self._fetching)
 

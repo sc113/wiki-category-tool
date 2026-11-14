@@ -161,7 +161,7 @@ class CategoryReplacementUiTests(unittest.TestCase):
         parent._ui_lang = 'en'
         for tab in (CategoryReplacementTab(parent), RedundantCategoriesTab(parent)):
             self.assertTrue(tab.log_panel.isHidden())
-            self.assertEqual('Read pages from TSV', tab.fetch_map_btn.text())
+            self.assertEqual('Source category members', tab.fetch_map_btn.text())
             tab.log_panel.toggle.click()
             self.assertFalse(tab.log_panel.isHidden())
             tab.log_panel.toggle.click()

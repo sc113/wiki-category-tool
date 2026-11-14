@@ -8,7 +8,7 @@ import csv
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QToolButton, QTextEdit, QGroupBox, QProgressBar, QMessageBox,
+    QTextEdit, QGroupBox, QProgressBar, QMessageBox,
     QSizePolicy
 )
 
@@ -27,11 +27,11 @@ from ...utils import (
     resolve_project_language,
 )
 from ...workers.redundant_category_worker import RedundantCategoryWorker
-from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace
-from ..widgets.category_creation_table import TransferActionsLayout, TransferToolbarLayout
-from ..widgets.shared_panels import CategorySourcePanel, TsvPreviewPanel
+from ..widgets.category_stage import CategoryLogPanel, CategoryWorkspace, category_map_layout
+from ..widgets.category_creation_table import TransferActionsLayout
+from ..widgets.shared_panels import CategorySourcePanel, FileInputRow, TsvPreviewPanel
 from ..widgets.ui_helpers import (
-    add_info_button, pick_file, open_from_edit,
+    add_info_button,
     tsv_preview_from_path, init_progress, inc_progress,
     log_message, is_default_summary, check_tsv_format
 )
@@ -70,12 +70,7 @@ class RedundantCategoriesTab(QWidget):
         return resolve_project_language(self.parent_window, 'ru')
 
     def setup_ui(self):
-        main_layout = QHBoxLayout(self)
-        try:
-            main_layout.setContentsMargins(0, 0, 0, 0)
-            main_layout.setSpacing(8)
-        except Exception:
-            pass
+        main_layout = category_map_layout(self)
 
         source_help = self._t('help.cleanup.source', '')
         pairs_help = self._t('help.cleanup.pairs', '')
@@ -107,20 +102,14 @@ class RedundantCategoriesTab(QWidget):
                 '<b>Or load list from file</b>',
             ),
             file_caption=self._t('ui.file_txt', 'File (.txt):'),
-            compact=True,
         )
         self.redundant_ns_combo = self.source_panel.ns_combo
         self.manual_list = self.source_panel.manual_list
         self.list_edit = self.source_panel.list_edit
         self.in_path = self.source_panel.in_path
         self.file_edit = self.source_panel.file_edit
-        try:
-            # Блок 1: сжимается вместе с блоком 2 раньше лога.
-            self.source_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-            self.source_panel.setMinimumWidth(260)
-        except Exception:
-            pass
-        main_layout.addWidget(self.source_panel, 3)
+        self.source_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        main_layout.addWidget(self.source_panel, 1)
 
         right_side = QWidget()
         right_layout = QVBoxLayout(right_side)
@@ -151,47 +140,17 @@ class RedundantCategoriesTab(QWidget):
             left_stretch=1,
             right_stretch=1,
         )
-        pairs_block = QVBoxLayout()
-        try:
-            pairs_block.setContentsMargins(0, 0, 0, 0)
-            pairs_block.setSpacing(4)
-        except Exception:
-            pass
-        pairs_block.addWidget(QLabel(self._t('ui.category_pairs_tsv', 'Category pairs (.tsv):')))
-        pairs_row = QHBoxLayout()
-        try:
-            pairs_row.setContentsMargins(0, 0, 0, 0)
-            pairs_row.setSpacing(6)
-        except Exception:
-            pass
-
+        self.fetch_map_btn = QPushButton()
+        self.fetch_map_btn.setObjectName('sourceActionButton')
+        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
         self.categories_path_edit = QLineEdit('categories.tsv')
-        self.categories_path_edit.setMinimumWidth(0)
-        self.categories_path_edit.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.categories_path_edit.textChanged.connect(self._on_pairs_path_changed)
-        pairs_row.addWidget(self.categories_path_edit, 1)
-
-        btn_browse_pairs = QToolButton()
-        btn_browse_pairs.setText('…')
-        btn_browse_pairs.setAutoRaise(False)
-        try:
-            btn_browse_pairs.setFixedSize(27, 27)
-            btn_browse_pairs.setToolTip(self._t('ui.choose_file', 'Choose file'))
-        except Exception:
-            pass
-        btn_browse_pairs.clicked.connect(
-            lambda: pick_file(self, self.categories_path_edit, '*.tsv'))
-        pairs_row.addWidget(btn_browse_pairs)
-
-        btn_open_pairs = QPushButton(self._t('ui.open', 'Open'))
-        btn_open_pairs.clicked.connect(
-            lambda: open_from_edit(self, self.categories_path_edit)
+        self.pairs_file_row = FileInputRow(
+            self, '', self.categories_path_edit, trailing_button=self.fetch_map_btn,
         )
-        pairs_row.addWidget(btn_open_pairs)
+        pairs_row = QHBoxLayout()
+        pairs_row.addWidget(self.pairs_file_row, 1)
         add_info_button(self, pairs_row, pairs_help, inline=True)
-        pairs_block.addLayout(pairs_row)
-        self.preview_panel.add_top_layout(pairs_block)
         self.preview_titles = self.preview_panel.titles_edit
         self.preview_rest = self.preview_panel.content_edit
         preview_layout.addWidget(self.preview_panel, 1)
@@ -199,15 +158,11 @@ class RedundantCategoriesTab(QWidget):
         self.run_log = QTextEdit()
         self.run_log.setReadOnly(True)
         self.log_panel = CategoryLogPanel(self.run_log, lambda key: self._t(f'ui.transfer.{key}', key))
-        self.fetch_map_btn = QPushButton()
-        self.fetch_map_btn.setObjectName('sourceActionButton')
-        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
-        toolbar = TransferToolbarLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(6)
-        toolbar.addWidget(self.fetch_map_btn)
+        toolbar = QHBoxLayout()
+        toolbar.addStretch(1)
         toolbar.addWidget(self.log_panel.toggle)
         right_layout.addLayout(toolbar)
+        right_layout.addLayout(pairs_row)
         workspace = CategoryWorkspace(preview_wrap, minimum_log_width=160)
         workspace.set_log_panel(self.log_panel)
         right_layout.addWidget(workspace, 1)
@@ -302,13 +257,7 @@ class RedundantCategoriesTab(QWidget):
 
         right_layout.addLayout(controls_row)
 
-        main_layout.addWidget(right_side, 7)
-        try:
-            # На среднем размере три верхних блока близки по ширине.
-            main_layout.setStretch(0, 1)
-            main_layout.setStretch(1, 2)
-        except Exception:
-            pass
+        main_layout.addWidget(right_side, 2)
         self.source_panel.set_log_widget(self.run_log)
         self.source_panel.set_fetch_progress_widgets(self.progress_label, self.progress_bar)
         self.source_panel.fetch_started.connect(self._on_source_fetch_started)
@@ -319,8 +268,10 @@ class RedundantCategoriesTab(QWidget):
     def refresh_localized_texts(self):
         self.source_panel.refresh_localized_texts()
         self.log_panel.refresh_localized_texts()
+        self.pairs_file_row.refresh_localized_texts()
+        self.pairs_file_row.caption.setText(self._t('ui.category_pairs_tsv', 'Category pairs (.tsv):'))
         if self.source_panel._fetch_active_button is not self.fetch_map_btn:
-            self.fetch_map_btn.setText(self._t('ui.source.fetch_map', 'Read pages from TSV'))
+            self.fetch_map_btn.setText(self._t('ui.source.fetch_map', 'Source category members'))
             self.fetch_map_btn.setToolTip(self._t('ui.source.fetch_map_tip', ''))
 
     def fetch_map_pages(self):
@@ -341,12 +292,19 @@ class RedundantCategoriesTab(QWidget):
         self.preview_btn.setEnabled(False)
         self.start_btn.setEnabled(False)
         self.fetch_map_btn.setEnabled(False)
+        self._set_file_controls_enabled(False)
 
     def _on_source_fetch_finished(self):
         self.preview_btn.setEnabled(True)
         self.start_btn.setEnabled(self._preview_ready)
         self.fetch_map_btn.setEnabled(True)
+        self._set_file_controls_enabled(True)
         self.refresh_localized_texts()
+
+    def _set_file_controls_enabled(self, enabled):
+        self.categories_path_edit.setEnabled(enabled)
+        self.pairs_file_row.open_btn.setEnabled(enabled)
+        self.pairs_file_row.browse_btn.setEnabled(enabled)
 
     def _set_action_mode_preview(self):
         self._preview_ready = False
@@ -487,7 +445,7 @@ class RedundantCategoriesTab(QWidget):
         self.fetch_map_btn.setEnabled(False)
         self.preview_btn.setEnabled(False)
         self.source_panel.setEnabled(False)
-        self.categories_path_edit.setReadOnly(True)
+        self._set_file_controls_enabled(False)
         self.log_panel.set_expanded(True)
         self.run_log.clear()
         init_progress(self.progress_label, self.progress_bar, len(titles))
@@ -556,7 +514,7 @@ class RedundantCategoriesTab(QWidget):
         self.fetch_map_btn.setEnabled(True)
         self.preview_btn.setEnabled(True)
         self.source_panel.setEnabled(True)
-        self.categories_path_edit.setReadOnly(False)
+        self._set_file_controls_enabled(True)
         if self._preview_ready:
             self._set_action_mode_run()
         else:

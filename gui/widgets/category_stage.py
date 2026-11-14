@@ -460,3 +460,21 @@ class CategoryWorkspace(QSplitter):
                 self._log_fraction = self.sizes()[1] / max(1, sum(self.sizes()))
             self.log_panel.hide()
             self.setSizes([max(1, self.width()), 0])
+
+
+def category_map_layout(tab):
+    """Keep the source controls in one row and scroll the page if it cannot fit."""
+    outer = QVBoxLayout(tab)
+    outer.setContentsMargins(0, 0, 0, 0)
+    scroll = QScrollArea(tab)
+    scroll.setObjectName('categoryMapScroll')
+    scroll.setStyleSheet('QScrollArea#categoryMapScroll { background: transparent; border: none; }')
+    scroll.setWidgetResizable(True)
+    outer.addWidget(scroll)
+    content = QWidget()
+    content.setAutoFillBackground(False)
+    columns = QHBoxLayout(content)
+    columns.setContentsMargins(0, 0, 0, 0)
+    columns.setSpacing(8)
+    scroll.setWidget(content)
+    return columns

@@ -14,7 +14,7 @@
   "ui.cat_replace.reason_too_long": "Shorten the reason to leave room for the replacement summary.",
   "ui.cat_replace.inherit_sort_key": "Carry over the sort key",
   "ui.cat_replace.inherit_sort_key_tip": "An explicit key in the TSV always takes priority. With this off, destinations without an explicit key are added without one.",
-  "ui.source.fetch_map": "Read pages from TSV",
+  "ui.source.fetch_map": "Source category members",
   "ui.cleanup.remove": "Remove",
   "ui.source.fetch_map_tip": "Read the direct members of every category in the first TSV column and put the unique pages in the working list.",
   "ui.source.empty_first_column": "The first TSV column is empty.",

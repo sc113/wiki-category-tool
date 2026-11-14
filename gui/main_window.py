@@ -94,13 +94,13 @@ class MainWindow(QMainWindow):
         (2, 'ui.replace', 'replace'),
         (3, 'ui.create', 'create'),
         (4, 'ui.rename', 'rename'),
-        (11, 'ui.cat_replace.title', 'replace'),
+        (11, 'ui.cat_replace.title', 'category_replace'),
         (5, 'ui.redundant_categories', 'cleanup'),
-        (10, 'ui.transfer.nav_interwiki', 'sync'),
+        (10, 'ui.transfer.nav_interwiki', 'link'),
     ]
     _TRANSFER_NAV_ITEMS = [
-        (8, 'ui.transfer.nav_recon', 'read'),
-        (9, 'ui.transfer.nav_links', 'create'),
+        (8, 'ui.transfer.nav_recon', 'scan'),
+        (9, 'ui.transfer.nav_links', 'prepare'),
         (6, 'ui.transfer.nav_sync', 'sync'),
     ]
     _SIDEBAR_EXPANDED_WIDTH = 248
@@ -608,15 +608,34 @@ class MainWindow(QMainWindow):
                     ('path', {'d': 'm8 21-4-4 4-4'}),
                     ('path', {'d': 'M4 17h16'}),
                 ],
+                'category_replace': [
+                    ('rect', {'x': '2', 'y': '9', 'width': '5', 'height': '6', 'rx': '1'}),
+                    ('rect', {'x': '17', 'y': '2', 'width': '5', 'height': '6', 'rx': '1'}),
+                    ('rect', {'x': '17', 'y': '16', 'width': '5', 'height': '6', 'rx': '1'}),
+                    ('path', {'d': 'M7 12h5m5-7h-2a3 3 0 0 0-3 3v8a3 3 0 0 0 3 3h2'}),
+                ],
                 'cleanup': [
                     ('path', {'d': 'M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z'}),
                     ('path', {'d': 'M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z'}),
                     ('path', {'d': 'M3 5a2 2 0 0 0 2 2h3'}),
                     ('path', {'d': 'M3 3v13a2 2 0 0 0 2 2h3'}),
                 ],
-                'sync': [
+                'link': [
                     ('path', {'d': 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'}),
                     ('path', {'d': 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'}),
+                ],
+                'scan': [
+                    ('path', {'d': 'M4 8V5a1 1 0 0 1 1-1h3m8 0h3a1 1 0 0 1 1 1v3m0 8v3a1 1 0 0 1-1 1h-3m-8 0H5a1 1 0 0 1-1-1v-3'}),
+                    ('path', {'d': 'M7 12h10'}),
+                ],
+                'prepare': [
+                    ('rect', {'x': '5', 'y': '4', 'width': '14', 'height': '17', 'rx': '2'}),
+                    ('rect', {'x': '9', 'y': '2', 'width': '6', 'height': '4', 'rx': '1'}),
+                    ('path', {'d': 'm9 13 2 2 4-4'}),
+                ],
+                'sync': [
+                    ('path', {'d': 'M20 7v5h-5M4 17v-5h5'}),
+                    ('path', {'d': 'M6 7a7 7 0 0 1 11-2l3 3M4 16l3 3a7 7 0 0 0 11-2'}),
                 ],
                 'about': [
                     ('path', {'d': 'M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z'}),
@@ -657,10 +676,14 @@ class MainWindow(QMainWindow):
         style_map = {
             'auth': QStyle.SP_DialogApplyButton,
             'read': QStyle.SP_FileDialogContentsView,
-            'replace': QStyle.SP_BrowserReload,
+            'replace': QStyle.SP_FileDialogDetailedView,
             'create': QStyle.SP_FileDialogNewFolder,
             'rename': QStyle.SP_ArrowRight,
+            'category_replace': QStyle.SP_DirLinkIcon,
             'cleanup': QStyle.SP_TrashIcon,
+            'link': QStyle.SP_FileLinkIcon,
+            'scan': QStyle.SP_FileDialogListView,
+            'prepare': QStyle.SP_DialogApplyButton,
             'sync': QStyle.SP_BrowserReload,
         }
         color = self._icon_color()
