@@ -137,7 +137,7 @@ Use a TSV with no header row: the source category goes in the first column, foll
 Old category	New category	Another category|Sort key
 ```
 
-- **Collect** in the source category members section loads the direct members of categories in the first TSV column and removes duplicate page titles. This section is also available under **Redundant categories**.
+- **Collect** in the TSV map row loads the direct members of categories in the first TSV column and removes duplicate page titles. The button is also available under **Redundant categories**.
 - **Carry over the sort key** — off by default. A key specified after `|` in a replacement cell takes priority; `Category name|` sets an empty key.
 - **Reason** — appended after a dash in the edit summary. Existing replacement categories are not duplicated.
 

@@ -34,19 +34,18 @@ class CategoryReplacementTab(QWidget):
         return translate_key(key, getattr(self.parent_window, '_ui_lang', 'ru'), fallback)
 
     def _build_ui(self):
+        self.fetch_map_btn = QPushButton()
+        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
         self.source_panel = CategorySourcePanel(
             self, parent_window=self.parent_window,
             group_title=self._t('ui.pages_source'),
             help_text=self._t('help.cleanup.source'),
             category_section_label=self._t('ui.cleanup.fetch_category_content'),
             manual_label=self._t('ui.cleanup.list_of_pages_to_process'),
-            file_section_label=self._t('ui.cleanup.or_load_list_from_file'),
+            map_fetch_button=self.fetch_map_btn,
         )
         self.source_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self.fetch_map_btn = QPushButton()
-        self.fetch_map_btn.setObjectName('sourceActionButton')
-        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
-        layout = category_map_layout(self, self.source_panel, self.fetch_map_btn)
+        layout = category_map_layout(self, self.source_panel)
 
         work = QWidget()
         main = QVBoxLayout(work)

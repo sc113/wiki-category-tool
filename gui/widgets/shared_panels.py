@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QToolButton, QTextEdit, QMessageBox, QSpinBox,
-    QGridLayout, QSizePolicy, QGroupBox, QSplitter
+    QFrame, QGridLayout, QSizePolicy, QGroupBox, QSplitter
 )
 
 from ...constants import PREFIX_TOOLTIP, REQUEST_HEADERS
@@ -34,38 +34,57 @@ _FETCH_MODE_BOTH = 'both'
 class FileInputRow(QWidget):
     """The shared caption/path/browse/open row used by file-based tools."""
 
-    def __init__(self, owner, caption, path_edit, *, pattern='*.tsv', editor_menu=False):
+    def __init__(self, owner, caption, path_edit, *, pattern='*.tsv', editor_menu=False,
+                 related_action=None):
         super().__init__(owner)
         self.owner = owner
         self.path_edit = path_edit
         self.pattern = pattern
         self.on_open = lambda: open_from_edit(owner, path_edit)
         self.open_tooltip_key = 'ui.transfer.button_open_file_tip'
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
         self.caption = QLabel(caption)
-        row.addWidget(self.caption)
+        self.caption.setBuddy(path_edit)
         path_edit.setMinimumWidth(0)
         path_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         path_edit.setProperty('_wct_skip_text_translation', True)
-        row.addWidget(path_edit, 1)
         self.browse_btn = QToolButton()
         self.browse_btn.setText('…')
         self.browse_btn.setAutoRaise(False)
         self.browse_btn.setFixedSize(27, 27)
         self.browse_btn.setCursor(Qt.PointingHandCursor)
         self.browse_btn.clicked.connect(self.choose_file)
-        row.addWidget(self.browse_btn)
         self.open_btn = QPushButton()
         self.open_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self.open_btn.clicked.connect(self.on_open)
-        row.addWidget(self.open_btn)
         path_edit.returnPressed.connect(self.on_open)
         if editor_menu:
             path_edit.setContextMenuPolicy(Qt.CustomContextMenu)
             path_edit.customContextMenuRequested.connect(self._show_path_menu)
+        self._setup_layout(related_action)
         self.refresh_localized_texts()
+
+    def _setup_layout(self, related_action):
+        widgets = (self.caption, self.path_edit, self.browse_btn, self.open_btn)
+        if related_action is None:
+            row = QHBoxLayout(self)
+            row.setSpacing(6)
+            for widget in widgets:
+                row.addWidget(widget, int(widget is self.path_edit))
+        else:
+            row = QGridLayout(self)
+            row.setHorizontalSpacing(6)
+            row.setVerticalSpacing(4)
+            row.setColumnStretch(1, 1)
+            for column, widget in enumerate(widgets):
+                row.addWidget(widget, 0, column)
+            caption, description, button = related_action
+            row.addWidget(caption, 1, 0)
+            row.addWidget(description, 1, 1, 1, 2)
+            row.addWidget(button, 1, 3)
+            for action in (self.open_btn, button):
+                action.setObjectName('sourceActionButton')
+                action.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        row.setContentsMargins(0, 0, 0, 0)
 
     def _t(self, key):
         host = getattr(self.owner, 'parent_window', None) or self.owner.window()
@@ -262,12 +281,14 @@ class CategorySourcePanel(QGroupBox):
         file_caption: str = '',
         default_input_path: str = '',
         file_pattern='*.txt',
+        map_fetch_button: QPushButton | None = None,
     ):
         self.parent_window = parent_window or parent
         super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
         self.file_pattern = file_pattern
+        self._map_source_labels = ()
         self._fetch_worker = None
         self._fetch_base_text = ''
         self._fetch_append_mode = False
@@ -290,6 +311,7 @@ class CategorySourcePanel(QGroupBox):
             file_section_label=file_section_label or self._t('ui.or_load_list_from_file', '<b>Or load list from file</b>'),
             file_caption=file_caption or self._t('ui.file_txt', 'File (.txt):'),
             default_input_path=default_input_path,
+            map_fetch_button=map_fetch_button,
         )
         self._refresh_fetch_mode_combo_texts()
 
@@ -361,6 +383,8 @@ class CategorySourcePanel(QGroupBox):
 
     def refresh_localized_texts(self) -> None:
         self.file_row.refresh_localized_texts()
+        for label, key, fallback in self._map_source_labels:
+            label.setText(self._t(key, fallback))
         for button, key in ((self.replace_list_btn, 'ui.source.replace_list_tooltip'),
                             (self.append_list_btn, 'ui.source.append_list_tooltip'),
                             (self.open_petscan_btn, 'ui.source.open_petscan_tooltip')):
@@ -413,6 +437,7 @@ class CategorySourcePanel(QGroupBox):
         file_section_label: str,
         file_caption: str,
         default_input_path: str,
+        map_fetch_button: QPushButton | None,
     ) -> None:
         layout = QVBoxLayout(self)
         try:
@@ -465,9 +490,32 @@ class CategorySourcePanel(QGroupBox):
         except Exception:
             pass
 
-        layout.addWidget(QLabel(file_section_label))
         self.in_path = QLineEdit(default_input_path)
-        self.file_row = FileInputRow(self, file_caption, self.in_path, pattern=self.file_pattern)
+        if map_fetch_button is None:
+            layout.addWidget(QLabel(file_section_label))
+            self.file_row = FileInputRow(self, file_caption, self.in_path, pattern=self.file_pattern)
+        else:
+            layout.addSpacing(4)
+            separator = QFrame()
+            separator.setObjectName('sourceFileSeparator')
+            separator.setFixedHeight(1)
+            layout.addWidget(separator)
+            layout.addSpacing(4)
+            tsv_caption = QLabel()
+            tsv_caption.setBuddy(map_fetch_button)
+            tsv_description = QLabel()
+            tsv_description.setWordWrap(True)
+            self.file_row = FileInputRow(
+                self, '', self.in_path, pattern=self.file_pattern,
+                related_action=(tsv_caption, tsv_description, map_fetch_button),
+            )
+            self._map_source_labels = (
+                (self.file_row.caption, 'ui.source.compact_txt', '<b>TXT file</b>'),
+                (tsv_caption, 'ui.source.compact_tsv', '<b>TSV map</b>'),
+                (tsv_description, 'ui.source.compact_tsv_members', 'Source category members'),
+            )
+            for label, key, fallback in self._map_source_labels:
+                label.setText(self._t(key, fallback))
         layout.addWidget(self.file_row)
         self.file_edit = self.in_path
 

@@ -462,7 +462,7 @@ class CategoryWorkspace(QSplitter):
             self.setSizes([max(1, self.width()), 0])
 
 
-def category_map_layout(tab, source_panel, source_action):
+def category_map_layout(tab, source_panel):
     """Keep the source controls in one row and scroll the page if it cannot fit."""
     outer = QVBoxLayout(tab)
     outer.setContentsMargins(0, 0, 0, 0)
@@ -481,18 +481,6 @@ def category_map_layout(tab, source_panel, source_action):
     columns = QHBoxLayout(content)
     columns.setContentsMargins(0, 0, 0, 0)
     columns.setSpacing(8)
-    source_layout = source_panel.layout()
-    source_layout.addSpacing(6)
-    source_label = QLabel(source_panel._t(
-        'ui.source.fetch_map_section', '<b>Or collect all source category members:</b>',
-    ))
-    source_label.setWordWrap(True)
-    source_label.setBuddy(source_action)
-    action_row = QHBoxLayout()
-    action_row.setSpacing(6)
-    action_row.addWidget(source_label, 1)
-    action_row.addWidget(source_action, 0, Qt.AlignVCenter)
-    source_layout.addLayout(action_row)
     columns.addWidget(source_panel, 1)
     scroll.setWidget(content)
     scroll.viewport().setAutoFillBackground(False)

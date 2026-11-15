@@ -74,6 +74,8 @@ class RedundantCategoriesTab(QWidget):
         pairs_help = self._t('help.cleanup.pairs', '')
         summary_help = self._t('help.cleanup.summary', '')
 
+        self.fetch_map_btn = QPushButton()
+        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
         self.source_panel = CategorySourcePanel(
             self,
             parent_window=self.parent_window,
@@ -95,11 +97,7 @@ class RedundantCategoriesTab(QWidget):
                 'ui.page_list_one_per_line',
                 'Page list (one per line)',
             ),
-            file_section_label=self._t(
-                'ui.cleanup.or_load_list_from_file',
-                '<b>Or load list from file:</b>',
-            ),
-            file_caption=self._t('ui.file_txt', 'File (.txt):'),
+            map_fetch_button=self.fetch_map_btn,
         )
         self.redundant_ns_combo = self.source_panel.ns_combo
         self.manual_list = self.source_panel.manual_list
@@ -107,10 +105,7 @@ class RedundantCategoriesTab(QWidget):
         self.in_path = self.source_panel.in_path
         self.file_edit = self.source_panel.file_edit
         self.source_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self.fetch_map_btn = QPushButton()
-        self.fetch_map_btn.setObjectName('sourceActionButton')
-        self.fetch_map_btn.clicked.connect(self.fetch_map_pages)
-        main_layout = category_map_layout(self, self.source_panel, self.fetch_map_btn)
+        main_layout = category_map_layout(self, self.source_panel)
 
         right_side = QWidget()
         right_layout = QVBoxLayout(right_side)

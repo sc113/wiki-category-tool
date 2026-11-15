@@ -1785,6 +1785,9 @@ class MainWindow(QMainWindow):
                 padding-top: 8px;
                 font-weight: 700;
             }
+            QFrame#sourceFileSeparator {
+                background: rgba(113, 214, 219, 0.28);
+            }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 10px;
@@ -2665,6 +2668,9 @@ class MainWindow(QMainWindow):
                 background: rgba(255, 255, 255, 0.88);
                 padding-top: 8px;
                 font-weight: 700;
+            }
+            QFrame#sourceFileSeparator {
+                background: #c5d8e7;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;

@@ -188,6 +188,7 @@ class CategoryReplacementUiTests(unittest.TestCase):
         parent = QWidget()
         parent._ui_lang = 'en'
         for tab in (CategoryReplacementTab(parent), RedundantCategoriesTab(parent)):
+            self.assertEqual('categories_only', tab.source_panel.fetch_mode_combo.currentData())
             self.assertTrue(tab.log_panel.isHidden())
             self.assertEqual('Collect', tab.fetch_map_btn.text())
             self.assertTrue(tab.source_panel.isAncestorOf(tab.fetch_map_btn))
