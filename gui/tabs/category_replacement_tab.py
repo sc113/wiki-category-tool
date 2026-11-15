@@ -72,7 +72,9 @@ class CategoryReplacementTab(QWidget):
         self.map_help_btn = add_info_button(self, file_layout,
                                            lambda: self._t('help.cat_replace.map'), inline=True)
         main.addLayout(file_layout)
-        self.preview_panel = TsvPreviewPanel(self, header_text=self._t('ui.cat_replace.map_title'))
+        self.preview_panel = TsvPreviewPanel(
+            self, header_text=self._t('ui.cat_replace.map_title'), count_kind='rules',
+        )
         workspace = CategoryWorkspace(self.preview_panel, minimum_log_width=160)
         workspace.set_log_panel(self.log_panel)
         main.addWidget(workspace, 1)

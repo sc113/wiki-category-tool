@@ -135,6 +135,7 @@ class RedundantCategoriesTab(QWidget):
             right_header=self._t('ui.broad_category', 'Broad category'),
             left_stretch=1,
             right_stretch=1,
+            count_kind='rules',
         )
         self.categories_path_edit = QLineEdit('categories.tsv')
         self.categories_path_edit.textChanged.connect(self._on_pairs_path_changed)
@@ -323,6 +324,7 @@ class RedundantCategoriesTab(QWidget):
         if self.source_panel._fetch_worker is not None or (worker and worker.isRunning()):
             return
         self._set_action_mode_preview()
+        self.preview_panel.clear()
 
         path = (self.categories_path_edit.text() or '').strip()
         if not path:

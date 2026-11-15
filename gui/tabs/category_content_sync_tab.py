@@ -61,6 +61,7 @@ from ...workers.category_transfer_worker import CategoryArticlePresenceWorker
 from ...workers.category_fetch_worker import CategoryLanguageProbeWorker
 from ..widgets.table_history import TableHistory, table_action, pause_sorting
 from ..widgets.category_stage import CategoryLogPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, highlight_next_action, refresh_category_toolbar, remove_inner_frame, set_category_button_tooltip, refresh_category_button_tooltips
+from ..widgets.item_counts import ItemCountLabel
 from ..widgets.ui_helpers import (
     category_table_palette,
     category_table_style,
@@ -225,12 +226,10 @@ class CategoryContentSyncTab(QWidget):
                 "ui.sync.manual_list_placeholder",
                 "Target categories (one per line)",
             ),
-            file_section_label=self._t(
-                "ui.sync.file_section", "<b>Or load list from file</b>"
-            ),
-            file_caption=self._t("ui.sync.file_caption", "Category list"),
             default_input_path='categories.tsv',
             file_pattern='*.txt *.tsv',
+            count_kind='categories',
+            count_input_file=False,
         )
         self.sync_ns_combo = self.source_panel.ns_combo
         self.cat_edit = self.source_panel.cat_edit
@@ -495,6 +494,12 @@ class CategoryContentSyncTab(QWidget):
         self.view_tabs.currentChanged.connect(self._select_view)
         self._apply_preview_table_theme()
         self.table_toolbar = CategoryTableToolbar(self.view_tabs)
+        self.preview_count = ItemCountLabel(self)
+        self.table_toolbar.layout().addWidget(self.preview_count)
+        model = self.preview_table.model()
+        model.rowsInserted.connect(self._update_preview_count)
+        model.rowsRemoved.connect(self._update_preview_count)
+        model.modelReset.connect(self._update_preview_count)
         self.table_toolbar.set_log_panel(self.log_panel)
         self.table_tools, tools = category_actions(self._stage_t("table_tools"), framed=True)
         self.read_file_btn = QPushButton(self._stage_t('read_file'))
@@ -787,8 +792,12 @@ class CategoryContentSyncTab(QWidget):
         if hasattr(self, "preview_history"):
             self.preview_history.reset()
 
+    def _update_preview_count(self, *_args):
+        self.preview_count.set_total('categories', self.preview_table.rowCount() if self._preview_mode else None)
+
     def _set_preview_mode(self, active: bool):
         self._preview_mode = bool(active)
+        self._update_preview_count()
         self.left_stack.setCurrentIndex(1 if self._preview_mode else 0)
         blocked = self.view_tabs.blockSignals(True)
         self.view_tabs.setTabEnabled(1, self._preview_mode or self._preview_ready or self.preview_table.rowCount() > 0)

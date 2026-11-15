@@ -30,6 +30,7 @@ from ...workers.category_transfer_worker import (
 from ..widgets.ui_helpers import category_table_palette, category_table_style, create_spin_control, add_info_button, inc_progress, init_progress, log_message, set_reading_progress, style_transfer_languages
 from ..widgets.shared_panels import FileInputRow
 from ..widgets.category_stage import CategoryLogPanel, CategoryParametersPanel, CategoryProgressFooter, CategoryRunRow, CategoryInlineParameters, CategoryTableToolbar, CategoryWorkspace, CategoryWorkspaceFrame, category_actions, category_toolbar, category_menu_button, category_attention_palette, highlight_next_action, refresh_category_toolbar, set_category_button_tooltip, refresh_category_button_tooltips
+from ..widgets.item_counts import ItemCountLabel, format_item_count
 from ..widgets.category_autofill import title_fill_dialog
 from ..widgets.table_history import TableHistory, table_action, pause_sorting
 from ..widgets.category_plan import category_plan_widget
@@ -280,6 +281,8 @@ class CategoryTransferTab(QWidget):
         self.read_scan_action.setToolTip(self._t('button_read_scan_file_tip'))
         self.read_scan_action.triggered.connect(self.open_scan_file)
         scan_header_row.addWidget(self.scan_guidance, 1)
+        self.scan_count = ItemCountLabel(self)
+        scan_header_row.addWidget(self.scan_count)
         self.scan_table_toolbar = CategoryTableToolbar(self.scan_header)
         layout.addWidget(results_page, 1)
         self.scan_workspace = CategoryWorkspace(scan_content)
@@ -634,6 +637,7 @@ class CategoryTransferTab(QWidget):
             hint = 'scan_cleanup_hint'
         self.scan_guidance.setText(self._t(hint, checked=self.table.rowCount() - len(pending),
                                             total=self.table.rowCount(), remaining=len(pending), count=empty_count))
+        self.scan_count.set_total('categories', self.table.rowCount())
         theme = getattr(self.parent_window, '_theme_mode', 'teal')
         if empty_count:
             next_action = self.clear_btn
@@ -1311,7 +1315,7 @@ class CategoryTransferTab(QWidget):
             else:
                 counts["unchecked"] += 1
         counts.update(category_outcome_counts(outcomes))
-        parts = [self._t('list_count', count=self.creation_table.rowCount())]
+        parts = [format_item_count('categories', self.creation_table.rowCount(), self._history_language())]
         parts.extend(self._t('count_' + key, count=value) for key, value in counts.items() if value)
         self.creation_summary.setText('   ·   '.join(parts))
         if not self.creation_table.rowCount():

@@ -1110,6 +1110,10 @@ class MainWindow(QMainWindow):
 
     def _apply_widget_text_translation(self):
         target = 'en' if self._ui_lang == 'en' else 'ru'
+        from .widgets.item_counts import ItemCountLabel
+
+        for counter in self.findChildren(ItemCountLabel):
+            counter.refresh_localized_texts()
         try:
             for cls in (QLabel, QPushButton, QCheckBox, QToolButton):
                 for w in self.findChildren(cls):
@@ -1787,6 +1791,11 @@ class MainWindow(QMainWindow):
             }
             QFrame#sourceFileSeparator {
                 background: rgba(113, 214, 219, 0.28);
+            }
+            QLabel#itemCount {
+                color: #c0d8e0;
+                font-size: 12px;
+                font-weight: 400;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -2671,6 +2680,11 @@ class MainWindow(QMainWindow):
             }
             QFrame#sourceFileSeparator {
                 background: #c5d8e7;
+            }
+            QLabel#itemCount {
+                color: #4b6678;
+                font-size: 12px;
+                font-weight: 400;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;

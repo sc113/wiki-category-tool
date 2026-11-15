@@ -19,6 +19,7 @@ from ...core.api_client import REQUEST_SESSION, _rate_wait
 from ...core.localization import translate_key
 from ...utils import debug
 from ...workers.category_fetch_worker import CategoryFetchWorker, CategoryMapFetchWorker
+from .item_counts import FileCount, ItemCountLabel
 from .ui_helpers import add_info_button, pick_file, open_from_edit, log_message, reading_progress_text, set_reading_progress, create_spin_control, init_progress, inc_progress
 
 
@@ -54,6 +55,7 @@ class FileInputRow(QWidget):
         self.browse_btn.setCursor(Qt.PointingHandCursor)
         self.browse_btn.clicked.connect(self.choose_file)
         self.open_btn = QPushButton()
+        self.open_btn.setObjectName('sourceActionButton')
         self.open_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self.open_btn.clicked.connect(self.on_open)
         path_edit.returnPressed.connect(self.on_open)
@@ -81,8 +83,8 @@ class FileInputRow(QWidget):
             row.addWidget(caption, 1, 0)
             row.addWidget(description, 1, 1, 1, 2)
             row.addWidget(button, 1, 3)
+            button.setObjectName('sourceActionButton')
             for action in (self.open_btn, button):
-                action.setObjectName('sourceActionButton')
                 action.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         row.setContentsMargins(0, 0, 0, 0)
 
@@ -277,18 +279,20 @@ class CategorySourcePanel(QGroupBox):
         category_placeholder: str = '',
         manual_label: str = '',
         manual_placeholder: str = '',
-        file_section_label: str = '',
-        file_caption: str = '',
         default_input_path: str = '',
         file_pattern='*.txt',
         map_fetch_button: QPushButton | None = None,
+        count_kind: str = 'pages',
+        count_input_file: bool = True,
     ):
         self.parent_window = parent_window or parent
         super().__init__(group_title or self._t('ui.source', 'Source'), parent)
         self.log_widget = log_widget
         self.help_text = help_text
         self.file_pattern = file_pattern
-        self._map_source_labels = ()
+        self._file_source_labels = []
+        self._count_kind = count_kind
+        self._count_input_file = count_input_file
         self._fetch_worker = None
         self._fetch_base_text = ''
         self._fetch_append_mode = False
@@ -308,8 +312,6 @@ class CategorySourcePanel(QGroupBox):
             category_placeholder=category_placeholder or self._t('ui.root_category_name', 'Root category name'),
             manual_label=manual_label or self._t('ui.list_of_pages_to_process', '<b>List of pages</b>'),
             manual_placeholder=manual_placeholder or self._t('ui.page_list_one_per_line', 'Page list (one per line)'),
-            file_section_label=file_section_label or self._t('ui.or_load_list_from_file', '<b>Or load list from file</b>'),
-            file_caption=file_caption or self._t('ui.file_txt', 'File (.txt):'),
             default_input_path=default_input_path,
             map_fetch_button=map_fetch_button,
         )
@@ -383,8 +385,8 @@ class CategorySourcePanel(QGroupBox):
 
     def refresh_localized_texts(self) -> None:
         self.file_row.refresh_localized_texts()
-        for label, key, fallback in self._map_source_labels:
-            label.setText(self._t(key, fallback))
+        self._refresh_file_source_labels()
+        self.source_count.refresh_localized_texts()
         for button, key in ((self.replace_list_btn, 'ui.source.replace_list_tooltip'),
                             (self.append_list_btn, 'ui.source.append_list_tooltip'),
                             (self.open_petscan_btn, 'ui.source.open_petscan_tooltip')):
@@ -398,6 +400,10 @@ class CategorySourcePanel(QGroupBox):
             pass
         self._refresh_fetch_mode_combo_texts()
         self._sync_source_action_button_widths()
+
+    def _refresh_file_source_labels(self):
+        for label, key, fallback in self._file_source_labels:
+            label.setText(self._t(key, fallback))
 
     def _sync_source_action_button_widths(self) -> None:
         buttons = (
@@ -434,8 +440,6 @@ class CategorySourcePanel(QGroupBox):
         category_placeholder: str,
         manual_label: str,
         manual_placeholder: str,
-        file_section_label: str,
-        file_caption: str,
         default_input_path: str,
         map_fetch_button: QPushButton | None,
     ) -> None:
@@ -478,7 +482,11 @@ class CategorySourcePanel(QGroupBox):
         layout.addWidget(self.read_controls)
 
         layout.addSpacing(6)
-        layout.addWidget(QLabel(manual_label))
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(QLabel(manual_label), 1)
+        self.source_count = ItemCountLabel(self)
+        heading_row.addWidget(self.source_count, 0)
+        layout.addLayout(heading_row)
         self.manual_list = QTextEdit()
         self.manual_list.setProperty('_wct_skip_text_translation', True)
         self.manual_list.setPlaceholderText(manual_placeholder)
@@ -491,33 +499,53 @@ class CategorySourcePanel(QGroupBox):
             pass
 
         self.in_path = QLineEdit(default_input_path)
-        if map_fetch_button is None:
-            layout.addWidget(QLabel(file_section_label))
-            self.file_row = FileInputRow(self, file_caption, self.in_path, pattern=self.file_pattern)
-        else:
-            layout.addSpacing(4)
-            separator = QFrame()
-            separator.setObjectName('sourceFileSeparator')
-            separator.setFixedHeight(1)
-            layout.addWidget(separator)
-            layout.addSpacing(4)
+        layout.addSpacing(4)
+        separator = QFrame()
+        separator.setObjectName('sourceFileSeparator')
+        separator.setFixedHeight(1)
+        layout.addWidget(separator)
+        layout.addSpacing(4)
+        related_action = None
+        if map_fetch_button is not None:
             tsv_caption = QLabel()
             tsv_caption.setBuddy(map_fetch_button)
             tsv_description = QLabel()
             tsv_description.setWordWrap(True)
-            self.file_row = FileInputRow(
-                self, '', self.in_path, pattern=self.file_pattern,
-                related_action=(tsv_caption, tsv_description, map_fetch_button),
-            )
-            self._map_source_labels = (
-                (self.file_row.caption, 'ui.source.compact_txt', '<b>TXT file</b>'),
+            related_action = (tsv_caption, tsv_description, map_fetch_button)
+            self._file_source_labels.extend((
                 (tsv_caption, 'ui.source.compact_tsv', '<b>TSV map</b>'),
                 (tsv_description, 'ui.source.compact_tsv_members', 'Source category members'),
-            )
-            for label, key, fallback in self._map_source_labels:
-                label.setText(self._t(key, fallback))
+            ))
+        self.file_row = FileInputRow(
+            self, '', self.in_path, pattern=self.file_pattern, related_action=related_action,
+        )
+        caption_key, caption_fallback = (
+            ('ui.source.compact_list_file', '<b>TXT / TSV file</b>') if '*.tsv' in self.file_pattern
+            else ('ui.source.compact_txt', '<b>TXT file</b>')
+        )
+        self._file_source_labels.append((self.file_row.caption, caption_key, caption_fallback))
+        self._refresh_file_source_labels()
         layout.addWidget(self.file_row)
         self.file_edit = self.in_path
+        self.manual_list.textChanged.connect(self._update_manual_count)
+        if self._count_input_file:
+            self._file_count = FileCount(self.in_path, self._count_txt_titles, self._update_source_count)
+
+    @staticmethod
+    def _count_txt_titles(path):
+        with path.open(encoding='utf-8-sig') as stream:
+            return sum(bool(line.strip()) for line in stream)
+
+    def _update_manual_count(self):
+        if not self._count_input_file or not self.in_path.text().strip():
+            total = sum(bool(line.strip()) for line in self.manual_list.toPlainText().splitlines())
+            self.source_count.set_total(self._count_kind, total)
+
+    def _update_source_count(self, total):
+        if self.in_path.text().strip():
+            self.source_count.set_total(self._count_kind, total, from_txt=True)
+        else:
+            self._update_manual_count()
 
     def set_log_widget(self, log_widget: QTextEdit | None) -> None:
         self.log_widget = log_widget
@@ -1321,8 +1349,11 @@ class TsvPreviewPanel(QWidget):
         right_header: str = '',
         left_stretch: int = 1,
         right_stretch: int = 2,
+        count_kind: str = 'pages',
     ):
         super().__init__(parent)
+        self._count_kind = count_kind
+        self.item_count = ItemCountLabel(parent or self)
         self._setup_ui(
             header_text=header_text or translate_key('ui.preview_header', getattr(parent, '_ui_lang', 'ru') if parent is not None else 'ru', '<b>Preview</b>'),
             left_header=left_header,
@@ -1401,7 +1432,10 @@ class TsvPreviewPanel(QWidget):
         except Exception:
             pass
         self.right_header_label.setVisible(bool(right_header))
-        right_layout.addWidget(self.right_header_label)
+        right_heading = QHBoxLayout()
+        right_heading.addWidget(self.right_header_label, 1)
+        right_heading.addWidget(self.item_count, 0)
+        right_layout.addLayout(right_heading)
         right_layout.addWidget(self.content_edit, 1)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -1438,10 +1472,12 @@ class TsvPreviewPanel(QWidget):
     def set_preview(self, left: list[str], right: list[str]) -> None:
         self.titles_edit.setPlainText('\n'.join(left))
         self.content_edit.setPlainText('\n'.join(right))
+        self.item_count.set_total(self._count_kind, sum(bool(title.strip()) for title in left))
 
     def clear(self) -> None:
         self.titles_edit.clear()
         self.content_edit.clear()
+        self.item_count.set_total(self._count_kind, None)
 
     def add_top_layout(self, extra_layout: QVBoxLayout | QHBoxLayout) -> None:
         try:

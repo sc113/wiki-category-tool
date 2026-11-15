@@ -21,6 +21,7 @@ from wiki_cat_tool.core.category_replacement import (
 from wiki_cat_tool.core.category_transfer import TransferStopped
 from wiki_cat_tool.gui.tabs.category_replacement_tab import CategoryReplacementTab
 from wiki_cat_tool.gui.tabs.redundant_categories_tab import RedundantCategoriesTab
+from wiki_cat_tool.gui.widgets.item_counts import format_item_count
 from wiki_cat_tool.workers.category_fetch_worker import CategoryMapFetchWorker
 from wiki_cat_tool.workers.category_replacement_worker import CategoryReplacementWorker
 
@@ -157,6 +158,28 @@ class CategoryReplacementUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_counts_follow_lists_and_valid_preview(self):
+        parent = QWidget()
+        parent._ui_lang = 'ru'
+        tab = CategoryReplacementTab(parent)
+        tab.source_panel.manual_list.setPlainText('A\n\nB\n  \nC\nD\nE\nF')
+        self.assertEqual('6 страниц', tab.source_panel.source_count.text())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'rules.tsv'
+            path.write_text('Old 1\tNew 1\nOld 2\tNew 2\nOld 3\tNew 3\n', encoding='utf-8')
+            tab.map_path_edit.setText(str(path))
+            tab.preview_map()
+            self.assertEqual('3 правила', tab.preview_panel.item_count.text())
+            parent._ui_lang = 'en'
+            tab.source_panel.refresh_localized_texts()
+            tab.preview_panel.item_count.refresh_localized_texts()
+            self.assertEqual('6 pages', tab.source_panel.source_count.text())
+            self.assertEqual('3 rules', tab.preview_panel.item_count.text())
+            tab.map_path_edit.clear()
+            self.assertTrue(tab.preview_panel.item_count.isHidden())
+        self.assertEqual('21 пара', format_item_count('pairs', 21, 'ru'))
+        self.assertEqual('14 пар', format_item_count('pairs', 14, 'ru'))
 
     def test_map_scroll_area_inherits_the_window_background(self):
         parent = QWidget()

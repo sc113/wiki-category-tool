@@ -11,12 +11,13 @@
 - Настройку всех параметров переименования
 """
 
+import csv
 import os
 from datetime import datetime
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
-    QComboBox, QPushButton, QToolButton, QSizePolicy, QProgressBar,
+    QComboBox, QPushButton, QSizePolicy, QProgressBar,
     QMessageBox, QCheckBox, QGroupBox, QGraphicsOpacityEffect
 )
 from PySide6.QtCore import Qt, Signal, QUrl, QEvent, QTimer
@@ -29,9 +30,10 @@ from ...utils import debug
 from ...workers.rename_worker import RenameWorker
 from ...core.template_manager import TemplateManager
 from ...core.pywikibot_config import apply_pwb_config, _dist_configs_dir
+from ..widgets.item_counts import FileCount, ItemCountLabel
+from ..widgets.shared_panels import FileInputRow
 from ..widgets.ui_helpers import (
-    add_info_button, pick_file, 
-    open_from_edit, set_start_stop_ratio,
+    add_info_button, set_start_stop_ratio,
     init_log_tree, log_tree_parse_and_add, log_tree_add, log_tree_add_event
 )
 from ..dialogs.template_review_dialog import TemplateReviewDialog
@@ -90,29 +92,14 @@ class RenameTab(QWidget):
         
         # Поле файла с кнопкой
         self.rename_file_edit = QLineEdit('categories.tsv')
-        self.rename_file_edit.setMinimumWidth(0)
-        self.rename_file_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        
-        h.addWidget(QLabel(self._t('ui.rename_list_tsv')))
-        h.addWidget(self.rename_file_edit, 1)
-        # Кнопка «…» справа
-        btn_browse_rename = QToolButton()
-        btn_browse_rename.setText('…')
-        btn_browse_rename.setAutoRaise(False)
-        try:
-            btn_browse_rename.setFixedSize(27, 27)
-            btn_browse_rename.setCursor(Qt.PointingHandCursor)
-            btn_browse_rename.setToolTip(self._t('ui.choose_file', 'Choose file'))
-        except Exception:
-            pass
-        btn_browse_rename.clicked.connect(lambda: pick_file(self, self.rename_file_edit, '*.tsv'))
-        h.addWidget(btn_browse_rename)
-        
-        # Кнопка "Открыть"
-        btn_open_tsv_rename = QPushButton(self._t('ui.open', 'Open'))
-        btn_open_tsv_rename.clicked.connect(lambda: open_from_edit(self, self.rename_file_edit))
-        btn_open_tsv_rename.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        h.addWidget(btn_open_tsv_rename)
+        self.file_row = FileInputRow(self, self._t('ui.rename_list_tsv'), self.rename_file_edit)
+        h.addWidget(self.file_row, 1)
+        self.rename_count = ItemCountLabel(self)
+        h.addWidget(self.rename_count)
+        self._file_count = FileCount(
+            self.rename_file_edit, self._count_rename_pairs,
+            lambda total: self.rename_count.set_total('pairs', total),
+        )
         
         # Компактный выбор префикса (выпадающий список)
         self.prefix_label_rename = QLabel(self._t('ui.prefixes', 'Prefixes:'))
@@ -431,6 +418,12 @@ class RenameTab(QWidget):
         
         # Устанавливаем соотношение размеров кнопок
         set_start_stop_ratio(self.rename_btn, self.rename_stop_btn, 3)
+
+    @staticmethod
+    def _count_rename_pairs(path):
+        with path.open(newline='', encoding='utf-8-sig') as stream:
+            return sum(len(row) >= 2 and all(cell.lstrip('\ufeff').strip() for cell in row[:2])
+                       for row in csv.reader(stream, delimiter='\t'))
 
     def _theme_mode(self) -> str:
         try:

@@ -74,6 +74,7 @@ class ParseTab(QWidget):
             help_text=parse_help_left,
             group_title=self._t('ui.source'),
             manual_label=f"<b>{self._t('ui.list_of_categories_to_read')}</b>",
+            count_kind='categories',
         )
         self.ns_combo_parse = self.source_panel.ns_combo
         self.cat_edit = self.source_panel.cat_edit

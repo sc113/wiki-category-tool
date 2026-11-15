@@ -12,10 +12,10 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QComboBox, QPushButton, QToolButton, QTextEdit, QCheckBox, QProgressBar,
-    QMessageBox, QSizePolicy
+    QComboBox, QPushButton, QTextEdit, QCheckBox, QProgressBar,
+    QMessageBox
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 
 from ...constants import PREFIX_TOOLTIP
@@ -23,10 +23,9 @@ from ...core.localization import translate_key
 from ...utils import debug, default_summary, resolve_project_language
 from ...workers.replace_worker import ReplaceWorker
 from ...core.pywikibot_config import apply_pwb_config
-from ..widgets.shared_panels import TsvPreviewPanel
+from ..widgets.shared_panels import FileInputRow, TsvPreviewPanel
 from ..widgets.ui_helpers import (
-    add_info_button, pick_file,
-    open_from_edit, log_message, set_start_stop_ratio,
+    add_info_button, log_message, set_start_stop_ratio,
     tsv_preview_from_path, init_progress, inc_progress,
     count_non_empty_titles, is_default_summary
 )
@@ -93,32 +92,8 @@ class ReplaceTab(QWidget):
 
         # Поле файла с кнопкой
         self.rep_file_edit = QLineEdit('categories.tsv')
-        self.rep_file_edit.setMinimumWidth(0)
-        self.rep_file_edit.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        h.addWidget(QLabel(self._t('ui.replace_list_tsv')))
-        h.addWidget(self.rep_file_edit, 1)
-        # Кнопка «…» справа
-        btn_browse_rep = QToolButton()
-        btn_browse_rep.setText('…')
-        btn_browse_rep.setAutoRaise(False)
-        try:
-            btn_browse_rep.setFixedSize(27, 27)
-            btn_browse_rep.setCursor(Qt.PointingHandCursor)
-            btn_browse_rep.setToolTip(self._t('ui.choose_file'))
-        except Exception:
-            pass
-        btn_browse_rep.clicked.connect(
-            lambda: pick_file(self, self.rep_file_edit, '*.tsv'))
-        h.addWidget(btn_browse_rep)
-
-        # Кнопка "Открыть"
-        btn_open_tsv = QPushButton(self._t('ui.open'))
-        btn_open_tsv.clicked.connect(
-            lambda: open_from_edit(self, self.rep_file_edit))
-        btn_open_tsv.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        h.addWidget(btn_open_tsv)
+        self.file_row = FileInputRow(self, self._t('ui.replace_list_tsv'), self.rep_file_edit)
+        h.addWidget(self.file_row, 1)
 
         # Компактный выбор префикса (выпадающий список)
         self.prefix_label_replace = QLabel(self._t('ui.prefixes'))
@@ -164,6 +139,7 @@ class ReplaceTab(QWidget):
         self.replace_stop_btn = QPushButton(self._t('ui.stop'))
         self.replace_stop_btn.setEnabled(False)
         self.replace_stop_btn.clicked.connect(self.stop_replace)
+        self.rep_file_edit.textChanged.connect(self._clear_preview)
 
         # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
         self.rep_log = QTextEdit()
@@ -275,6 +251,7 @@ class ReplaceTab(QWidget):
         """Загружает TSV, показывает две колонки: первая — заголовок, остальные — склеенные через \\t"""
         if self.rworker is not None:
             return
+        self._clear_preview()
         path = (self.rep_file_edit.text() or '').strip()
         if not path:
             QMessageBox.warning(self, self._t('ui.error'), self._t('ui.specify_tsv'))
@@ -293,6 +270,10 @@ class ReplaceTab(QWidget):
         self.replace_btn.setEnabled(True)
         # Обновляем счетчик и шкалу прогресса по итогам предпросмотра
         init_progress(self.replace_label, self.replace_bar, count)
+
+    def _clear_preview(self):
+        self.preview_panel.clear()
+        self.replace_btn.setEnabled(False)
 
     def start_replace(self):
         """Запускает процесс замены содержимого страниц"""

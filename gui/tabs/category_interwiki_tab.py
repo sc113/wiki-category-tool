@@ -24,6 +24,7 @@ from ..widgets.category_stage import CategoryLogPanel, CategoryProgressFooter, C
 from ..widgets.category_creation_table import TransferActionsLayout
 from ..widgets.ui_helpers import category_table_style, inc_progress, init_progress, log_message, style_transfer_languages
 from ..widgets.shared_panels import FileInputRow
+from ..widgets.item_counts import format_item_count
 from .category_transfer_tab import CategoryTransferTab
 
 
@@ -236,14 +237,15 @@ class CategoryInterwikiTab(QWidget):
 
     def _summary(self):
         results = [(self.table.item(row, 4).data(Qt.UserRole) or {}) for row in range(self.table.rowCount())]
+        total = sum(bool(row.source_title and row.target_title) for row in self._rows())
         counts = dict(ready=sum(result.get('status') in {'ready_link', 'ready_item'} for result in results),
                       conflicts=len(self._conflicts), **category_outcome_counts(results))
-        parts = [self._t('list_count', count=self.table.rowCount())]
+        parts = [format_item_count('pairs', total, self._history_language())]
         parts.extend(self._t('count_' + key, count=value) for key, value in counts.items() if value)
         self.summary_label.setText('   ·   '.join(parts))
         if not self.table.rowCount():
             self.summary_label.setText(self._t('interwiki_start_hint'))
-        self.summary_label.setToolTip(self._t('interwiki_summary', total=self.table.rowCount(), **counts))
+        self.summary_label.setToolTip(self._t('interwiki_summary', total=total, **counts))
 
     def load_pairs(self, rows, source_lang):
         if self._busy:

@@ -140,6 +140,7 @@ class CreateTab(QWidget):
         self.create_stop_btn = QPushButton(self._t('ui.stop'))
         self.create_stop_btn.setEnabled(False)
         self.create_stop_btn.clicked.connect(self.stop_create)
+        self.tsv_path_create.textChanged.connect(self._clear_preview)
 
         # Лог выполнения и кнопка очистки (заголовок внутри контейнера)
         self.create_log = QTextEdit()
@@ -245,6 +246,7 @@ class CreateTab(QWidget):
 
     def preview_create(self):
         """Загружает TSV, показывает две колонки: первая — заголовок, остальные — склеенные через \\t"""
+        self._clear_preview()
         path = (self.tsv_path_create.text() or '').strip()
         if not path:
             QMessageBox.warning(self, self._t('ui.error'), self._t('ui.specify_tsv'))
@@ -263,6 +265,10 @@ class CreateTab(QWidget):
         self.create_btn.setEnabled(True)
         # Обновляем счетчик и шкалу прогресса по итогам предпросмотра
         init_progress(self.create_label, self.create_bar, count)
+
+    def _clear_preview(self):
+        self.preview_panel.clear()
+        self.create_btn.setEnabled(False)
 
     def start_create(self):
         """Запускает процесс создания новых страниц"""
