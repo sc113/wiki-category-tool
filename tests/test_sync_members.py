@@ -332,6 +332,19 @@ class SyncMemberUiTests(unittest.TestCase):
             self.sync.load_scanned_categories(rows, 'en', include_subcategories=True)
         preview.assert_not_called()
 
+    def test_current_language_change_selects_the_other_default_source(self):
+        self.sync.source_panel.manual_list.setPlainText('Category:Games\nКатегория:Игры')
+        for target, source in [('en', 'ru'), ('ru', 'en')]:
+            with self.subTest(target=target):
+                self.parent.current_lang = target
+                self.sync.update_language(target)
+                config = self.sync._collect_run_config()
+                self.assertEqual((source, target), (config['source_lang'], config['target_lang']))
+        self.sync.source_lang_edit.setText('de')
+        self.parent.current_lang = 'en'
+        self.sync.update_language('en')
+        self.assertEqual('de', self.sync._collect_run_config()['source_lang'])
+
     def test_creation_completion_automatically_reuses_the_first_scan_and_enables_sync(self):
         scan = CategoryTransferTab(self.parent)
         tabs = self.parent.tabs = QTabWidget(self.parent)

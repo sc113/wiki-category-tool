@@ -712,6 +712,75 @@ class CategoryTransferReader:
             row["target_title"] = target["title"] if self.valid_page(target, 14) else ""
         return candidates
 
+    def sync_category_matches(self, titles: list[str], *, target_only: bool = False) -> dict[str, dict]:
+        """Resolve names from either wiki, keeping the current wiki as the destination."""
+        def read_categories(lang, candidates):
+            names = list(dict.fromkeys(title for title in candidates if title))
+            pages = self.pages(lang, names, props="info|pageprops") if names else {}
+            return {title: page for title, page in pages.items() if self.valid_page(page, 14)}
+
+        def item(page):
+            return page.get("pageprops", {}).get("wikibase_item", "")
+
+        def links_for(pages, lang, other_lang):
+            self.category_items(lang, pages)
+            qids = list(dict.fromkeys(item(page) for page in pages.values() if item(page)))
+            if not qids:
+                return {}
+            wiki = self.site_info(other_lang)["general"]["wikiid"]
+            links = {}
+            for offset in range(0, len(qids), 50):
+                data = self.request("", {"action": "wbgetentities", "ids": "|".join(qids[offset:offset + 50]),
+                                         "props": "sitelinks", "sitefilter": wiki}, wikidata=True)
+                links.update({qid: entity.get("sitelinks", {}).get(wiki, {}).get("title", "")
+                              for qid, entity in data.get("entities", {}).items()})
+            return links
+
+        target_names = {raw: self.category_title(raw, self.target_lang) for raw in titles}
+        targets = read_categories(self.target_lang, target_names.values())
+        reverse = links_for(targets, self.target_lang, self.source_lang)
+        source_names = {}
+        for raw, target_name in target_names.items():
+            target = targets.get(target_name)
+            if target is None and target_only:
+                continue
+            linked = reverse.get(item(target), "") if target else ""
+            source_names[raw] = linked or self.category_title(
+                "Category:" + target_name.partition(":")[2], self.source_lang)
+        sources = read_categories(self.source_lang, source_names.values())
+        # Resolve forward links for source inputs and for same-name candidates,
+        # so a known link to a different category cannot be used as a fallback.
+        forward_candidates = {source_name: sources[source_name] for raw, source_name in source_names.items()
+                              if source_name in sources and not reverse.get(item(targets.get(target_names[raw], {})))}
+        forward = links_for(forward_candidates, self.source_lang, self.target_lang)
+        linked_targets = read_categories(self.target_lang, forward.values()) if not target_only else {}
+
+        matches = {}
+        for raw, target_name in target_names.items():
+            target = targets.get(target_name)
+            source = sources.get(source_names.get(raw))
+            source_qid, target_qid = item(source or {}), item(target or {})
+            source_link = reverse.get(target_qid, "")
+            target_link = forward.get(source_qid, "")
+            method = ""
+            if target is None:
+                target = linked_targets.get(target_link)
+                if target:
+                    method = "Wikidata"
+                    target_qid = item(target)
+            elif source:
+                if source_link or target_link == target["title"]:
+                    method = "Wikidata"
+                elif not target_link and not (target_qid and source_qid and target_qid != source_qid):
+                    method = "same_name"
+            if source_qid and target_qid and source_qid != target_qid:
+                method = ""
+            matches[raw] = dict(source_title=source["title"] if source else "",
+                                target_title=target["title"] if target else "",
+                                qid=(target_qid or source_qid) if method == "Wikidata" else "",
+                                method=method)
+        return matches
+
     def _category_candidates(self, titles, pages, links):
         candidates = {}
         for raw in titles:

@@ -2183,58 +2183,106 @@ class CategoryTransferSyncTests(unittest.TestCase):
             source_lang="en", target_lang="ru", family="wikipedia",
             process_articles=True, process_subcategories=False, article_depth=0)
         self.addCleanup(worker.api_client.session.close)
-        worker._api_get_json = Mock()
+        worker._mapping_reader = Mock()
         with patch("wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader", return_value=self.reader):
             rows = worker._build_preview_rows_batch(batch_titles=[self.pair.target_title],
                                                     source_site=Mock(), target_site=Mock())
         self.assertEqual(self.pair.source_title, rows[0]["source_title"])
         self.assertEqual("error", rows[0]["status"])
         self.assertTrue(rows[0]["error"])
-        worker._api_get_json.assert_not_called()
+        worker._mapping_reader.assert_not_called()
+
+    def linked_categories(self):
+        source = "Category:Video games set in the 26th century"
+        target = "Категория:Компьютерные игры, действие которых происходит в XXVI веке"
+        qid = "Q22678263"
+        self.reader.page_data["en"][source] = page(source, qid=qid)
+        self.reader.page_data["ru"][target] = page(target, qid=qid)
+        self.reader.item_entities[qid] = {"sitelinks": {"enwiki": {"title": source}, "ruwiki": {"title": target}}}
+        return source, target, qid
+
+    def test_preview_accepts_both_input_languages_and_deduplicates_the_destination(self):
+        from wiki_cat_tool.workers.category_content_sync_worker import CategoryContentSyncPreviewWorker
+        source, target, qid = self.linked_categories()
+        worker = CategoryContentSyncPreviewWorker(target_categories=[source, target], source_lang="en", target_lang="ru",
+                                                  family="wikipedia", process_articles=True, process_subcategories=False, article_depth=1)
+        self.reader.graph[("ru", target, "subcat")] = [target]
+        self.reader.transfer_members = Mock(return_value=dict(total=1))
+        rows = []
+        worker.rows_ready.connect(rows.extend)
+        with patch("wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader", return_value=self.reader), \
+             patch("wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site", return_value=Mock()), \
+             patch.object(self.reader, "members", wraps=self.reader.members) as members:
+            worker.run()
+            members.assert_called_once_with(target, "subcat", lang="ru")
+        self.assertFalse(worker.failed, worker.failure_message)
+        self.assertEqual([(source, target, qid)], [(row["source_title"], row["target_title"], row["qid"]) for row in rows])
+        self.reader.transfer_members.assert_called_once_with(source, articles=True, subcategories=False, target_category=target)
+
+    def test_current_english_edits_english_for_both_title_spellings(self):
+        source, target, qid = self.linked_categories()
+        self.reader.source_lang, self.reader.target_lang = "ru", "en"
+        matches = self.reader.sync_category_matches([source, "Category:" + target.partition(":")[2]])
+        self.assertEqual([dict(source_title=target, target_title=source, qid=qid, method="Wikidata")] * 2,
+                         list(matches.values()))
 
     def test_standalone_preview_reads_source_when_wikipedia_item_props_lag(self):
+        source, target, qid = self.linked_categories()
+        self.reader.page_data["ru"][target]["pageprops"].clear()
+        self.reader.title_items["ruwiki", target] = qid
+        result = self.reader.sync_category_matches([target])[target]
+        self.assertEqual((qid, source), (result["qid"], result["source_title"]))
+
+    def test_preview_cannot_plan_edits_without_an_existing_target(self):
         from wiki_cat_tool.workers.category_content_sync_worker import CategoryContentSyncPreviewWorker
-        worker = CategoryContentSyncPreviewWorker(target_categories=[self.pair.target_title], source_lang="en", target_lang="ru",
+        source, target, _ = self.linked_categories()
+        self.reader.page_data["ru"][target]["redirect"] = True
+        worker = CategoryContentSyncPreviewWorker(target_categories=[source], source_lang="en", target_lang="ru",
                                                   family="wikipedia", process_articles=True, process_subcategories=False, article_depth=0)
-        self.addCleanup(worker.api_client.session.close)
-        source_site, target_site = Mock(), Mock()
-        source_site.hostname.return_value = "en.wikipedia.org"
-        target_site.hostname.return_value = "ru.wikipedia.org"
-        def response(url, params):
-            if params["action"] == "query":
-                return {"query": {"pages": [page(self.pair.target_title)]}}, 200
-            return {"entities": {"Q1": {"id": "Q1", "sitelinks": {"enwiki": {"title": self.pair.source_title},
-                                                                       "ruwiki": {"title": self.pair.target_title}}}}}, 200
-        worker._api_get_json = Mock(side_effect=response)
-        rows = worker._build_preview_rows_batch(batch_titles=[self.pair.target_title], source_site=source_site, target_site=target_site)
-        self.assertEqual(("Q1", self.pair.source_title), (rows[0]["qid"], rows[0]["source_title"]))
-        title_request = worker._api_get_json.call_args_list[1].args[1]
-        self.assertEqual("ruwiki", title_request["sites"])
-        self.assertEqual(self.pair.target_title, title_request["titles"])
+        rows = []
+        worker.rows_ready.connect(rows.extend)
+        with patch("wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader", return_value=self.reader), \
+             patch("wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site", return_value=Mock()), \
+             patch.object(self.reader, "transfer_members") as members:
+            worker.run()
+        members.assert_not_called()
+        self.assertEqual("skipped", rows[0]["status"])
+        self.assertTrue(rows[0]["target_missing"])
+        self.assertNotIn("members", rows[0])
+
+    def test_sync_skips_destination_deleted_after_preview(self):
+        source, target, _ = self.linked_categories()
+        self.reader.page_data["ru"].clear()
+        self.worker.category_pairs = {}
+        self.worker.target_categories = [target]
+        self.worker.username = self.worker.password = ""
+        self.worker.member_plans = {target.casefold(): dict(articles=("Article",), subcategories=())}
+        self.worker._planned_sources = {target.casefold(): source}
+        self.worker._transfer_articles = Mock()
+        results = []
+        self.worker.category_result.connect(results.append)
+        with patch("wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader", return_value=self.reader), \
+             patch("wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site", return_value=Mock()):
+            self.worker.run()
+        self.worker._transfer_articles.assert_not_called()
+        self.assertEqual("skipped", results[-1]["status"])
 
     def test_sync_preview_api_failure_is_an_error_instead_of_an_empty_result(self):
         from wiki_cat_tool.workers.category_content_sync_worker import CategoryContentSyncPreviewWorker
         worker = CategoryContentSyncPreviewWorker(target_categories=[self.pair.target_title], source_lang="en", target_lang="ru",
                                                   family="wikipedia", process_articles=True, process_subcategories=False, article_depth=0)
-        self.addCleanup(worker.api_client.session.close)
-        reader = Mock(request=Mock(side_effect=APIRequestError("offline")))
-        with patch("wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader", return_value=reader):
-            # Class constants must retain their real value despite replacing the constructor.
-            from wiki_cat_tool.workers import category_content_sync_worker as module
-            module.CategoryTransferReader._MAX_QUERY_URL_BYTES = 6000
-            with self.assertRaises(APIRequestError):
-                worker._api_get_json("https://ru.wikipedia.org/w/api.php", {"action": "query", "titles": self.pair.target_title})
+        with patch.object(self.reader, "pages", side_effect=APIRequestError("offline")), \
+             patch("wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader", return_value=self.reader), \
+             patch("wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Site", return_value=Mock()):
+            worker.run()
+        self.assertTrue(worker.failed)
+        self.assertIn("offline", worker.failure_message)
 
     def test_standalone_sync_can_resolve_the_existing_same_name_category(self):
         self.worker.category_pairs = {}
-        self.worker._get_linked_page_title_retry = Mock(return_value=None)
-        target = Mock()
-        target.title.return_value = "A"
-        source = Mock()
-        source.title.return_value = "Category:A"
-        source.exists.return_value = True
-        source.isRedirectPage.return_value = False
-        with patch("wiki_cat_tool.workers.category_content_sync_worker.pywikibot.Category", side_effect=[target, source]):
+        self.reader.page_data["ru"]["Категория:A"] = page("Категория:A")
+        self.reader.page_data["en"]["Category:A"] = page("Category:A")
+        with patch("wiki_cat_tool.workers.category_content_sync_worker.CategoryTransferReader", return_value=self.reader):
             resolved, _ = self.worker._resolve_source_category_with_retry("Категория:A", Mock(), Mock())
         self.assertEqual("Category:A", resolved)
 

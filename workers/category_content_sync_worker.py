@@ -13,7 +13,6 @@ from urllib.parse import quote
 from typing import Optional
 
 import pywikibot
-import requests
 import mwparserfromhell
 from PySide6.QtCore import QThread, Signal
 
@@ -49,7 +48,7 @@ def _fmt(key: str, default: str = "", **kwargs) -> str:
         return text
 
 
-def _normalize_category_name(raw_name: str, family: str, lang: str) -> str:
+def _normalize_category_name(raw_name: str, family: str, lang: str, source_lang: str = "") -> str:
     raw = (raw_name or "").strip().lstrip("\ufeff")
     if not raw:
         return ""
@@ -60,9 +59,9 @@ def _normalize_category_name(raw_name: str, family: str, lang: str) -> str:
         raw = raw.split("|", 1)[0].strip()
 
     base = strip_ns_prefix(family, lang, raw, 14)
-    if not base:
-        base = raw
-    base = base.strip()
+    if base == raw and source_lang and source_lang != lang:
+        base = strip_ns_prefix(family, source_lang, raw, 14)
+    base = _normalize_space(base.replace("_", " "))
     if not base:
         return ""
 
@@ -71,12 +70,12 @@ def _normalize_category_name(raw_name: str, family: str, lang: str) -> str:
 
 
 def _prepare_target_categories(
-    target_categories: list[str], family: str, lang: str
+    target_categories: list[str], family: str, lang: str, source_lang: str = ""
 ) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
     for raw in target_categories:
-        name = _normalize_category_name(raw, family, lang)
+        name = _normalize_category_name(raw, family, lang, source_lang)
         if not name:
             continue
         key = name.casefold()
@@ -85,76 +84,6 @@ def _prepare_target_categories(
         seen.add(key)
         normalized.append(name)
     return normalized
-
-
-def _extract_wikidata_qid(page: pywikibot.Page) -> str:
-    try:
-        item_page = pywikibot.ItemPage.fromPage(page)
-        qid = item_page.getID()
-        return str(qid or "").strip()
-    except Exception:
-        return ""
-
-
-def _get_linked_page_title(
-    source_page: pywikibot.Page,
-    target_site: pywikibot.Site,
-    expected_ns: Optional[int] = None,
-) -> Optional[str]:
-    try:
-        item_page = pywikibot.ItemPage.fromPage(source_page)
-        linked_sitelink = item_page.getSitelink(target_site)
-        if not linked_sitelink:
-            return None
-
-        linked_page = pywikibot.Page(target_site, linked_sitelink)
-        if expected_ns is not None and linked_page.namespace().id != expected_ns:
-            return None
-        if linked_page.isRedirectPage():
-            return None
-        return linked_page.title()
-    except pywikibot.exceptions.NoPageError:
-        return None
-    except pywikibot.exceptions.IsRedirectPageError:
-        return None
-    except Exception:
-        return None
-
-
-def _resolve_source_category(
-    target_category_name: str,
-    source_site: pywikibot.Site,
-    target_site: pywikibot.Site,
-    *,
-    target_category_obj: Optional[pywikibot.Category] = None,
-) -> tuple[Optional[str], str]:
-    method = ""
-    target_cat = target_category_obj
-    if target_cat is None:
-        try:
-            target_cat = pywikibot.Category(target_site, target_category_name)
-        except Exception:
-            return None, method
-
-    linked = _get_linked_page_title(target_cat, source_site, expected_ns=14)
-    if linked:
-        method = "Wikidata"
-        try:
-            source_cat = pywikibot.Category(source_site, linked)
-            if source_cat.exists() and not source_cat.isRedirectPage():
-                return source_cat.title(), method
-        except Exception:
-            pass
-
-    # Fallback: локальный префикс исходного языка + базовое имя категории.
-    try:
-        base_name = target_cat.title(with_ns=False)
-        constructed = pywikibot.Category(source_site, base_name)
-        if constructed.exists() and not constructed.isRedirectPage():
-            return constructed.title(), _t("ui.sync.method.constructed", "Constructed")
-    except Exception:
-        pass
-    return None, method
 
 
 def _count_articles_in_source_category(
@@ -257,6 +186,7 @@ class CategoryContentSyncPreviewWorker(QThread):
     progress = Signal(str)
     rows_ready = Signal(object)
     category_done = Signal()
+    plan_size = Signal(int)
 
     def __init__(
         self,
@@ -279,10 +209,7 @@ class CategoryContentSyncPreviewWorker(QThread):
         self.process_articles = bool(process_articles)
         self.process_subcategories = bool(process_subcategories)
         self.article_depth = max(0, int(article_depth or 0))
-        self.preview_batch_size = 50
         self.preview_api_batch_size = 50
-        self.preview_api_retries = 3
-        self.preview_api_timeout = 4
         self.api_client = WikimediaAPIClient()
         self._stop = False
         self._stop_event = threading.Event()
@@ -307,46 +234,13 @@ class CategoryContentSyncPreviewWorker(QThread):
         for i in range(0, len(values), step):
             yield values[i : i + step]
 
-    @staticmethod
-    def _site_api_url(site: pywikibot.Site) -> str:
-        try:
-            host = site.hostname()
-        except Exception:
-            try:
-                host = f"{site.code}.{site.family.name}.org"
-            except Exception:
-                host = "www.wikipedia.org"
-        return f"https://{host}/w/api.php"
-
-    def _source_sitelink_key(self) -> str:
-        return self._source_sitelink_key_for(self.source_lang)
-
-    def _source_sitelink_key_for(self, code) -> str:
-        family = (self.family or "").strip().lower()
-        lang = (code or "").strip().lower()
-        if family == "wikipedia":
-            return f"{lang}wiki"
-        if family == "commons":
-            return "commonswiki"
-        if family == "wikidata":
-            return "wikidatawiki"
-        return f"{lang}{family}"
-
-    def _api_get_json(self, url: str, params: dict) -> tuple[dict, int]:
-        # Share cancellation, Retry-After handling and explicit API errors with
-        # scanning/preparation. A failed read must never mean a missing sitelink.
-        if self._stop:
-            raise TransferStopped()
-        encoded = requests.Request("GET", url, params=params).prepare().url
-        if len(encoded.encode("ascii")) > CategoryTransferReader._MAX_QUERY_URL_BYTES:
-            return {}, 414
-        reader = getattr(self, "_preview_reader", None)
-        if reader is None:
-            reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event, 0.12)
-            reader.on_retry = self.progress.emit
-            self._preview_reader = reader
-        lang = self.source_lang if f"{self.source_lang}." in url else self.target_lang
-        return reader.request(lang, params, wikidata="www.wikidata.org" in url), 200
+    def _mapping_reader(self):
+        if not hasattr(self, "_preview_reader"):
+            self._preview_reader = CategoryTransferReader(
+                self.source_lang, self.target_lang, self.family, self._stop_event, 0.12
+            )
+            self._preview_reader.on_retry = self.progress.emit
+        return self._preview_reader
 
     def _build_preview_rows_batch(
         self,
@@ -354,6 +248,7 @@ class CategoryContentSyncPreviewWorker(QThread):
         batch_titles: list[str],
         source_site: pywikibot.Site,
         target_site: pywikibot.Site,
+        target_only: bool = False,
     ) -> list[dict]:
         if not batch_titles:
             return []
@@ -372,7 +267,7 @@ class CategoryContentSyncPreviewWorker(QThread):
             for pair, result in zip(pairs, checked):
                 valid = result["status"] == "already_linked"
                 rows.append({
-                    "phase": "details", "row_key": pair.target_title.casefold(),
+                    "phase": "details", "row_key": pair.target_title.casefold(), "explicit_pair": True,
                     "target_title": pair.target_title, "target_url": _build_page_url(target_site, pair.target_title),
                     "qid": result.get("qid", ""), "qid_url": f"https://www.wikidata.org/wiki/{result.get('qid', '')}",
                     "source_title": result["row"].source_title,
@@ -381,237 +276,55 @@ class CategoryContentSyncPreviewWorker(QThread):
                     "status": "preview_ready" if valid else "error", "error": result.get("error", ""),
                 })
             remaining = [title for title in batch_titles if title.casefold() not in self.category_pairs]
-            rows.extend(self._build_preview_rows_batch(batch_titles=remaining, source_site=source_site, target_site=target_site))
+            rows.extend(self._build_preview_rows_batch(batch_titles=remaining, source_site=source_site,
+                                                      target_site=target_site, target_only=target_only))
             return rows
 
-        target_api = self._site_api_url(target_site)
-        source_api = self._site_api_url(source_site)
-        requested_keys = {t.casefold() for t in batch_titles}
-        qid_by_row_key: dict[str, str] = {}
-
-        target_data, target_status = self._api_get_json(
-            target_api,
-            {
-                "action": "query",
-                "format": "json",
-                "formatversion": "2",
-                "prop": "pageprops",
-                "ppprop": "wikibase_item",
-                "titles": "|".join(batch_titles),
-            },
-        )
-        if target_status in (413, 414) and len(batch_titles) > 1:
-            mid = len(batch_titles) // 2
-            left = self._build_preview_rows_batch(
-                batch_titles=batch_titles[:mid],
-                source_site=source_site,
-                target_site=target_site,
-            )
-            right = self._build_preview_rows_batch(
-                batch_titles=batch_titles[mid:],
-                source_site=source_site,
-                target_site=target_site,
-            )
-            return left + right
-        pages = ((target_data.get("query") or {}).get("pages") or [])
-        if not pages and target_status and target_status != 200:
-            self.progress.emit(
-                f"[Preview API] target query HTTP {target_status}, batch={len(batch_titles)}"
-            )
-        for page in pages:
-            if self._stop:
-                break
-            if not isinstance(page, dict):
-                continue
-            if page.get("missing"):
-                continue
-            title = str(page.get("title") or "").strip()
-            if not title:
-                continue
-            key = title.casefold()
-            if key not in requested_keys:
-                continue
-            qid = str(((page.get("pageprops") or {}).get("wikibase_item") or "")).strip()
-            if qid:
-                qid_by_row_key[key] = qid
-
-        source_title_by_row_key: dict[str, str] = {}
-        method_by_row_key: dict[str, str] = {}
-
-        # Wikipedia pageprops can lag after a new sitelink. Ask Wikidata by
-        # page title before treating a category as having no item.
-        missing_items = [title for title in batch_titles if title.casefold() not in qid_by_row_key]
-        if missing_items and not self._stop:
-            target_key = self._source_sitelink_key_for(self.target_lang)
-            def _items_by_title(titles):
-                data, status = self._api_get_json("https://www.wikidata.org/w/api.php", {
-                    "action": "wbgetentities", "format": "json", "sites": target_key,
-                    "titles": "|".join(titles), "props": "sitelinks",
-                    "sitefilter": f"{target_key}|{self._source_sitelink_key()}",
-                })
-                if status == 414 and len(titles) > 1:
-                    mid = len(titles) // 2
-                    return {**_items_by_title(titles[:mid]), **_items_by_title(titles[mid:])}
-                return data.get("entities", {})
-            for entity in _items_by_title(missing_items).values():
-                if "missing" in entity or not entity.get("id"):
-                    continue
-                target_title = entity.get("sitelinks", {}).get(target_key, {}).get("title", "")
-                row_key = target_title.casefold()
-                if row_key in requested_keys:
-                    qid_by_row_key[row_key] = entity["id"]
-
-        qids = sorted({qid for qid in qid_by_row_key.values() if qid})
-        if qids and not self._stop:
-            sitelink_key = self._source_sitelink_key()
-            wd_api = "https://www.wikidata.org/w/api.php"
-            def _fetch_sitelinks(qid_list: list[str]) -> dict[str, str]:
-                if not qid_list or self._stop:
-                    return {}
-                entities_data, status = self._api_get_json(
-                    wd_api,
-                    {
-                        "action": "wbgetentities",
-                        "format": "json",
-                        "formatversion": "2",
-                        "ids": "|".join(qid_list),
-                        "props": "sitelinks",
-                    },
-                )
-                if status in (413, 414) and len(qid_list) > 1:
-                    mid = len(qid_list) // 2
-                    out: dict[str, str] = {}
-                    out.update(_fetch_sitelinks(qid_list[:mid]))
-                    out.update(_fetch_sitelinks(qid_list[mid:]))
-                    return out
-                if status and status != 200 and status not in (0,):
-                    self.progress.emit(
-                        f"[Preview API] wbgetentities HTTP {status}, batch={len(qid_list)}"
-                    )
-                entities = entities_data.get("entities") or {}
-                if isinstance(entities, dict):
-                    iterable = entities.items()
-                elif isinstance(entities, list):
-                    iterable = [
-                        (str(entity.get("id") or ""), entity)
-                        for entity in entities
-                        if isinstance(entity, dict)
-                    ]
-                else:
-                    iterable = []
-                titles_by_qid_local: dict[str, str] = {}
-                for ent_id, entity in iterable:
-                    if not isinstance(entity, dict):
-                        continue
-                    sl = ((entity.get("sitelinks") or {}).get(sitelink_key) or {})
-                    src_title = str(sl.get("title") or "").strip()
-                    if src_title and ent_id:
-                        titles_by_qid_local[str(ent_id).strip().upper()] = src_title
-                return titles_by_qid_local
-
-            titles_by_qid: dict[str, str] = {}
-            for q_chunk in self._iter_chunks(qids, self.preview_api_batch_size):
-                if self._stop:
-                    break
-                titles_by_qid.update(_fetch_sitelinks(q_chunk))
-
-            for row_key, qid in qid_by_row_key.items():
-                if row_key in source_title_by_row_key:
-                    continue
-                src = titles_by_qid.get(str(qid).strip().upper(), "")
-                if src:
-                    source_title_by_row_key[row_key] = src
-                    method_by_row_key[row_key] = "Wikidata"
-
-        # Fallback-конструирование для строк без sitelink.
-        source_cat_prefix = get_policy_prefix(self.family, self.source_lang, 14, "Category:")
-        constructed_by_row_key: dict[str, str] = {}
-        for target_title in batch_titles:
-            if self._stop:
-                break
-            row_key = target_title.casefold()
-            if source_title_by_row_key.get(row_key):
-                continue
-            base = strip_ns_prefix(self.family, self.target_lang, target_title, 14)
-            if not base:
-                base = target_title.split(":", 1)[-1].strip()
-            if not base:
-                continue
-            constructed = f"{source_cat_prefix}{base}"
-            constructed_by_row_key[row_key] = constructed
-
-        if constructed_by_row_key and not self._stop:
-            constructed_titles = list(constructed_by_row_key.values())
-            exists_keys: set[str] = set()
-
-            def _fetch_existing_categories(title_list: list[str]) -> set[str]:
-                if not title_list or self._stop:
-                    return set()
-                src_data, status = self._api_get_json(
-                    source_api,
-                    {
-                        "action": "query",
-                        "format": "json",
-                        "formatversion": "2",
-                        "titles": "|".join(title_list),
-                    },
-                )
-                if status in (413, 414) and len(title_list) > 1:
-                    mid = len(title_list) // 2
-                    return _fetch_existing_categories(
-                        title_list[:mid]
-                    ) | _fetch_existing_categories(title_list[mid:])
-                if status and status != 200 and status not in (0,):
-                    self.progress.emit(
-                        f"[Preview API] source query HTTP {status}, batch={len(title_list)}"
-                    )
-                found: set[str] = set()
-                src_pages = ((src_data.get("query") or {}).get("pages") or [])
-                for src_page in src_pages:
-                    if not isinstance(src_page, dict):
-                        continue
-                    if src_page.get("missing"):
-                        continue
-                    if int(src_page.get("ns", -1)) != 14:
-                        continue
-                    if src_page.get("redirect"):
-                        continue
-                    page_title = str(src_page.get("title") or "").strip()
-                    if page_title:
-                        found.add(page_title.casefold())
-                return found
-
-            for c_chunk in self._iter_chunks(constructed_titles, self.preview_api_batch_size):
-                if self._stop:
-                    break
-                exists_keys |= _fetch_existing_categories(c_chunk)
-            for row_key, constructed in constructed_by_row_key.items():
-                if constructed.casefold() in exists_keys:
-                    source_title_by_row_key[row_key] = constructed
-                    method_by_row_key[row_key] = _t("ui.sync.method.constructed", "Constructed")
-
-        rows: list[dict] = []
-        for target_category_name in batch_titles:
-            row_key = target_category_name.casefold()
-            qid = qid_by_row_key.get(row_key, "")
-            source_title = source_title_by_row_key.get(row_key, "")
-            rows.append(
-                {
-                    "phase": "details",
-                    "row_key": row_key,
-                    "target_title": target_category_name,
-                    "target_url": _build_page_url(target_site, target_category_name),
-                    "qid": qid,
-                    "qid_url": f"https://www.wikidata.org/wiki/{qid}" if qid else "",
-                    "source_title": source_title,
-                    "source_url": _build_page_url(source_site, source_title)
-                    if source_title
-                    else "",
-                    "count_text": "—",
-                    "method": method_by_row_key.get(row_key, ""),
-                }
-            )
+        matches = self._mapping_reader().sync_category_matches(batch_titles, target_only=target_only)
+        rows = []
+        for raw, match in matches.items():
+            target = _normalize_category_name(match["target_title"], self.family, self.target_lang)
+            source, qid, method = match["source_title"], match["qid"], match["method"]
+            error = ""
+            if not target:
+                error = _fmt("ui.sync.preview.target_not_found", lang=self.target_lang, title=source or raw)
+            elif not method:
+                error = _fmt("log.sync_worker.source_not_resolved", category=target)
+            if error:
+                self.progress.emit(error)
+            rows.append({
+                "phase": "details", "row_key": (target or raw).casefold(),
+                "target_title": target or raw, "target_url": _build_page_url(target_site, target) if target else "",
+                "target_missing": not target,
+                "source_title": source,
+                "source_url": _build_page_url(source_site, source) if source else "",
+                "qid": qid, "qid_url": f"https://www.wikidata.org/wiki/{qid}" if qid else "",
+                "count_text": "0" if error else "—",
+                "status": "skipped" if error else "preview_ready", "error": error,
+            })
         return rows
+
+    def _expand_target_categories(self, roots):
+        """Walk the current wiki's category tree after resolving the input titles."""
+        reader = self._mapping_reader()
+        frontier = list(roots)
+        seen = {title.casefold() for title in frontier}
+        expanded = []
+        for _ in range(self.article_depth):
+            children = []
+            for title in frontier:
+                reader.check_stop()
+                children.extend(reader.members(title, "subcat", lang=self.target_lang))
+            frontier = []
+            for title in _prepare_target_categories(children, self.family, self.target_lang):
+                key = title.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    frontier.append(title)
+            if not frontier:
+                break
+            expanded.extend(frontier)
+        return expanded
 
     def run(self):
         try:
@@ -631,7 +344,7 @@ class CategoryContentSyncPreviewWorker(QThread):
             self.api_client.session.close()
 
     def _read_available_members(self, row):
-        if not row.get('source_title') or row.get('status') == 'error':
+        if not row.get('source_title') or row.get('status') in {'error', 'skipped'}:
             return row
         if not hasattr(self, '_member_reader'):
             self._member_reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family,
@@ -741,7 +454,7 @@ class CategoryContentSyncPreviewWorker(QThread):
             return
 
         normalized_targets = _prepare_target_categories(
-            self.target_categories, self.family, self.target_lang
+            self.target_categories, self.family, self.target_lang, self.source_lang
         )
         if not normalized_targets:
             self._set_failure(self._t("log.sync_worker.no_valid_targets"))
@@ -771,45 +484,36 @@ class CategoryContentSyncPreviewWorker(QThread):
                 categories=len(normalized_targets),
             )
         )
-        total = len(normalized_targets)
-        pending_rows: list[dict] = []
-        processed_count = 0
+        rows = {}
 
-        def _flush_pending_rows():
-            if not pending_rows:
-                return
-            self.rows_ready.emit(list(pending_rows))
-            pending_rows.clear()
+        def read_mappings(titles, *, target_only=False):
+            for batch_titles in self._iter_chunks(titles, self.preview_api_batch_size):
+                self._mapping_reader().check_stop()
+                for row in self._build_preview_rows_batch(
+                    batch_titles=batch_titles, source_site=source_site, target_site=target_site, target_only=target_only
+                ):
+                    # Both input spellings can resolve to the same destination.
+                    key = row["row_key"]
+                    if key not in rows or row.get("explicit_pair"):
+                        rows[key] = row
 
-        for batch_titles in self._iter_chunks(
-            normalized_targets, self.preview_api_batch_size
-        ):
+        read_mappings(normalized_targets)
+        if self.article_depth:
+            roots = [row["target_title"] for row in rows.values()
+                     if not row.get("target_missing") and row.get("status") != "error"]
+            if roots:
+                expanded = self._expand_target_categories(roots)
+                read_mappings(expanded, target_only=True)
+
+        total = len(rows)
+        self.plan_size.emit(total)
+        for count, row in enumerate(rows.values(), start=1):
             if self._stop:
                 break
-            batch_rows = self._build_preview_rows_batch(
-                batch_titles=batch_titles,
-                source_site=source_site,
-                target_site=target_site,
-            )
-            for row_data in batch_rows:
-                if self._stop:
-                    break
-                row_data = self._read_available_members(row_data)
-                pending_rows.append(row_data)
-                processed_count += 1
-                _flush_pending_rows()
-                try:
-                    self.category_done.emit()
-                except Exception:
-                    pass
-            if self._stop:
-                break
-            if processed_count % self.preview_api_batch_size == 0 or processed_count == total:
-                self.progress.emit(
-                    _fmt("log.sync_preview.processed", processed=processed_count, total=total)
-                )
-
-        _flush_pending_rows()
+            self.rows_ready.emit([self._read_available_members(row)])
+            self.category_done.emit()
+            if count % self.preview_api_batch_size == 0 or count == total:
+                self.progress.emit(_fmt("log.sync_preview.processed", processed=count, total=total))
 
         if not self._stop:
             self.progress.emit(_t("log.sync_preview.completed"))
@@ -1344,7 +1048,6 @@ class CategoryContentSyncWorker(BaseWorker):
         source_site: pywikibot.Site,
         target_site: pywikibot.Site,
     ) -> tuple[Optional[str], str]:
-        method = ""
         pair = self.category_pairs.get(target_category_name.casefold())
         if pair is not None:
             # Never guess another source for a pair handed off by stage two.
@@ -1361,31 +1064,25 @@ class CategoryContentSyncWorker(BaseWorker):
             finally:
                 reader.close()
             return None, ""
+        reader = CategoryTransferReader(self.source_lang, self.target_lang, self.family, self._stop_event, 0.12)
+        reader.on_retry = self.progress.emit
         try:
-            target_cat = pywikibot.Category(target_site, target_category_name)
-        except Exception:
-            return None, method
-
-        linked = self._get_linked_page_title_retry(
-            target_cat, source_site, expected_ns=14
-        )
-        if linked:
-            method = "Wikidata"
-            try:
-                source_cat = pywikibot.Category(source_site, linked)
-                if source_cat.exists() and not source_cat.isRedirectPage():
-                    return source_cat.title(), method
-            except Exception:
-                pass
-
-        try:
-            base_name = target_cat.title(with_ns=False)
-            constructed = pywikibot.Category(source_site, base_name)
-            if constructed.exists() and not constructed.isRedirectPage():
-                return constructed.title(), _t("ui.sync.method.constructed", "Constructed")
-        except Exception:
+            match = reader.sync_category_matches([target_category_name], target_only=True)[target_category_name]
+            if not match["target_title"]:
+                self.progress.emit(_fmt("ui.sync.preview.target_not_found",
+                                        title=target_category_name, lang=self.target_lang))
+            if match["method"]:
+                return match["source_title"], (
+                    "Wikidata" if match["method"] == "Wikidata"
+                    else _t("ui.sync.method.same_name", "Same name")
+                )
+        except TransferStopped:
             pass
-        return None, method
+        except Exception as error:
+            self.progress.emit(str(error))
+        finally:
+            reader.close()
+        return None, ""
 
     def _build_edit_summary(
         self,

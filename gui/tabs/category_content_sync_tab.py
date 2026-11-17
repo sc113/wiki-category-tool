@@ -114,9 +114,6 @@ class CategoryContentSyncTab(QWidget):
         self._preview_cancel_requested = False
         self._sync_cancel_requested = False
         self._suspend_preview_invalidation = False
-        self._auto_depth_origin_map: dict[str, str] = {}
-        self._depth_expanded_categories: list[str] = []
-        self._depth_expanded_base_signature = None
         self._last_ui_lang = self._ui_lang()
         self._last_theme_mode = ""
         self._member_workers = set()
@@ -197,7 +194,7 @@ class CategoryContentSyncTab(QWidget):
         help_text = self._t(
             "help.sync.main",
             (
-                "The left panel is used for target categories (where members are added).\nYou can provide one category, paste a list manually, or load a .txt file.\nTarget language is taken from the active login.\nSource language is set at the top.\n\"Articles\" mode transfers linked articles via Wikidata; \"Subcategories\" mode transfers linked subcategories.\nTransfer depth: 0 = only categories from the list, 1 = + direct subcategories for each category, 2+ = deeper.\nBefore preview, the target category list is expanded by this depth.\nBefore running, click \"Preview\": mapping table will appear and then \"Start sync\" becomes enabled.\n\nEdit summary template variables:\n{target_action_en} - \"category\" or \"parent category\" depending on mode.\n{target_category} - target category (with prefix).\n{source_category} - source category (with prefix).\n{target_page} - page being edited.\n{source_page} - source page/subcategory from source wiki.\n{source_lang} - source language, {target_lang} - target language.\n{family} - project family (for example, wikipedia).\n{mode} - transfer mode: articles or subcategories."
+                "The list accepts category titles from either the source or the current wiki. Members are always added to the current wiki.\nYou can provide one category, paste a list manually, or load a .txt file.\nTarget language is taken from the active login.\nSource language is set at the top.\n\"Articles\" mode transfers linked articles via Wikidata; \"Subcategories\" mode transfers linked subcategories.\nTransfer depth: 0 = only categories from the list, 1 = + direct subcategories for each category, 2+ = deeper.\nPreview expands the category tree in the current wiki by this depth.\nBefore running, click \"Preview\": mapping table will appear and then \"Start sync\" becomes enabled.\n\nEdit summary template variables:\n{target_action_en} - \"category\" or \"parent category\" depending on mode.\n{target_category} - target category (with prefix).\n{source_category} - source category (with prefix).\n{target_page} - page being edited.\n{source_page} - source page/subcategory from source wiki.\n{source_lang} - source language, {target_lang} - target language.\n{family} - project family (for example, wikipedia).\n{mode} - transfer mode: articles or subcategories."
             ),
         )
 
@@ -584,6 +581,8 @@ class CategoryContentSyncTab(QWidget):
     def _refresh_target_lang_label(self):
         lang = (self.get_current_language() or "ru").strip().lower()
         self.target_lang_value.setText(lang)
+        if lang in {"en", "ru"} and self.source_lang_edit.text().strip().lower() == lang:
+            self.source_lang_edit.setText("ru" if lang == "en" else "en")
         self._reset_detected_read_language()
 
     def _category_read_finished(self):
@@ -781,9 +780,6 @@ class CategoryContentSyncTab(QWidget):
         self._prepared_scan_cache = None
         self._prepared_scan_signature = None
         self._preview_row_index = {}
-        self._depth_expanded_categories = []
-        self._depth_expanded_base_signature = None
-        self._auto_depth_origin_map = {}
         self.start_btn.setEnabled(False)
         self.preview_table.setRowCount(0)
         self._reset_current_category_progress()
@@ -1695,9 +1691,10 @@ class CategoryContentSyncTab(QWidget):
         except Exception:
             pass
 
-    def _normalized_target_categories(self, categories: list[str], family: str, lang: str) -> list[str]:
+    def _normalized_target_categories(self, categories: list[str], family: str, lang: str,
+                                      source_lang: str = "") -> list[str]:
         try:
-            return _prepare_target_categories(categories, family, lang)
+            return _prepare_target_categories(categories, family, lang, source_lang)
         except Exception:
             return [c for c in categories if c]
 
@@ -1828,6 +1825,8 @@ class CategoryContentSyncTab(QWidget):
             )
             return
 
+        if row_data.get("target_missing"):
+            self._set_target_item(row, "—", row_key=row_data["row_key"])
         qid = str(row_data.get("qid") or "")
         qid_url = str(row_data.get("qid_url") or "")
         source_title = str(row_data.get("source_title") or "")
@@ -1864,6 +1863,9 @@ class CategoryContentSyncTab(QWidget):
         self.preview_table.setItem(row, 3, count_item)
         if 'members' in row_data:
             self._set_member_inventory(row, row_data['members'])
+        else:
+            for column in (6, 7):
+                self.preview_table.setItem(row, column, self._make_table_item('—', count=True))
         self._set_row_status(row, row_data.get("status") or ("preview_ready" if source_title else "skipped"))
         self.preview_table.item(row, 5).setToolTip(str(row_data.get("error") or ""))
         self._update_clear_skipped_button_state()
@@ -2316,259 +2318,11 @@ class CategoryContentSyncTab(QWidget):
             for pair in pairs)
         self._transfer_context = (self.source_lang_edit.text().strip().lower(), target_lang, family) if pairs else None
 
-    def _depth_base_signature(
-        self,
-        categories: list[str],
-        source_lang: str,
-        target_lang: str,
-        family: str,
-        transfer_depth: int,
-    ):
-        items = tuple(
-            str(title or "").strip().casefold()
-            for title in categories
-            if str(title or "").strip()
-        )
-        return (
-            items,
-            str(source_lang or "").strip().lower(),
-            str(target_lang or "").strip().lower(),
-            str(family or "").strip().lower(),
-            max(0, int(transfer_depth or 0)),
-            self._active_transfer_pairs(categories, source_lang, target_lang, family),
-        )
-
     def _active_transfer_pairs(self, categories, source_lang, target_lang, family):
         if self._transfer_context != (source_lang, target_lang, family):
             return ()
         names = {name.casefold() for name in categories}
         return tuple(pair for pair in self._transfer_pairs if pair.target_title.casefold() in names)
-
-    def _get_cached_depth_expanded_categories(
-        self,
-        *,
-        categories: list[str],
-        source_lang: str,
-        target_lang: str,
-        family: str,
-        transfer_depth: int,
-    ) -> Optional[list[str]]:
-        signature = self._depth_base_signature(
-            categories, source_lang, target_lang, family, transfer_depth
-        )
-        if self._depth_expanded_base_signature != signature:
-            return None
-        return list(self._depth_expanded_categories or [])
-
-    def _set_cached_depth_expanded_categories(
-        self,
-        *,
-        base_categories: list[str],
-        expanded_categories: list[str],
-        source_lang: str,
-        target_lang: str,
-        family: str,
-        transfer_depth: int,
-    ) -> None:
-        self._depth_expanded_base_signature = self._depth_base_signature(
-            base_categories, source_lang, target_lang, family, transfer_depth
-        )
-        self._depth_expanded_categories = list(expanded_categories or [])
-
-    def _resolve_effective_categories(
-        self,
-        *,
-        base_categories: list[str],
-        source_lang: str,
-        target_lang: str,
-        family: str,
-        transfer_depth: int,
-    ) -> list[str]:
-        cached = self._get_cached_depth_expanded_categories(
-            categories=base_categories,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            family=family,
-            transfer_depth=transfer_depth,
-        )
-        if cached is not None:
-            return list(cached)
-        return list(base_categories)
-
-    def _apply_expanded_categories_to_manual_list(self, categories: list[str]) -> None:
-        try:
-            in_path = (self.source_panel.in_path.text() or "").strip()
-        except Exception:
-            in_path = ""
-        if in_path and not self.source_panel.manual_list.toPlainText().strip():
-            return
-
-        new_text = "\n".join(categories or [])
-        try:
-            current_text = self.source_panel.manual_list.toPlainText()
-        except Exception:
-            current_text = ""
-        if str(current_text or "") == str(new_text or ""):
-            return
-
-        self._suspend_preview_invalidation = True
-        try:
-            self.source_panel.manual_list.setPlainText(new_text)
-        finally:
-            self._suspend_preview_invalidation = False
-
-    def _expand_categories_for_preview(
-        self,
-        *,
-        categories: list[str],
-        source_lang: str,
-        target_lang: str,
-        family: str,
-        transfer_depth: int,
-    ) -> list[str]:
-        depth = max(0, int(transfer_depth or 0))
-        normalized_categories = self._normalized_target_categories(
-            categories, family, target_lang
-        )
-        if not normalized_categories:
-            return []
-
-        cached = self._get_cached_depth_expanded_categories(
-            categories=normalized_categories,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            family=family,
-            transfer_depth=depth,
-        )
-        if cached is not None:
-            return cached
-
-        expanded = list(normalized_categories)
-        existing_keys: set[str] = {cat.casefold() for cat in expanded}
-
-        # Удерживаем только актуальные авто-добавленные строки для текущего списка.
-        self._auto_depth_origin_map = {
-            key: origin
-            for key, origin in self._auto_depth_origin_map.items()
-            if key in existing_keys and origin in existing_keys
-        }
-
-        if depth <= 0:
-            self._auto_depth_origin_map = {}
-            self._set_cached_depth_expanded_categories(
-                base_categories=normalized_categories,
-                expanded_categories=expanded,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                family=family,
-                transfer_depth=depth,
-            )
-            return expanded
-
-        roots = [
-            title for title in expanded if title.casefold() not in self._auto_depth_origin_map
-        ]
-        if not roots and self._auto_depth_origin_map:
-            key_to_title = {title.casefold(): title for title in expanded}
-            seen_root_keys: set[str] = set()
-            for title in expanded:
-                origin_key = str(
-                    self._auto_depth_origin_map.get(title.casefold()) or ""
-                ).strip().casefold()
-                if not origin_key or origin_key in seen_root_keys:
-                    continue
-                root_title = key_to_title.get(origin_key)
-                if root_title:
-                    roots.append(root_title)
-                    seen_root_keys.add(origin_key)
-        if not roots:
-            roots = list(expanded)
-
-        log_message(
-            self.sync_log,
-            self._t(
-                "ui.sync.depth_expand.started",
-                "[Depth] Reading subcategories: depth={depth}, source categories={count}",
-            ).format(depth=depth, count=len(roots)),
-            debug,
-        )
-
-        api_client = WikimediaAPIClient()
-        added_total = 0
-        for root_title in roots:
-            root_key = root_title.casefold()
-            found_subcats: list[str] = []
-            try:
-                found_subcats = self.source_panel._fetch_subcats_recursive(
-                    api_client,
-                    root_title,
-                    target_lang,
-                    family,
-                    depth - 1,
-                    0,
-                    set(),
-                )
-            except Exception as exc:
-                log_message(
-                    self.sync_log,
-                    self._t(
-                        "ui.sync.depth_expand.error",
-                        "[Depth] Failed to read subcategories for '{category}': {error}",
-                    ).format(category=root_title, error=exc),
-                    debug,
-                )
-                continue
-
-            normalized_found = self._normalized_target_categories(
-                found_subcats, family, target_lang
-            )
-            added_for_root = 0
-            for subcat_title in normalized_found:
-                subcat_key = subcat_title.casefold()
-                if subcat_key in existing_keys:
-                    continue
-                existing_keys.add(subcat_key)
-                expanded.append(subcat_title)
-                self._auto_depth_origin_map[subcat_key] = root_key
-                added_for_root += 1
-            added_total += added_for_root
-            log_message(
-                self.sync_log,
-                self._t(
-                    "ui.sync.depth_expand.progress",
-                    "[Depth] {category}: added {count}",
-                ).format(category=root_title, count=added_for_root),
-                debug,
-            )
-
-        self._set_cached_depth_expanded_categories(
-            base_categories=normalized_categories,
-            expanded_categories=expanded,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            family=family,
-            transfer_depth=depth,
-        )
-        if added_total > 0:
-            self._apply_expanded_categories_to_manual_list(expanded)
-            log_message(
-                self.sync_log,
-                self._t(
-                    "ui.sync.depth_expand.done",
-                    "[Depth] Categories appended to the end of the list: {count}",
-                ).format(count=added_total),
-                debug,
-            )
-        else:
-            log_message(
-                self.sync_log,
-                self._t(
-                    "ui.sync.depth_expand.empty",
-                    "[Depth] No new subcategories found.",
-                ),
-                debug,
-            )
-        return expanded
 
     def _signature_from_values(
         self,
@@ -2598,17 +2352,10 @@ class CategoryContentSyncTab(QWidget):
         source_lang = (self.source_lang_edit.text() or "").strip().lower()
         target_lang = (self.get_current_language() or "").strip().lower()
         family = (self.get_current_family() or "wikipedia").strip().lower()
-        base_categories = self._normalized_target_categories(
-            self._load_categories_from_inputs(), family, target_lang
+        categories = self._normalized_target_categories(
+            self._load_categories_from_inputs(), family, target_lang, source_lang
         )
         transfer_depth = max(0, int(self.article_depth_spin.value()))
-        categories = self._resolve_effective_categories(
-            base_categories=base_categories,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            family=family,
-            transfer_depth=transfer_depth,
-        )
         process_articles = self.articles_checkbox.isChecked()
         process_subcategories = self.subcategories_checkbox.isChecked()
         return self._signature_from_values(
@@ -2706,7 +2453,7 @@ class CategoryContentSyncTab(QWidget):
             return None
 
         base_categories = self._normalized_target_categories(
-            categories, family, target_lang
+            categories, family, target_lang, source_lang
         )
         if not base_categories:
             QMessageBox.warning(
@@ -2716,16 +2463,8 @@ class CategoryContentSyncTab(QWidget):
             )
             return None
 
-        effective_categories = self._resolve_effective_categories(
-            base_categories=base_categories,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            family=family,
-            transfer_depth=transfer_depth,
-        )
-
         return {
-            "categories": effective_categories,
+            "categories": base_categories,
             "source_lang": source_lang,
             "target_lang": target_lang,
             "family": family,
@@ -2782,22 +2521,6 @@ class CategoryContentSyncTab(QWidget):
             return
 
         self.log_panel.set_expanded(True)
-        expanded_categories = self._expand_categories_for_preview(
-            categories=config["categories"],
-            source_lang=config["source_lang"],
-            target_lang=config["target_lang"],
-            family=config["family"],
-            transfer_depth=config["transfer_depth"],
-        )
-        if not expanded_categories:
-            QMessageBox.warning(
-                self,
-                self._t("ui.error", "Error"),
-                self._t("ui.sync.error.no_categories", "Target category list is empty."),
-            )
-            return
-        config["categories"] = expanded_categories
-
         self._preview_ready = False
         self._preview_cancel_requested = False
         self._preview_signature = None
@@ -2811,11 +2534,8 @@ class CategoryContentSyncTab(QWidget):
             config["transfer_depth"],
         )
 
-        self._prefill_preview_rows(
-            target_categories=config["categories"],
-            target_lang=config["target_lang"],
-            family=config["family"],
-        )
+        self.preview_table.setRowCount(0)
+        self._preview_row_index.clear()
         self._set_preview_mode(True)
         self._init_progress(len(config["categories"]))
         self.start_btn.setEnabled(False)
@@ -2837,7 +2557,7 @@ class CategoryContentSyncTab(QWidget):
             family=config["family"],
             process_articles=config["process_articles"],
             process_subcategories=config["process_subcategories"],
-            article_depth=0,
+            article_depth=config["transfer_depth"],
             category_pairs=self._active_transfer_pairs(config["categories"], config["source_lang"],
                                                        config["target_lang"], config["family"]),
             cached_members=(self._prepared_scan_cache
@@ -2847,6 +2567,7 @@ class CategoryContentSyncTab(QWidget):
             lambda message: log_message(self.sync_log, message, debug)
         )
         self.preview_worker.rows_ready.connect(self._append_preview_rows_batch)
+        self.preview_worker.plan_size.connect(self._init_progress)
         self.preview_worker.category_done.connect(self._on_preview_category_done)
         self.preview_worker.finished.connect(self._on_preview_finished)
         self.preview_worker.start()
@@ -3166,9 +2887,6 @@ class CategoryContentSyncTab(QWidget):
         self.articles_checkbox.setChecked(True)
         self.subcategories_checkbox.setChecked(False)
         self.article_depth_spin.setValue(0)
-        self._auto_depth_origin_map = {}
-        self._depth_expanded_categories = []
-        self._depth_expanded_base_signature = None
         family = self.get_current_family() or "wikipedia"
         target_lang = self.get_current_language() or "ru"
         # Namespace aliases are normalized in exactly the same way as inputs.
