@@ -10,16 +10,17 @@ import os
 import sys
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QTimer, QSignalBlocker, QThread, Signal, Qt, QSettings, QSize, QRectF
+from PySide6.QtCore import QByteArray, QEvent, QRect, QRectF, QSettings, QSignalBlocker, QSize, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QMessageBox, QToolButton, QWidget, QVBoxLayout, QLabel,
     QHBoxLayout, QFrame, QPushButton, QApplication, QStyle, QCheckBox, QGroupBox,
     QLineEdit, QTextEdit, QPlainTextEdit, QTreeWidget, QSizePolicy, QSpinBox, QAbstractSpinBox, QProgressBar,
     QComboBox, QGraphicsDropShadowEffect
 )
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen
+from PySide6.QtGui import QIcon, QIconEngine, QPixmap, QPainter, QColor, QPen
 from PySide6.QtSvg import QSvgRenderer
 
 from ..constants import APP_DISPLAY_VERSION
@@ -70,6 +71,45 @@ class _CategoryTransferNavGroup(QFrame):
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
 
 
+class _SidebarIconEngine(QIconEngine):
+    def __init__(self, svg: bytes, color: str):
+        super().__init__()
+        self._svg = svg
+        self._color = color
+        # Use the bounds of the artwork, since some Phosphor viewBoxes are off center.
+        start = svg.find(b'>') + 1
+        grouped = svg[:start] + b'<g id="glyph">' + svg[start:].replace(b'</svg>', b'</g></svg>')
+        self._renderer = QSvgRenderer(QByteArray(grouped.replace(b'currentColor', color.encode('ascii'))))
+        bounds = self._renderer.boundsOnElement('glyph')
+        if bounds.isValid():
+            view_box = self._renderer.viewBoxF()
+            view_box.moveCenter(bounds.center())
+            self._renderer.setViewBox(view_box)
+
+    def clone(self):
+        return _SidebarIconEngine(self._svg, self._color)
+
+    def isNull(self):
+        return not self._renderer.isValid()
+
+    def paint(self, painter, rect, mode, state):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        if mode == QIcon.Mode.Disabled:
+            painter.setOpacity(painter.opacity() * 0.5)
+        self._renderer.render(painter, QRectF(rect).translated(0, 1.5))
+        painter.restore()
+
+    def scaledPixmap(self, size, mode, state, scale):
+        # Qt supplies logical dimensions. Rasterize once at the display's pixel density.
+        pixmap = QPixmap(size * scale)
+        pixmap.setDevicePixelRatio(scale)
+        pixmap.fill(Qt.transparent)
+        with QPainter(pixmap) as painter:
+            self.paint(painter, QRect(0, 0, size.width(), size.height()), mode, state)
+        return pixmap
+
+
 class MainWindow(QMainWindow):
     """Основное окно приложения"""
     ns_update_finished = Signal(str, str, bool)  # family, lang, ok
@@ -116,6 +156,8 @@ class MainWindow(QMainWindow):
         'sync': 'arrows-clockwise',
     }
     _SIDEBAR_EXPANDED_WIDTH = 248
+    _SIDEBAR_ICON_SIZE = 22
+    _SIDEBAR_COMPACT_ICON_SIZE = 24
 
     def __init__(self):
         super().__init__()
@@ -477,17 +519,12 @@ class MainWindow(QMainWindow):
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setProperty('nav_label', label)
             btn.setProperty('nav_icon_key', icon_key)
-            try:
-                btn.setIconSize(QSize(18, 18))
-            except Exception:
-                pass
             btn.clicked.connect(
                 lambda _checked=False, i=index: self._set_tab_from_nav(i))
             (group_layout if grouped else self.nav_layout).addWidget(btn)
             self._nav_buttons[index] = btn
         self.nav_layout.addWidget(self.transfer_nav_group)
         self.nav_layout.addStretch(1)
-        self._refresh_nav_icons()
         self._apply_sidebar_collapse_mode()
         self._sync_sidebar_tab_state(self.tabs.currentIndex())
         QTimer.singleShot(0, self._apply_depth_effects)
@@ -524,23 +561,15 @@ class MainWindow(QMainWindow):
         except Exception:
             return QIcon()
 
-    def _draw_nav_icon(self, icon_key: str, color_hex: str, size: int = 16) -> QIcon:
+    def _nav_icon(self, icon_key: str, color_hex: str) -> QIcon:
         icon_name = self._NAV_ICON_FILES.get(icon_key)
         if icon_name is None:
             return QIcon()
-        renderer = QSvgRenderer(resource_path(f'assets/icons/phosphor/{icon_name}.svg'))
-        if not renderer.isValid():
+        try:
+            svg = Path(resource_path(f'assets/icons/phosphor/{icon_name}.svg')).read_bytes()
+        except OSError:
             return QIcon()
-
-        pixmap = QPixmap(size, size)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        renderer.render(painter)
-        painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
-        painter.fillRect(pixmap.rect(), QColor(color_hex))
-        painter.end()
-        return QIcon(pixmap)
+        return QIcon(_SidebarIconEngine(svg, color_hex))
 
     def _refresh_nav_icons(self):
         style_map = {
@@ -560,12 +589,12 @@ class MainWindow(QMainWindow):
         for btn in self._nav_buttons.values():
             try:
                 key = str(btn.property('nav_icon_key') or '')
-                icon = self._draw_nav_icon(key, color, 20 if self._sidebar_collapsed else 18)
+                icon = self._nav_icon(key, color)
                 if icon.isNull():
                     icon = self._tinted_standard_icon(
                         style_map.get(key, QStyle.SP_FileIcon),
                         color,
-                        20 if self._sidebar_collapsed else 18,
+                        btn.iconSize().width(),
                     )
                 btn.setIcon(icon)
             except Exception:
@@ -765,18 +794,20 @@ class MainWindow(QMainWindow):
 
     def _apply_sidebar_collapse_mode(self):
         collapsed = bool(self._sidebar_collapsed)
+        icon_size = self._SIDEBAR_COMPACT_ICON_SIZE if collapsed else self._SIDEBAR_ICON_SIZE
         group = getattr(self, 'transfer_nav_group', None)
         if group is not None:
             border, title_color = {
                 'light': ('#c4d2db', '#8a9aa6'),
                 'dark': ('#34404c', '#83919d'),
             }.get(self._theme_mode, ('#2a4856', '#71929e'))
+            padding = '4px 7px' if collapsed else '4px 7px 4px 2px'
             group.setProperty('outline_color', border)
             group.setStyleSheet(
                 'QFrame#categoryTransferNavGroup { border: none; background: transparent; }'
                 f'QLabel#categoryTransferNavTitle {{ border: none; background: transparent; padding: 0 3px 3px; color: {title_color}; font-weight: 400; }}'
                 'QFrame#categoryTransferNavGroup QPushButton#navButton { '
-                'min-height: 0; max-height: 16777215px; padding: 4px 7px; }'
+                f'min-height: 0; max-height: 16777215px; padding: {padding}; }}'
             )
             group.update()
             group.layout().setContentsMargins(1, 5, 1, 5) if collapsed else group.layout().setContentsMargins(6, 8, 6, 6)
@@ -830,6 +861,7 @@ class MainWindow(QMainWindow):
         for idx, btn in self._nav_buttons.items():
             try:
                 label = btn.property('nav_label') or ''
+                btn.setIconSize(QSize(icon_size, icon_size))
                 if collapsed:
                     btn.setText('')
                     btn.setToolTip(str(label).replace('\n', ' '))
@@ -837,7 +869,6 @@ class MainWindow(QMainWindow):
                     btn.setMaximumWidth(40)
                     btn.setMinimumHeight(40)
                     btn.setMaximumHeight(40)
-                    btn.setIconSize(QSize(20, 20))
                     btn.parentWidget().layout().setAlignment(btn, Qt.AlignHCenter)
                 else:
                     btn.setText(str(label))
@@ -847,7 +878,6 @@ class MainWindow(QMainWindow):
                     height = 44
                     btn.setMinimumHeight(height)
                     btn.setMaximumHeight(height)
-                    btn.setIconSize(QSize(18, 18))
                     btn.parentWidget().layout().setAlignment(btn, Qt.Alignment())
                 try:
                     st = btn.style()
@@ -1585,7 +1615,7 @@ class MainWindow(QMainWindow):
                 text-align: left;
                 min-width: 0;
                 min-height: 27px;
-                padding: 7px 12px;
+                padding: 7px 12px 7px 8px;
                 border-radius: 9px;
                 border: 1px solid rgba(111, 201, 208, 0.18);
                 background: rgba(10, 63, 88, 0.62);
@@ -2482,7 +2512,7 @@ class MainWindow(QMainWindow):
                 text-align: left;
                 min-width: 0;
                 min-height: 27px;
-                padding: 7px 12px;
+                padding: 7px 12px 7px 8px;
                 border-radius: 9px;
                 border: 1px solid #c6d9e8;
                 background: #ffffff;
