@@ -12,7 +12,7 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QTimer, QSignalBlocker, QThread, Signal, Qt, QSettings, QSize, QByteArray, QRectF
+from PySide6.QtCore import QEvent, QTimer, QSignalBlocker, QThread, Signal, Qt, QSettings, QSize, QRectF
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QMessageBox, QToolButton, QWidget, QVBoxLayout, QLabel,
     QHBoxLayout, QFrame, QPushButton, QApplication, QStyle, QCheckBox, QGroupBox,
@@ -103,6 +103,18 @@ class MainWindow(QMainWindow):
         (9, 'ui.transfer.nav_links', 'prepare'),
         (6, 'ui.transfer.nav_sync', 'sync'),
     ]
+    _NAV_ICON_FILES = {
+        'read': 'file-arrow-down',
+        'replace': 'file-arrow-up',
+        'create': 'file-plus',
+        'rename': 'pencil-simple',
+        'category_replace': 'tag',
+        'cleanup': 'funnel-simple-x',
+        'link': 'link-simple',
+        'scan': 'scan',
+        'prepare': 'clipboard-text',
+        'sync': 'arrows-clockwise',
+    }
     _SIDEBAR_EXPANDED_WIDTH = 248
 
     def __init__(self):
@@ -513,111 +525,22 @@ class MainWindow(QMainWindow):
             return QIcon()
 
     def _draw_nav_icon(self, icon_key: str, color_hex: str, size: int = 16) -> QIcon:
-        """Рисует 1:1 Lucide-иконки (как в v2 React sidebar)."""
-        try:
-            nodes = {
-                # v2/src/components/Sidebar.jsx
-                'dashboard': [
-                    ('rect', {'width': '7', 'height': '9', 'x': '3', 'y': '3', 'rx': '1'}),
-                    ('rect', {'width': '7', 'height': '5', 'x': '14', 'y': '3', 'rx': '1'}),
-                    ('rect', {'width': '7', 'height': '9', 'x': '14', 'y': '12', 'rx': '1'}),
-                    ('rect', {'width': '7', 'height': '5', 'x': '3', 'y': '16', 'rx': '1'}),
-                ],
-                'auth': [
-                    ('path', {'d': 'M2 18v3c0 .6.4 1 1 1h4v-3h3v-3h2l1.4-1.4a6.5 6.5 0 1 0-4-4Z'}),
-                    ('circle', {'cx': '16.5', 'cy': '7.5', 'r': '.5'}),
-                ],
-                'read': [
-                    ('path', {'d': 'M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v3'}),
-                    ('polyline', {'points': '14 2 14 8 20 8'}),
-                    ('path', {'d': 'M5 17a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'}),
-                    ('path', {'d': 'm9 18-1.5-1.5'}),
-                ],
-                'replace': [
-                    ('path', {'d': 'M14 4c0-1.1.9-2 2-2'}),
-                    ('path', {'d': 'M20 2c1.1 0 2 .9 2 2'}),
-                    ('path', {'d': 'M22 8c0 1.1-.9 2-2 2'}),
-                    ('path', {'d': 'M16 10c-1.1 0-2-.9-2-2'}),
-                    ('path', {'d': 'm3 7 3 3 3-3'}),
-                    ('path', {'d': 'M6 10V5c0-1.7 1.3-3 3-3h1'}),
-                    ('rect', {'width': '8', 'height': '8', 'x': '2', 'y': '14', 'rx': '2'}),
-                    ('path', {'d': 'M14 14c1.1 0 2 .9 2 2v4c0 1.1-.9 2-2 2'}),
-                    ('path', {'d': 'M20 14c1.1 0 2 .9 2 2v4c0 1.1-.9 2-2 2'}),
-                ],
-                'create': [
-                    ('path', {'d': 'm12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z'}),
-                    ('path', {'d': 'm6.08 9.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59'}),
-                    ('path', {'d': 'm6.08 14.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59'}),
-                ],
-                'rename': [
-                    ('path', {'d': 'm16 3 4 4-4 4'}),
-                    ('path', {'d': 'M20 7H4'}),
-                    ('path', {'d': 'm8 21-4-4 4-4'}),
-                    ('path', {'d': 'M4 17h16'}),
-                ],
-                'category_replace': [
-                    ('rect', {'x': '2', 'y': '9', 'width': '5', 'height': '6', 'rx': '1'}),
-                    ('rect', {'x': '17', 'y': '2', 'width': '5', 'height': '6', 'rx': '1'}),
-                    ('rect', {'x': '17', 'y': '16', 'width': '5', 'height': '6', 'rx': '1'}),
-                    ('path', {'d': 'M7 12h5m5-7h-2a3 3 0 0 0-3 3v8a3 3 0 0 0 3 3h2'}),
-                ],
-                'cleanup': [
-                    ('path', {'d': 'M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z'}),
-                    ('path', {'d': 'M20 21a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-2.9a1 1 0 0 1-.88-.55l-.42-.85a1 1 0 0 0-.92-.6H13a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1Z'}),
-                    ('path', {'d': 'M3 5a2 2 0 0 0 2 2h3'}),
-                    ('path', {'d': 'M3 3v13a2 2 0 0 0 2 2h3'}),
-                ],
-                'link': [
-                    ('path', {'d': 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'}),
-                    ('path', {'d': 'M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'}),
-                ],
-                'scan': [
-                    ('path', {'d': 'M4 8V5a1 1 0 0 1 1-1h3m8 0h3a1 1 0 0 1 1 1v3m0 8v3a1 1 0 0 1-1 1h-3m-8 0H5a1 1 0 0 1-1-1v-3'}),
-                    ('path', {'d': 'M7 12h10'}),
-                ],
-                'prepare': [
-                    ('rect', {'x': '5', 'y': '4', 'width': '14', 'height': '17', 'rx': '2'}),
-                    ('rect', {'x': '9', 'y': '2', 'width': '6', 'height': '4', 'rx': '1'}),
-                    ('path', {'d': 'm9 13 2 2 4-4'}),
-                ],
-                'sync': [
-                    ('path', {'d': 'M20 7v5h-5M4 17v-5h5'}),
-                    ('path', {'d': 'M6 7a7 7 0 0 1 11-2l3 3M4 16l3 3a7 7 0 0 0 11-2'}),
-                ],
-                'about': [
-                    ('path', {'d': 'M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z'}),
-                    ('line', {'x1': '12', 'x2': '12', 'y1': '16', 'y2': '12'}),
-                    ('line', {'x1': '12', 'x2': '12.01', 'y1': '8', 'y2': '8'}),
-                ],
-            }.get(icon_key)
-            if not nodes:
-                return QIcon()
-
-            elements = []
-            for tag, attrs in nodes:
-                attr_text = ' '.join(f'{k}="{v}"' for k, v in attrs.items())
-                elements.append(f'<{tag} {attr_text}/>')
-
-            svg = (
-                f'<svg xmlns="http://www.w3.org/2000/svg" '
-                f'viewBox="0 0 24 24" fill="none" stroke="{color_hex}" '
-                f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-                f'{"".join(elements)}'
-                f'</svg>'
-            )
-            renderer = QSvgRenderer(QByteArray(svg.encode('utf-8')))
-            if not renderer.isValid():
-                return QIcon()
-
-            pix = QPixmap(size, size)
-            pix.fill(Qt.transparent)
-            painter = QPainter(pix)
-            painter.setRenderHint(QPainter.Antialiasing)
-            renderer.render(painter)
-            painter.end()
-            return QIcon(pix)
-        except Exception:
+        icon_name = self._NAV_ICON_FILES.get(icon_key)
+        if icon_name is None:
             return QIcon()
+        renderer = QSvgRenderer(resource_path(f'assets/icons/phosphor/{icon_name}.svg'))
+        if not renderer.isValid():
+            return QIcon()
+
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        renderer.render(painter)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        painter.fillRect(pixmap.rect(), QColor(color_hex))
+        painter.end()
+        return QIcon(pixmap)
 
     def _refresh_nav_icons(self):
         style_map = {
