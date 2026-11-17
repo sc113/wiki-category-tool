@@ -126,24 +126,6 @@ def setup_pywikibot():
     pywikibot.error = _pywb_log
 
 
-def setup_windows_taskbar():
-    """Настройка иконки в панели задач Windows"""
-    try:
-        if sys.platform.startswith('win'):
-            # Устанавливаем AppUserModelID для правильного отображения иконки
-            import ctypes
-            # Стабильный ID без версии, чтобы Windows не теряла привязку иконки между сборками.
-            myappid = 'sc113.WikiCatTool'
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                myappid)
-    except Exception as e:
-        try:
-            from .utils import debug
-            debug(f"Taskbar ID setup failed: {e}")
-        except Exception:
-            pass
-
-
 def setup_application_icon(app: QApplication):
     """Настройка иконки приложения"""
     try:
@@ -157,9 +139,6 @@ def setup_application_icon(app: QApplication):
             candidates.append(os.path.join(exe_dir, 'icon.ico'))
         except Exception:
             pass
-        # 3) Fallback: иконка, вшитая в сам exe (Windows)
-        if getattr(sys, 'frozen', False):
-            candidates.append(sys.executable)
 
         for icon_path in candidates:
             try:
@@ -173,6 +152,15 @@ def setup_application_icon(app: QApplication):
                 return
             except Exception:
                 continue
+        # QFileIconProvider can read the icon resource of an executable on Windows.
+        if sys.platform == 'win32' and getattr(sys, 'frozen', False):
+            from PySide6.QtCore import QFileInfo
+            from PySide6.QtWidgets import QFileIconProvider
+
+            icon = QFileIconProvider().icon(QFileInfo(sys.executable))
+            if not icon.isNull():
+                app.setWindowIcon(icon)
+                return
         debug("Icon setup: no valid icon source found")
     except Exception as e:
         try:
@@ -264,9 +252,6 @@ def main():
     # Можно отключить через WCT_DISABLE_QT_MESSAGE_FILTER=1.
     if str(os.environ.get('WCT_DISABLE_QT_MESSAGE_FILTER', '')).strip().lower() not in {'1', 'true', 'yes', 'on'}:
         setup_qt_message_filter()
-
-    # Настройка Windows taskbar
-    setup_windows_taskbar()
 
     # Создание приложения Qt
     app = QApplication(sys.argv)

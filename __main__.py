@@ -8,9 +8,11 @@ import sys as _sys
 
 
 def _set_windows_app_id_early() -> None:
-    """Выставить AppUserModelID как можно раньше (до импортов Qt)."""
+    """Keep a separate taskbar identity when running under the Python interpreter."""
     try:
-        if _sys.platform.startswith("win"):
+        # A portable build already has its own identity and icon in the executable.
+        # Let Explorer associate the button with that file, even if it was renamed.
+        if _sys.platform == "win32" and not getattr(_sys, "frozen", False):
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 "sc113.WikiCatTool"
@@ -19,7 +21,6 @@ def _set_windows_app_id_early() -> None:
         pass
 
 
-# Для стабильного отображения иконки в taskbar на Windows.
 _set_windows_app_id_early()
 
 # Всегда добавляем корень проекта (родитель каталога пакета) в sys.path ПЕРЕД импортами,
