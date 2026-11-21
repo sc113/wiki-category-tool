@@ -94,12 +94,6 @@ class RenameTab(QWidget):
         self.rename_file_edit = QLineEdit('categories.tsv')
         self.file_row = FileInputRow(self, self._t('ui.rename_list_tsv'), self.rename_file_edit)
         h.addWidget(self.file_row, 1)
-        self.rename_count = ItemCountLabel(self)
-        h.addWidget(self.rename_count)
-        self._file_count = FileCount(
-            self.rename_file_edit, self._count_rename_pairs,
-            lambda total: self.rename_count.set_total('pairs', total),
-        )
         
         # Компактный выбор префикса (выпадающий список)
         self.prefix_label_rename = QLabel(self._t('ui.prefixes', 'Prefixes:'))
@@ -323,9 +317,17 @@ class RenameTab(QWidget):
 
         # Поле фильтра перенесем ниже — перед комментарием (см. ниже)
         
-        # Лог выполнения: заголовок + легенда (ℹ)
+        # Заголовок лога слева, счётчик пар справа.
         log_header_row = QHBoxLayout()
         log_header_row.addWidget(QLabel(self._t('ui.execution_log')))
+        log_header_row.addStretch(1)
+        self.rename_count = ItemCountLabel(self)
+        self.rename_count.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
+        log_header_row.addWidget(self.rename_count)
+        self._file_count = FileCount(
+            self.rename_file_edit, self._count_rename_pairs,
+            lambda total: self.rename_count.set_total('pairs', total),
+        )
         v.addLayout(log_header_row)
 
         # Дерево лога вместо QTextEdit
